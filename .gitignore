@@ -3,3 +3,4 @@
 .venv/
 __pycache__/
 database/
+./services/embedder_config.json
