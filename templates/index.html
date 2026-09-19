@@ -1,849 +1,716 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/png" href="/static/images/ai-brain-ani-32.gif">
-    <title>Agent with RAG | Local Vector Database & Gemma QA</title>
-    <meta name="description"
-        content="Agent with RAG: Local Retrieval-Augmented Generation system with ChromaDB vector storage, Ollama embeddings, and Google AI Studio Gemma answers.">
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
-        rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css">
-    <!-- Chart.js (Local offline bundle) -->
-    <script src="/static/js/chart.umd.min.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent With RAG Console</title>
+  <link rel="icon" type="image/gif" href="/static/images/tab-icon.gif" onerror="this.href='/static/images/ai-brain-ani-32.gif'">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
-
-<body>
-    <!-- App Container -->
-    <div class="app-layout">
-        <!-- Top Navigation Header with Tabs -->
-        <header class="app-header">
-            <div class="brand">
-                <img src="/static/images/ai-brain-ani-48.gif" alt="Agent with RAG" class="brand-image-icon" width="48"
-                    height="48">
-                <div class="brand-text">
-                    <h1>Agent with <span class="gradient-text">RAG</span></h1>
-                    <span class="badge badge-private">Air-Gapped Vector DB</span>
-                </div>
-            </div>
-
-            <!-- Four Main Switchable Tabs at the top of the window -->
-            <nav class="top-nav-tabs" role="tablist" id="mainTabNav">
-                <button class="nav-tab active" id="tabBtnQuery" role="tab" aria-selected="true"
-                    aria-controls="pageQuery" onclick="switchTab('pageQuery')">
-                    <span class="tab-icon">💬</span>
-                    <span class="tab-label">1. Chat</span>
-                </button>
-                <button class="nav-tab" id="tabBtnIngest" role="tab" aria-selected="false" aria-controls="pageIngest"
-                    onclick="switchTab('pageIngest')">
-                    <span class="tab-icon">📥</span>
-                    <span class="tab-label">2. Vector DB Ingestion</span>
-                </button>
-                <button class="nav-tab" id="tabBtnTelemetry" role="tab" aria-selected="false" aria-controls="pageTelemetry"
-                    onclick="switchTab('pageTelemetry')">
-                    <span class="tab-icon">📊</span>
-                    <span class="tab-label">3. Telemetry</span>
-                </button>
-                <button class="nav-tab" id="tabBtnLogs" role="tab" aria-selected="false" aria-controls="pageLogs"
-                    onclick="switchTab('pageLogs')">
-                    <span class="tab-icon">📜</span>
-                    <span class="tab-label">4. Audit Logs & DB Explorer</span>
-                    <span class="log-count-pill" id="logBadgeCount">0</span>
-                </button>
-            </nav>
-
-            <!-- Status Indicator & App Shutdown Button -->
-            <div class="header-actions">
-                <button class="btn-shutdown-app" id="btnShutdownApp" onclick="openShutdownModal()"
-                    title="Shut down the application server and stop process">
-                    <span class="shutdown-power-icon">⏻</span>
-                    <span class="shutdown-label">Shut Down</span>
-                </button>
-                <div class="status-pill" id="backendStatusPill" title="Checking health...">
-                    <span class="status-dot"></span>
-                    <span class="status-label" id="backendStatusLabel">Connecting...</span>
-                </div>
-            </div>
-        </header>
-
-        <!-- Main Content Area -->
-        <main class="main-content">
-            <!-- PAGE 1: Chat & Knowledge Synthesis -->
-            <section class="page-view active" id="pageQuery" role="tabpanel" aria-labelledby="tabBtnQuery">
-                <div class="page-header">
-                    <div class="page-title-group">
-                        <h2>Chat & Knowledge Synthesis</h2>
-                        <p class="subtitle">Ask questions on your private vector database.</p>
-                    </div>
-                    <div class="chat-model-selector-wrap">
-                        <label class="chat-model-label" for="chatModelSelect">
-                            <span class="model-sparkle">✨</span> Model:
-                        </label>
-                        <select id="chatModelSelect" class="chat-model-dropdown" onchange="handleChatModelChange(event)"
-                            title="Select text model or Custom Model API">
-                            <!-- Populated dynamically from /api/models -->
-                        </select>
-                        <div id="customEndpointBox" class="custom-endpoint-box" style="display: none;">
-                            <label class="custom-endpoint-label" for="inputCustomEndpoint">
-                                <span class="endpoint-icon">🔗</span> API Endpoint:
-                            </label>
-                            <input type="text" id="inputCustomEndpoint" class="custom-endpoint-input"
-                                placeholder="http://127.0.0.1:8000/v1/chat/completions"
-                                value="http://127.0.0.1:8000/v1/chat/completions"
-                                title="Custom private LLM API endpoint URL" spellcheck="false" autocomplete="off">
-                        </div>
-                        <span class="badge badge-success" id="activeModelTag">Grounded QA</span>
-                    </div>
-                </div>
-
-                <div class="content-grid chat-layout">
-                    <!-- Query Input & Chat Interface -->
-                    <div class="card glass-card qa-card">
-                        <!-- Conversation Display -->
-                        <div class="qa-feed" id="qaFeed">
-                            <!-- Welcome Banner -->
-                            <div class="qa-welcome-bubble">
-                                <div class="bubble-avatar">🤖</div>
-                                <div class="bubble-content">
-                                    <h3>Ready for your questions</h3>
-                                    <p>Your queries are embedded locally using <strong>Ollama</strong>, matched against
-                                        your private vector database in <code>database/</code>, and answered by your
-                                        selected model on Google AI Studio via backend Python code.</p>
-                                    <div class="sample-questions">
-                                        <span class="sample-label">Try asking:</span>
-                                        <button class="sample-btn"
-                                            onclick="fillQuestion('What is the time and weather in Tokyo?')">"What is
-                                            the time and weather in Tokyo?"</button>
-                                        <button class="sample-btn"
-                                            onclick="fillQuestion('Which stocks have the highest percentage increase?')">"Which
-                                            stocks have the highest percentage increase?"</button>
-                                        <button class="sample-btn"
-                                            onclick="fillQuestion('Which stocks have the lowest percentage decrease?')">"Which
-                                            stocks have the lowest percentage decrease?"</button>
-                                        <button class="sample-btn"
-                                            onclick="fillQuestion('What are the key concepts explained in the ingested documents?')">"What
-                                            are the key concepts in documents?"</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Question Input Form -->
-                        <form id="queryForm" class="qa-input-bar" onsubmit="handleQuery(event)">
-                            <div class="input-container">
-                                <textarea id="inputQuestion" class="query-textarea" rows="2"
-                                    placeholder="Type your question about the indexed documents..."
-                                    onkeydown="handleTextareaKey(event)" required></textarea>
-                            </div>
-                            <div class="qa-actions">
-                                <div class="topk-selector">
-                                    <label for="selectTopK">Top-K Context Chunks:</label>
-                                    <select id="selectTopK" class="select-input">
-                                        <option value="3">3 Chunks</option>
-                                        <option value="4" selected>4 Chunks</option>
-                                        <option value="6">6 Chunks</option>
-                                        <option value="8">8 Chunks</option>
-                                    </select>
-                                </div>
-                                <button type="submit" class="btn btn-primary" id="btnSubmitQuery">
-                                    <span class="btn-spinner" id="querySpinner" style="display: none;"></span>
-                                    <span class="btn-icon">➤</span>
-                                    <span class="btn-text">Send Question</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <!-- Retrieved Sources & Evidence Inspector -->
-                    <div class="card glass-card context-card">
-                        <div class="card-header">
-                            <h3>Retrieved Context Evidence</h3>
-                            <span class="badge badge-private" id="retrievedCountBadge">0 Chunks</span>
-                        </div>
-                        <div class="context-body" id="contextBody">
-                            <div class="empty-state">
-                                <div class="empty-icon">🔍</div>
-                                <h4>No Context Retrieved Yet</h4>
-                                <p>Submit a question to see the exact document chunks retrieved from the local vector
-                                    database and provided to the model.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- PAGE 2: Vector Database Ingestion (URL or Local Directory) -->
-            <section class="page-view" id="pageIngest" role="tabpanel" aria-labelledby="tabBtnIngest">
-                <div class="page-header">
-                    <div class="page-title-group">
-                        <h2>Create Private Vector Database</h2>
-                        <p class="subtitle">Index documents from any web URL or local directory into your local private
-                            vector database saved in <code>database/</code>.</p>
-                    </div>
-                    <div class="quick-stats-bar" id="ingestQuickStats">
-                        <div class="quick-stat-item">
-                            <span class="stat-num" id="statTotalChunks">0</span>
-                            <span class="stat-desc">Indexed Chunks</span>
-                        </div>
-                        <div class="quick-stat-item">
-                            <span class="stat-num" id="statTotalSources">0</span>
-                            <span class="stat-desc">Unique Sources</span>
-                        </div>
-                        <div class="quick-stat-item">
-                            <span class="stat-num" id="statDbSize">0 MB</span>
-                            <span class="stat-desc">DB Storage Size</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="content-grid two-col">
-                    <!-- Left: Ingestion Input Card -->
-                    <div class="card glass-card">
-                        <div class="card-header">
-                            <h3>Document Source Configuration</h3>
-                            <div class="embedder-select-container">
-                                <label class="embedder-select-label" for="embedderSelect">
-                                    <span class="label-icon">🧠</span> Local Embedder:
-                                </label>
-                                <select id="embedderSelect" class="embedder-dropdown"
-                                    onchange="handleEmbedderDropdownChange(event)"
-                                    title="Select local Ollama embedding model">
-                                    <!-- Populated dynamically via JS -->
-                                </select>
-                            </div>
-                        </div>
-                        <form id="ingestForm" onsubmit="handleIngest(event)">
-                            <!-- Source Type Radio / Toggle -->
-                            <div class="form-group">
-                                <label class="field-label">Source Type</label>
-                                <div class="segmented-control" role="radiogroup">
-                                    <label class="segment-option">
-                                        <input type="radio" name="sourceType" value="url" id="radioUrl" checked
-                                            onchange="toggleSourceTypeInputs()">
-                                        <span class="segment-label">🌐 Web URL</span>
-                                    </label>
-                                    <label class="segment-option">
-                                        <input type="radio" name="sourceType" value="directory" id="radioDir"
-                                            onchange="toggleSourceTypeInputs()">
-                                        <span class="segment-label">📁 Local Directory</span>
-                                    </label>
-                                </div>
-                            </div>
-
-                            <!-- Source Path Input -->
-                            <div class="form-group" id="groupPath">
-                                <label class="field-label" for="inputPath" id="labelInputPath">Web URL to Crawl &
-                                    Ingest</label>
-                                <div class="input-with-action">
-                                    <input type="text" id="inputPath" name="path" class="text-input"
-                                        placeholder="https://en.wikipedia.org/wiki/Retrieval-augmented_generation"
-                                        required>
-                                </div>
-                                <span class="input-hint" id="hintInputPath">Fetches article text, strips HTML tags, and
-                                    breaks into vector chunks.</span>
-                            </div>
-
-                            <!-- Sample Quick Buttons -->
-                            <div class="quick-samples-box">
-                                <span class="quick-title">Presets & Samples:</span>
-                                <div class="quick-tags">
-                                    <button type="button" class="tag-btn"
-                                        onclick="setPreset('url', 'https://en.wikipedia.org/wiki/Artificial_intelligence')">Wikipedia:
-                                        AI</button>
-                                    <button type="button" class="tag-btn"
-                                        onclick="setPreset('url', 'https://docs.python.org/3/tutorial/index.html')">Python
-                                        Tutorial</button>
-                                    <button type="button" class="tag-btn"
-                                        onclick="setPreset('dir', './sample_docs')">Local: ./sample_docs</button>
-                                    <button type="button" class="tag-btn" onclick="setPreset('dir', './skills')">Local:
-                                        ./skills</button>
-                                </div>
-                            </div>
-
-                            <!-- Advanced Chunking Settings Accordion -->
-                            <details class="settings-accordion">
-                                <summary>Advanced Chunking Parameters</summary>
-                                <div class="settings-grid">
-                                    <div class="form-group">
-                                        <label class="field-label" for="inputChunkSize">Chunk Size (chars)</label>
-                                        <input type="number" id="inputChunkSize" class="text-input" value="800"
-                                            min="200" max="4000" step="50">
-                                    </div>
-                                    <div class="form-group">
-                                        <label class="field-label" for="inputChunkOverlap">Overlap (chars)</label>
-                                        <input type="number" id="inputChunkOverlap" class="text-input" value="120"
-                                            min="0" max="500" step="10">
-                                    </div>
-                                </div>
-                            </details>
-
-                            <!-- Submit Ingestion Button -->
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary" id="btnSubmitIngest">
-                                    <span class="btn-spinner" id="ingestSpinner" style="display: none;"></span>
-                                    <span class="btn-icon">⚡</span>
-                                    <span class="btn-text">Generate Vector Database</span>
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <!-- Right: Live Ingestion Status & Recent Sources Card -->
-                    <div class="card glass-card">
-                        <div class="card-header">
-                            <div>
-                                <h3>Vector Storage Status</h3>
-                                <p class="section-desc" style="margin: 0; font-size: 12px; color: var(--text-muted);">
-                                    Document Database (<code>database/chroma_docs</code>)</p>
-                            </div>
-                            <button class="btn btn-sm btn-outline-danger" id="btnResetDb"
-                                onclick="confirmResetDb()">Reset DB</button>
-                        </div>
-
-                        <!-- Ingestion Progress / Output Box -->
-                        <div class="ingest-progress-box" id="ingestProgressBox">
-                            <div class="empty-state" id="ingestEmptyState">
-                                <div class="empty-icon">📁</div>
-                                <h4>No Ingestion In Progress</h4>
-                                <p>Select a URL or local directory on the left and click <strong>Generate Vector
-                                        Database</strong> to index documents.</p>
-                            </div>
-
-                            <div class="active-status-card" id="ingestActiveCard" style="display: none;">
-                                <div class="status-header">
-                                    <span class="status-badge" id="ingestBadge">Processing</span>
-                                    <span class="status-time" id="ingestElapsed">0.0s</span>
-                                </div>
-                                <h4 id="ingestTitle">Extracting and chunking documents...</h4>
-                                <p class="status-message" id="ingestMessage">Sending chunks to local Ollama embedding
-                                    engine...</p>
-                                <div class="progress-bar-track">
-                                    <div class="progress-bar-fill animated-stripes" id="ingestProgressBar"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Indexed Sources List -->
-                        <div class="sources-list-section">
-                            <h4>Ingested Documents in Docs Database</h4>
-                            <div class="sources-list" id="indexedSourcesList">
-                                <p class="text-muted">Loading indexed sources...</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Supported Ollama Embedding Models Reference Section -->
-                <div class="card glass-card embedders-reference-card">
-                    <div class="card-header">
-                        <div class="card-header-titles">
-                            <h3>Supported Ollama Embedding Models</h3>
-                            <p class="section-desc">Local models compatible with Private RAG vectorization. Select a
-                                model from the dropdown above to use it.</p>
-                        </div>
-                        <div class="header-action-group">
-                            <span class="badge badge-private">Local Ollama Vectorization</span>
-                        </div>
-                    </div>
-                    <div class="table-responsive">
-                        <table class="embedder-models-table">
-                            <thead>
-                                <tr>
-                                    <th>Model Name</th>
-                                    <th>Dimensions</th>
-                                    <th>Context Window</th>
-                                    <th>Size</th>
-                                    <th>Recommended Use Case</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody id="embeddersTableBody">
-                                <!-- Populated dynamically from API -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
-
-            <!-- PAGE 3: Telemetry & Model Performance Analytics -->
-            <section class="page-view" id="pageTelemetry" role="tabpanel" aria-labelledby="tabBtnTelemetry">
-                <div class="page-header">
-                    <div class="page-title-group">
-                        <h2>LLM Model Telemetry & Usage Analytics</h2>
-                        <p class="subtitle">Real-time prompt activity, token throughput, error tracking, and time-series performance graphs.</p>
-                    </div>
-                    <div class="telemetry-header-actions">
-                        <div class="telemetry-model-filter-wrap">
-                            <label for="telemetryModelSelect" class="telemetry-control-label">
-                                <span class="control-icon">🤖</span> Model:
-                            </label>
-                            <select id="telemetryModelSelect" class="select-input telemetry-dropdown" onchange="handleTelemetryModelChange()">
-                                <option value="all" selected>All Models</option>
-                            </select>
-                        </div>
-                        <button type="button" class="btn btn-outline" id="btnRefreshTelemetry" onclick="refreshTelemetry()">
-                            <span class="btn-icon">🔄</span> Refresh Telemetry
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Top 5 Statistics Metric Cards -->
-                <div class="metrics-grid telemetry-metrics-grid">
-                    <div class="metric-card telemetry-card">
-                        <div class="metric-icon blue">💬</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Prompts</span>
-                            <span class="metric-value" id="statTotalPrompts">0</span>
-                            <span class="metric-subtext">Requests sent to LLM</span>
-                        </div>
-                    </div>
-                    <div class="metric-card telemetry-card">
-                        <div class="metric-icon green">✅</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Response</span>
-                            <span class="metric-value" id="statTotalResponses">0</span>
-                            <span class="metric-subtext">Successful completions</span>
-                        </div>
-                    </div>
-                    <div class="metric-card telemetry-card">
-                        <div class="metric-icon red">⚠️</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Errors</span>
-                            <span class="metric-value" id="statTotalErrors">0</span>
-                            <span class="metric-subtext">Failed LLM calls</span>
-                        </div>
-                    </div>
-                    <div class="metric-card telemetry-card">
-                        <div class="metric-icon cyan">📥</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Input Tokens</span>
-                            <span class="metric-value" id="statTotalInputTokens">0</span>
-                            <span class="metric-subtext">Prompt tokens ingested</span>
-                        </div>
-                    </div>
-                    <div class="metric-card telemetry-card">
-                        <div class="metric-icon purple">📤</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Output Tokens</span>
-                            <span class="metric-value" id="statTotalOutputTokens">0</span>
-                            <span class="metric-subtext">Generated completion tokens</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Dual Graphs Card with Interval & Time Range Selectors -->
-                <div class="card glass-card telemetry-charts-card">
-                    <div class="card-header telemetry-charts-header">
-                        <div class="card-header-titles">
-                            <h3>Model Activity & Token Consumption Trends</h3>
-                            <p class="section-desc">Interactive dual line graphs showing request volume and token consumption over time.</p>
-                        </div>
-                        <div class="telemetry-chart-controls">
-                            <div class="chart-control-item">
-                                <label for="telemetryIntervalSelect">Aggregation / Update Interval:</label>
-                                <select id="telemetryIntervalSelect" class="select-input" onchange="handleTelemetryIntervalChange()">
-                                    <option value="1m">1 min</option>
-                                    <option value="15m" selected>15 min</option>
-                                    <option value="1h">1 hr</option>
-                                    <option value="1d">1 day</option>
-                                </select>
-                            </div>
-                            <div class="chart-control-item">
-                                <label for="telemetryTimeRangeSelect">Time Range:</label>
-                                <select id="telemetryTimeRangeSelect" class="select-input" onchange="handleTelemetryTimeRangeChange()">
-                                    <option value="1h">Last hr</option>
-                                    <option value="1d" selected>1 day</option>
-                                    <option value="week">Week</option>
-                                    <option value="month">Month</option>
-                                    <option value="custom">Custom</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Custom Calendar Date Pickers (Shown when Custom is selected) -->
-                    <div class="telemetry-custom-dates-bar" id="telemetryCustomDates" style="display: none;">
-                        <div class="custom-date-item">
-                            <label for="telemetryStartDate">Starting Date:</label>
-                            <input type="date" id="telemetryStartDate" class="text-input date-picker-input">
-                        </div>
-                        <div class="custom-date-item">
-                            <label for="telemetryEndDate">Ending Date:</label>
-                            <input type="date" id="telemetryEndDate" class="text-input date-picker-input">
-                        </div>
-                        <button type="button" class="btn btn-sm btn-primary" id="btnApplyCustomDates" onclick="applyCustomDates()">
-                            Apply Range
-                        </button>
-                    </div>
-
-                    <!-- Dual Plots Container: Left (Requests) and Right (Tokens) -->
-                    <div class="telemetry-plots-grid">
-                        <!-- Left Plot: Prompts, Responses, Errors -->
-                        <div class="telemetry-plot-box">
-                            <div class="plot-header">
-                                <h4>Requests Activity (Prompts, Responses, Errors)</h4>
-                                <span class="badge badge-info" id="leftPlotIntervalBadge">15 min interval</span>
-                            </div>
-                            <div class="chart-canvas-wrapper">
-                                <canvas id="telemetryRequestsChart"></canvas>
-                            </div>
-                        </div>
-
-                        <!-- Right Plot: Input & Output Tokens -->
-                        <div class="telemetry-plot-box">
-                            <div class="plot-header">
-                                <h4>Token Throughput (Input & Output Tokens)</h4>
-                                <span class="badge badge-purple" id="rightPlotIntervalBadge">15 min interval</span>
-                            </div>
-                            <div class="chart-canvas-wrapper">
-                                <canvas id="telemetryTokensChart"></canvas>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Educational Reference Card -->
-                <div class="card glass-card educational-reference-card">
-                    <div class="card-header">
-                        <div class="educational-title-wrap">
-                            <span class="educational-icon">ℹ️</span>
-                            <h3>Other Important Statistic not Available for Low Performance Computer:</h3>
-                        </div>
-                    </div>
-                    <div class="educational-content-grid">
-                        <div class="edu-metric-item">
-                            <div class="edu-metric-header">
-                                <span class="edu-badge">TTFT</span>
-                                <strong>Time to First Token (TTFT):</strong>
-                            </div>
-                            <p>The duration between a user sending a prompt and receiving the very first token. This is the most critical metric for perceived speed in streaming applications.</p>
-                        </div>
-                        <div class="edu-metric-item">
-                            <div class="edu-metric-header">
-                                <span class="edu-badge">ITL</span>
-                                <strong>Inter-Token Latency (ITL):</strong>
-                            </div>
-                            <p>The average time elapsed between generating each subsequent token.</p>
-                        </div>
-                        <div class="edu-metric-item">
-                            <div class="edu-metric-header">
-                                <span class="edu-badge">TPS</span>
-                                <strong>Tokens Per Second (TPS):</strong>
-                            </div>
-                            <p>The throughput speed of the model generation (often measured per request or aggregated across the server).</p>
-                        </div>
-                        <div class="edu-metric-item">
-                            <div class="edu-metric-header">
-                                <span class="edu-badge">TPOT</span>
-                                <strong>Time Per Output Token (TPOT):</strong>
-                            </div>
-                            <p>The total time taken to generate the response divided by the number of output tokens.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- PAGE 4: Audit Logs & Vector DB Inspector -->
-            <section class="page-view" id="pageLogs" role="tabpanel" aria-labelledby="tabBtnLogs">
-                <div class="page-header">
-                    <div class="page-title-group">
-                        <h2>System Audit Logs & Call Inspector</h2>
-                        <p class="subtitle">Complete audit trail stored in <code>database/logs.json</code> capturing
-                            timestamp, call type, arguments, and responses.</p>
-                    </div>
-                    <div class="logs-action-bar">
-                        <button class="btn btn-outline" onclick="loadLogs()">
-                            <span class="btn-icon">🔄</span> Refresh
-                        </button>
-                        <button class="btn btn-outline-danger" onclick="confirmClearLogs()">
-                            <span class="btn-icon">🗑️</span> Clear Logs
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Logs Metrics Cards -->
-                <div class="metrics-grid">
-                    <div class="metric-card">
-                        <div class="metric-icon blue">📡</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Total Logged Calls</span>
-                            <span class="metric-value" id="metricTotalCalls">0</span>
-                        </div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-icon purple">🤖</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Google AI Studio Calls</span>
-                            <span class="metric-value" id="metricGemmaCalls">0</span>
-                        </div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-icon green">⚡</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Local Ollama Embeds</span>
-                            <span class="metric-value" id="metricOllamaCalls">0</span>
-                        </div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-icon orange">⏱️</div>
-                        <div class="metric-content">
-                            <span class="metric-label">Avg Call Latency</span>
-                            <span class="metric-value" id="metricAvgLatency">0 ms</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Two-Table Layout Container for Conversations and Invocations -->
-                <div class="logs-tables-container" style="display: flex; flex-direction: column; gap: 24px;">
-                    <!-- TABLE 1: Conversations Table -->
-                    <div class="card glass-card logs-table-card">
-                        <div class="card-header">
-                            <div class="card-header-titles">
-                                <h3>1. User Conversations</h3>
-                                <p class="section-desc">Click a conversation row to view all associated events in the
-                                    timeline below.</p>
-                            </div>
-                            <span class="badge badge-private" id="convCountBadge">0 Conversations</span>
-                        </div>
-                        <div class="table-responsive conversations-scroll-wrapper"
-                            id="conversationsTableScrollContainer">
-                            <table class="data-table" id="conversationsTable">
-                                <thead>
-                                    <tr>
-                                        <th style="width: 18%;">Conversation ID</th>
-                                        <th style="width: 20%;">Timestamp</th>
-                                        <th style="width: 31%;">User Query</th>
-                                        <th style="width: 31%;">Agent Response</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="conversationsTableBody">
-                                    <tr>
-                                        <td colspan="4" class="text-center text-muted" style="padding: 24px;">Loading
-                                            conversations from database/conversations.json...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- TABLE 2: Events Table -->
-                    <div class="card glass-card logs-table-card">
-                        <div class="card-header">
-                            <div class="card-header-titles">
-                                <h3>2. Conversation Events & Invocations</h3>
-                                <p class="section-desc" id="eventsTableSubtitle">Click any event row to inspect the full
-                                    JSON payload.</p>
-                            </div>
-                            <div class="events-filter-actions" style="display: flex; align-items: center; gap: 10px;">
-                                <span class="badge badge-info" id="selectedConvFilterBadge">All Events</span>
-                                <button type="button" class="btn btn-xs btn-outline" id="btnShowAllEvents"
-                                    onclick="showAllEvents()" style="display: none;">Show All Events</button>
-                            </div>
-                        </div>
-
-                        <!-- Table Toolbar for Events -->
-                        <div class="table-toolbar">
-                            <div class="filter-group">
-                                <label for="filterCallType">Event Type:</label>
-                                <select id="filterCallType" class="select-input" onchange="filterEvents()">
-                                    <option value="">All Event Types</option>
-                                    <option value="Agent">Agent</option>
-                                    <option value="LLM">LLM</option>
-                                    <option value="Embedder">Embedder</option>
-                                    <option value="Tool">Tools</option>
-                                    <option value="External API">External API</option>
-                                    <option value="Vector Store">Vector Store</option>
-                                </select>
-                            </div>
-                            <div class="search-group">
-                                <input type="text" id="logSearchInput" class="text-input" placeholder="Search events..."
-                                    oninput="filterEvents()">
-                            </div>
-                        </div>
-
-                        <div class="table-responsive">
-                            <table class="data-table" id="eventsTable">
-                                <thead>
-                                    <tr>
-                                        <th style="width: 18%;">Timestamp</th>
-                                        <th style="width: 16%;">Event Type</th>
-                                        <th style="width: 12%;">Invoker</th>
-                                        <th style="width: 22%;">Target</th>
-                                        <th style="width: 32%;">Short Description</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="eventsTableBody">
-                                    <tr>
-                                        <td colspan="5" class="text-center text-muted" style="padding: 24px;">Select a
-                                            conversation above to inspect its events.</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </section>
-        </main>
+<body class="dark-theme">
+  <!-- Top Application Bar -->
+  <header class="app-header">
+    <div class="header-left">
+      <img id="appIcon" src="/static/images/app-icon.gif" alt="App Icon" class="app-icon" onerror="this.style.display='none'">
+      <div class="app-title-group">
+        <h1 class="app-title">Agent With RAG</h1>
+        <span class="app-badge">Enterprise Console</span>
+      </div>
     </div>
 
-    <!-- Payload Details Modal -->
-    <div class="modal-overlay" id="payloadModal" style="display: none;" onclick="closeModalOnBackdrop(event)">
-        <div class="modal-dialog glass-card" style="max-width: 900px;">
-            <div class="modal-header">
-                <div class="modal-title-group">
-                    <h3 id="modalTitle">Invocation Event Details</h3>
-                    <span class="badge" id="modalTypeBadge">Type</span>
-                </div>
-                <button class="modal-close-btn" onclick="closeModal()">&times;</button>
-            </div>
-            <div class="modal-meta-bar" id="modalMetaBar">
-                <!-- Timestamp, Invoker, Target, Duration, ID -->
-            </div>
-            <div class="modal-body">
-                <div class="modal-section" id="modalDescSection" style="margin-bottom: 12px;">
-                    <div class="section-header">
-                        <h4>Description</h4>
-                    </div>
-                    <p id="modalEventDescription"
-                        style="color: var(--text-primary); font-size: 13.5px; margin: 0; line-height: 1.5;"></p>
-                </div>
-                <!-- Dual Request & Response Split View -->
-                <div class="req-res-split" style="margin-bottom: 14px;">
-                    <div class="req-pane">
-                        <div class="pane-header">
-                            <span>📤 Request Payload</span>
-                            <button class="copy-mini-btn" onclick="copyModalSubField('request')">Copy Request</button>
-                        </div>
-                        <pre class="code-box-pre" id="modalRequestJson"></pre>
-                    </div>
-                    <div class="res-pane">
-                        <div class="pane-header">
-                            <span>📥 Response Payload</span>
-                            <button class="copy-mini-btn" onclick="copyModalSubField('response')">Copy Response</button>
-                        </div>
-                        <pre class="code-box-pre" id="modalResponseJson"></pre>
-                    </div>
-                </div>
-                <div class="modal-section">
-                    <div class="section-header">
-                        <h4>Complete Sanitized Event JSON</h4>
-                        <button class="btn btn-xs btn-outline" onclick="copyModalJson('all')">Copy Full JSON</button>
-                    </div>
-                    <pre class="json-viewer" id="modalArgsJson" style="max-height: 200px; overflow-y: auto;"></pre>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal()">Close</button>
-            </div>
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-target="page-chat">
+        <span class="tab-icon">💬</span>
+        <span class="tab-label">Chat & Knowledge Synthesis</span>
+      </button>
+      <button class="nav-tab" data-target="page-ingest">
+        <span class="tab-icon">📥</span>
+        <span class="tab-label">Vector DB Ingestion</span>
+      </button>
+      <button class="nav-tab" data-target="page-telemetry">
+        <span class="tab-icon">📊</span>
+        <span class="tab-label">Telemetry</span>
+      </button>
+      <button class="nav-tab" data-target="page-audit">
+        <span class="tab-icon">📜</span>
+        <span class="tab-label">Audit Log & Event</span>
+      </button>
+    </nav>
+
+    <!-- Header Actions & Health Status -->
+    <div class="header-right">
+      <div class="status-box" id="globalStatusBox" title="Click to view detailed health">
+        <span class="status-dot online" id="statusDot"></span>
+        <span class="status-text" id="statusSummary">Agent: Online</span>
+        <div class="status-tooltip" id="statusTooltip">
+          <div class="tooltip-item"><span>Agent:</span> <strong id="tooltipAgent">Healthy</strong></div>
+          <div class="tooltip-item"><span>Ollama:</span> <strong id="tooltipOllama">Running</strong></div>
+          <div class="tooltip-item"><span>Model:</span> <strong id="tooltipEmbedder">bge-m3</strong></div>
+          <div class="tooltip-item"><span>Vector DB:</span> <strong id="tooltipVector">Connected</strong></div>
+          <div class="tooltip-item"><span>LLM Provider:</span> <strong id="tooltipLlm">Configured</strong></div>
         </div>
+      </div>
+      <button id="btnShutdown" class="btn-shutdown" title="Terminate application and services">
+        <span class="icon">🛑</span> Shutdown
+      </button>
     </div>
+  </header>
 
-    <!-- Model Change Warning Confirmation Modal -->
-    <div class="modal-overlay" id="modelChangeModal" style="display: none;"
-        onclick="closeModelChangeModalOnBackdrop(event)">
-        <div class="modal-dialog modal-dialog-warning glass-card">
-            <div class="modal-header modal-header-warning">
-                <div class="modal-title-group">
-                    <div class="warning-title-wrap">
-                        <span class="warning-icon-pill">⚠️</span>
-                        <div>
-                            <h3 id="modelChangeModalTitle">Warning: Change Vector Embedder Model</h3>
-                            <span class="badge badge-danger">Destructive Action</span>
-                        </div>
-                    </div>
-                </div>
-                <button class="modal-close-btn" onclick="cancelModelChange()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="warning-alert-box">
-                    <div class="alert-icon">⚠️</div>
-                    <div class="alert-text">
-                        <strong>Warning:</strong> Switching the embedding model changes the mathematical vector
-                        dimensions and coordinate space.
-                        <strong>All documents ingested earlier will not work properly and will be permanently deleted
-                            from the Vector Storage DB.</strong>
-                    </div>
-                </div>
-                <div class="confirmation-prompt-box">
-                    <p id="modelChangePromptText" class="prompt-instruction">
-                        To confirm, please type <code id="requiredConfirmPhrase"
-                            class="confirm-phrase-code">Change to &lt;model&gt;</code> in the box below:
-                    </p>
-                    <input type="text" id="confirmModelChangeInput" class="text-input confirm-text-input"
-                        placeholder="Type the exact phrase to confirm..." autocomplete="off"
-                        oninput="validateModelChangeInput()">
-                    <span class="input-hint" id="confirmMatchHint">Exact text match required to enable the OK
-                        button.</span>
-                </div>
-            </div>
-            <div class="modal-footer modal-footer-spaced">
-                <button type="button" class="btn btn-outline" id="btnCancelModelChange"
-                    onclick="cancelModelChange()">Cancel</button>
-                <button type="button" class="btn btn-danger" id="btnConfirmModelChange" disabled
-                    onclick="executeModelChange()">
-                    <span class="btn-spinner" id="modelChangeSpinner" style="display: none;"></span>
-                    <span class="btn-text">OK</span>
-                </button>
-            </div>
+  <!-- Main Multi-Page Container -->
+  <main class="app-content">
+
+    <!-- ================================================================= -->
+    <!-- PAGE 1: Chat & Knowledge Synthesis                               -->
+    <!-- ================================================================= -->
+    <section id="page-chat" class="page-view active">
+      <!-- Page Sub-Header Controls -->
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">💬</span> Chat & Knowledge Synthesis</h2>
         </div>
-    </div>
+        <div class="page-controls-area">
+          <!-- Max Tokens -->
+          <div class="control-box">
+            <label for="chatMaxTokens"><span class="control-icon">🔤</span> Max Tokens</label>
+            <input type="number" id="chatMaxTokens" value="4096" min="128" max="65536" step="128">
+          </div>
 
-    <!-- Server Shutdown Warning Confirmation Modal -->
-    <div class="modal-overlay" id="shutdownModal" style="display: none;" onclick="closeShutdownModalOnBackdrop(event)">
-        <div class="modal-dialog modal-dialog-warning glass-card" style="max-width: 540px;">
-            <div class="modal-header modal-header-warning">
-                <div class="modal-title-group">
-                    <div class="warning-title-wrap">
-                        <span class="warning-icon-pill">⏻</span>
-                        <div>
-                            <h3 id="shutdownModalTitle">Shut Down Agent with RAG</h3>
-                            <span class="badge badge-danger">Critical Action</span>
-                        </div>
-                    </div>
-                </div>
-                <button class="modal-close-btn" onclick="closeShutdownModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="warning-alert-box">
-                    <div class="alert-icon">⚠️</div>
-                    <div class="alert-text">
-                        <strong>Warning:</strong> Shutting down will terminate the server process and will
-                        <strong>disable the app for all users</strong> (disable the application for all users).
-                    </div>
-                </div>
-                <p class="text-secondary" style="margin-top: 14px; font-size: 13.5px; line-height: 1.6;">
-                    All active sessions will be terminated and in-flight operations will stop. The application server
-                    will go offline and will need to be restarted manually on the host system to regain access.
-                </p>
-                <p class="text-muted" style="margin-top: 10px; font-size: 13px;">
-                    Are you sure you want to shut down the application?
-                </p>
-            </div>
-            <div class="modal-footer modal-footer-spaced">
-                <button type="button" class="btn btn-outline" id="btnCancelShutdown"
-                    onclick="closeShutdownModal()">Cancel</button>
-                <button type="button" class="btn btn-danger" id="btnConfirmShutdown" onclick="executeAppShutdown()">
-                    <span class="btn-spinner" id="shutdownSpinner" style="display: none;"></span>
-                    <span class="btn-text">⏻ Confirm Shut Down</span>
-                </button>
-            </div>
+          <!-- Temperature -->
+          <div class="control-box">
+            <label for="chatTemperature"><span class="control-icon">🌡️</span> Temperature</label>
+            <input type="number" id="chatTemperature" value="0.7" min="0.0" max="2.0" step="0.1">
+          </div>
+
+          <!-- Model Choice Dropdown -->
+          <div class="control-box">
+            <label for="chatModel"><span class="control-icon">🧠</span> Model</label>
+            <select id="chatModel">
+              <option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it (Default)</option>
+              <option value="Custom Model">Custom Model (Endpoint)</option>
+            </select>
+          </div>
+
+          <!-- Custom Model Endpoint Field (Conditional) -->
+          <div class="control-box hidden" id="customEndpointBox">
+            <label for="customEndpoint"><span class="control-icon">🔗</span> Custom API Endpoint</label>
+            <input type="text" id="customEndpoint" value="http://127.0.0.1:8000/v1/chat/completions" placeholder="http://127.0.0.1:8000/v1/chat/completions">
+          </div>
         </div>
-    </div>
+      </div>
 
-    <!-- Toast Notification -->
-    <div class="toast" id="appToast" style="display: none;">
-        <span class="toast-icon" id="toastIcon">ℹ️</span>
-        <span class="toast-message" id="toastMessage">Notification message</span>
-    </div>
+      <!-- Two-Card Split Layout -->
+      <div class="split-cards-grid">
+        <!-- Left Card: Chat with the Agent -->
+        <div class="glass-card chat-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-icon">🤖</span> Chat with the Agent
+            </div>
+            <div class="card-action-group">
+              <div class="header-control">
+                <label for="agentChoice"><span class="control-icon">🤖</span> Agent:</label>
+                <select id="agentChoice">
+                  <option value="Custom Agent" selected>Custom Agent</option>
+                  <option value="Google ADK Agent">Google ADK LlmAgent</option>
+                </select>
+              </div>
+              <div class="header-control">
+                <label for="chatMaxTurns"><span class="control-icon">🔄</span> Max Turns:</label>
+                <input type="number" id="chatMaxTurns" value="3" min="1" max="10">
+              </div>
+            </div>
+          </div>
 
-    <!-- JavaScript Application Logic -->
-    <script src="/static/js/app.js"></script>
+          <!-- Second Row Parameters -->
+          <div class="chat-param-row">
+            <div class="param-item">
+              <label for="chatSkills"><span class="param-icon">⚡</span> Skill Selector:</label>
+              <select id="chatSkills">
+                <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
+                <option value="LLM Selects">LLM Selects</option>
+                <!-- Dynamic Skills populated by JS -->
+              </select>
+            </div>
+            <div class="param-item" id="skillThresholdBox">
+              <label for="chatSkillThreshold"><span class="param-icon">🎯</span> Threshold:</label>
+              <input type="number" id="chatSkillThreshold" value="0.2" min="0.0" max="1.0" step="0.05">
+            </div>
+            <div class="param-item param-item-right">
+              <label for="chatRagChunks"><span class="param-icon">📑</span> Max RAG Chunks:</label>
+              <select id="chatRagChunks">
+                <option value="1">1 Chunk</option>
+                <option value="3">3 Chunks</option>
+                <option value="5" selected>5 Chunks</option>
+                <option value="10">10 Chunks</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Chat Conversation Scroll Area -->
+          <div class="chat-messages-container" id="chatMessages">
+            <div class="chat-welcome">
+              <div class="welcome-icon">💡</div>
+              <h3>AI Agent with RAG Ready</h3>
+              <p>Ask a question about the weather, personnel records, stock movements, or search our private knowledge documents.</p>
+              <div class="quick-prompts">
+                <button class="btn-chip" data-prompt="What is the current weather and local time in Tokyo?">🌤️ Weather in Tokyo</button>
+                <button class="btn-chip" data-prompt="Find Lucas Dubois in the person registry and show his job title.">👤 Lucas Dubois</button>
+                <button class="btn-chip" data-prompt="Which stocks have the highest percentage increase today?">📈 Top Gainers</button>
+                <button class="btn-chip" data-prompt="What is Agentic RAG and how does it compare to classic RAG?">📚 Agentic RAG</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Message Input Box -->
+          <div class="chat-input-container">
+            <textarea id="chatInput" rows="2" placeholder="Type your question here... (Press Enter to send, Shift+Enter for newline)"></textarea>
+            <button id="btnSendMessage" class="btn-send" title="Send Message">
+              <span class="send-icon">🚀</span>
+              <span class="send-text">Send</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Card: Retrieved Context Evidence -->
+        <div class="glass-card evidence-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-icon">🔍</span> Retrieved Context Evidence
+            </div>
+            <div class="card-action-group">
+              <div class="mini-control">
+                <label for="docThresholdInput">Doc Threshold:</label>
+                <input type="number" id="docThresholdInput" value="0.3" min="0.0" max="1.0" step="0.05">
+              </div>
+            </div>
+          </div>
+
+          <div class="evidence-body" id="evidenceContainer">
+            <div class="empty-placeholder">
+              <span class="empty-icon">📂</span>
+              <p>No retrieval context yet. Evidence from the skills store and document vector store will appear here grouped by source document.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- PAGE 2: Vector DB Ingestion                                      -->
+    <!-- ================================================================= -->
+    <section id="page-ingest" class="page-view">
+      <!-- Sub-Header Area -->
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">📥</span> Vector DB Ingestion</h2>
+        </div>
+        <div class="page-controls-area">
+          <!-- Embedder Model Dropdown -->
+          <div class="control-box">
+            <label for="embedderSelect"><span class="control-icon">🧬</span> Active Embedder</label>
+            <select id="embedderSelect">
+              <option value="bge-m3">bge-m3 (Active)</option>
+              <option value="nomic-embed-text">nomic-embed-text</option>
+              <option value="all-minilm">all-minilm</option>
+              <option value="bge-large">bge-large</option>
+            </select>
+          </div>
+
+          <!-- Update Skills Database Button -->
+          <button id="btnUpdateSkills" class="btn-secondary">
+            <span class="icon">🔄</span> Update Skills Database
+          </button>
+
+          <!-- Ingestion Statistics Pill -->
+          <div class="stats-pill" id="ingestStatsPill">
+            <div class="stat-pill-item"><span class="stat-val" id="statChunksCount">0</span> Chunks</div>
+            <div class="stat-pill-divider"></div>
+            <div class="stat-pill-item"><span class="stat-val" id="statDocsCount">0</span> Documents</div>
+            <div class="stat-pill-divider"></div>
+            <div class="stat-pill-item"><span class="stat-val" id="statDbSize">0.0</span> MB</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Two Half-Width Cards -->
+      <div class="split-cards-grid half-width-grid">
+        <!-- Left Card: Populate Vector Database -->
+        <div class="glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-icon">⚡</span> Populate Vector Database
+            </div>
+          </div>
+          <div class="card-body">
+            <p class="section-desc">Create or extend the private ChromaDB vector database from web URLs or local directories.</p>
+            
+            <!-- Sample URL buttons -->
+            <div class="sample-urls-group">
+              <label class="field-label">Sample Web Documents:</label>
+              <div class="sample-url-buttons">
+                <button class="btn-sample-url" data-url="sample_docs/agent_and_rag.md">Agent & RAG Doc</button>
+                <button class="btn-sample_url" data-url="sample_docs/company_marketing_strategy.md">Marketing Strategy</button>
+                <button class="btn-sample-url" data-url="sample_docs/financial_report.md">Financial Report</button>
+                <button class="btn-sample-url" data-url="https://en.wikipedia.org/wiki/Retrieval-augmented_generation">Wikipedia RAG</button>
+                <button class="btn-sample-url" data-url="sample_docs/">All sample_docs/</button>
+              </div>
+            </div>
+
+            <!-- Ingestion Input -->
+            <div class="form-group">
+              <label for="ingestSourceInput" class="field-label">URL or Local Path:</label>
+              <input type="text" id="ingestSourceInput" class="input-text" placeholder="https://example.com/article or sample_docs/file.md">
+            </div>
+
+            <!-- Collapsible Advanced Chunking Parameters -->
+            <div class="collapsible-card" id="chunkingCard">
+              <button type="button" class="collapsible-header" id="btnToggleChunking">
+                <span class="collapsible-title"><span class="icon">⚙️</span> Advanced Chunking Parameters</span>
+                <span class="collapsible-arrow">▼</span>
+              </button>
+              <div class="collapsible-content hidden" id="chunkingContent">
+                <div class="chunk-inputs-grid">
+                  <div class="form-group">
+                    <label for="inputChunkSize" class="field-label">Chunk Size (characters):</label>
+                    <input type="number" id="inputChunkSize" value="1000" min="100" max="8000" step="100">
+                  </div>
+                  <div class="form-group">
+                    <label for="inputChunkOverlap" class="field-label">Overlap (characters):</label>
+                    <input type="number" id="inputChunkOverlap" value="200" min="0" max="2000" step="50">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="action-footer">
+              <button id="btnPopulateDb" class="btn-primary">
+                <span class="icon">📥</span> Populate Vector Database
+              </button>
+              <span class="ingest-spinner hidden" id="ingestSpinner"><span class="spinner-icon">⏳</span> Ingesting content...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Card: Vector Storage Status -->
+        <div class="glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-icon">🗄️</span> Vector Storage Status
+            </div>
+            <div class="card-action-group">
+              <button id="btnResetDb" class="btn-danger-outline">
+                <span class="icon">🗑️</span> Reset DB
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="storage-status-banner" id="storageStatusBanner">
+              <span class="status-indicator-idle">Idle (Ready)</span>
+            </div>
+
+            <!-- Scrollable Ingested Documents List -->
+            <div class="table-scroll-container">
+              <table class="data-table" id="ingestedDocsTable">
+                <thead>
+                  <tr>
+                    <th>Document Name</th>
+                    <th>Chunks</th>
+                    <th>Characters</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="ingestedDocsTbody">
+                  <tr><td colspan="4" class="text-center text-muted">No documents ingested.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Card: Available Embedding Models -->
+      <div class="glass-card full-width-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">🧬</span> Available Embedding Models
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-scroll-container">
+            <table class="data-table" id="availableModelsTable">
+              <thead>
+                <tr>
+                  <th>Model Name</th>
+                  <th>Dimensions</th>
+                  <th>Context Window</th>
+                  <th>Size</th>
+                  <th>Description</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="availableModelsTbody">
+                <!-- Populated dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- PAGE 3: Telemetry                                                -->
+    <!-- ================================================================= -->
+    <section id="page-telemetry" class="page-view">
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">📊</span> Telemetry & Inference Metrics</h2>
+        </div>
+        <div class="page-controls-area">
+          <!-- Model Filter -->
+          <div class="control-box">
+            <label for="telemetryModelFilter"><span class="control-icon">🔍</span> Filter by Model</label>
+            <select id="telemetryModelFilter">
+              <option value="All Models" selected>All Models</option>
+            </select>
+          </div>
+
+          <!-- Refresh Button -->
+          <button id="btnRefreshTelemetry" class="btn-secondary">
+            <span class="icon">🔄</span> Refresh Telemetry
+          </button>
+        </div>
+      </div>
+
+      <!-- High-Level Metric Tiles -->
+      <div class="metric-tiles-grid">
+        <div class="metric-tile">
+          <div class="metric-label">Total Prompts</div>
+          <div class="metric-value" id="telTotalPrompts">0</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">Total Responses</div>
+          <div class="metric-value" id="telTotalResponses">0</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">Total Errors</div>
+          <div class="metric-value text-danger" id="telTotalErrors">0</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">Total Input Tokens</div>
+          <div class="metric-value" id="telTotalInTokens">0</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">Total Output Tokens</div>
+          <div class="metric-value" id="telTotalOutTokens">0</div>
+        </div>
+      </div>
+
+      <!-- Top Card: System Throughput & Token Velocity (2 Graphs) -->
+      <div class="glass-card full-width-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">📈</span> System Throughput & Token Velocity
+          </div>
+          <div class="card-action-group">
+            <div class="mini-control">
+              <label for="telIntervalSelect">Interval:</label>
+              <select id="telIntervalSelect">
+                <option value="1 min">1 min</option>
+                <option value="15 min" selected>15 min (Default)</option>
+                <option value="1 hr">1 hr</option>
+                <option value="1 day">1 day</option>
+              </select>
+            </div>
+            <div class="mini-control">
+              <label for="telRangeSelect">Time Range:</label>
+              <select id="telRangeSelect">
+                <option value="Last hr">Last hr</option>
+                <option value="1 day" selected>1 day (Default)</option>
+                <option value="Week">Week</option>
+                <option value="Month">Month</option>
+                <option value="Custom">Custom</option>
+              </select>
+            </div>
+            <div class="custom-date-pickers hidden" id="customDateBoxes">
+              <input type="date" id="telStartDate">
+              <span>to</span>
+              <input type="date" id="telEndDate">
+            </div>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="charts-double-grid">
+            <!-- Left Plot: Prompts, Responses, Errors -->
+            <div class="chart-wrapper">
+              <h4 class="chart-title">Request Throughput (Prompts / Responses / Errors)</h4>
+              <div class="canvas-container">
+                <canvas id="chartThroughput"></canvas>
+              </div>
+            </div>
+
+            <!-- Right Plot: Input & Output Tokens -->
+            <div class="chart-wrapper">
+              <h4 class="chart-title">Token Velocity (Input & Output Tokens)</h4>
+              <div class="canvas-container">
+                <canvas id="chartTokens"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Card: Other Important Statistic not Available for Low-Performance Computer -->
+      <div class="glass-card full-width-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">⚡</span> Other Important Statistic not Available for Low-Performance Computer
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="advanced-stats-grid">
+            <div class="adv-stat-card">
+              <div class="adv-stat-header">
+                <span class="adv-stat-tag">TTFT</span>
+                <h4>Time to First Token</h4>
+              </div>
+              <div class="adv-stat-value" id="valTtft">0.0 ms</div>
+              <p class="adv-stat-desc">The duration between a user sending a prompt and receiving the very first token. Critical metric for perceived speed in interactive streaming.</p>
+            </div>
+
+            <div class="adv-stat-card">
+              <div class="adv-stat-header">
+                <span class="adv-stat-tag">ITL</span>
+                <h4>Inter-Token Latency</h4>
+              </div>
+              <div class="adv-stat-value" id="valItl">0.0 ms</div>
+              <p class="adv-stat-desc">The average time elapsed between generating each subsequent token during response generation.</p>
+            </div>
+
+            <div class="adv-stat-card">
+              <div class="adv-stat-header">
+                <span class="adv-stat-tag">TPS</span>
+                <h4>Tokens Per Second</h4>
+              </div>
+              <div class="adv-stat-value" id="valTps">0.0 tok/s</div>
+              <p class="adv-stat-desc">The throughput speed of model generation measured as output tokens produced per second.</p>
+            </div>
+
+            <div class="adv-stat-card">
+              <div class="adv-stat-header">
+                <span class="adv-stat-tag">TPOT</span>
+                <h4>Time Per Output Token</h4>
+              </div>
+              <div class="adv-stat-value" id="valTpot">0.0 ms/tok</div>
+              <p class="adv-stat-desc">The total generation latency divided by the total count of output tokens returned.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- PAGE 4: Audit Log & Event                                        -->
+    <!-- ================================================================= -->
+    <section id="page-audit" class="page-view">
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">📜</span> Audit Log & Event</h2>
+        </div>
+        <div class="page-controls-area">
+          <button id="btnClearLogs" class="btn-danger-outline">
+            <span class="icon">🗑️</span> Clear Logs
+          </button>
+          <button id="btnRefreshLogs" class="btn-secondary">
+            <span class="icon">🔄</span> Refresh
+          </button>
+
+          <!-- Audit Stats Pill -->
+          <div class="stats-pill">
+            <div class="stat-pill-item"><span class="stat-val" id="auditTotalPrompts">0</span> Prompts</div>
+            <div class="stat-pill-divider"></div>
+            <div class="stat-pill-item"><span class="stat-val" id="auditModelCalls">0</span> Model Calls</div>
+            <div class="stat-pill-divider"></div>
+            <div class="stat-pill-item"><span class="stat-val" id="auditOllamaEmbeds">0</span> Ollama Embeds</div>
+            <div class="stat-pill-divider"></div>
+            <div class="stat-pill-item"><span class="stat-val" id="auditAvgLatency">0.0</span> ms Latency</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Table: User Conversations -->
+      <div class="glass-card full-width-card mb-4">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">💬</span> User Conversations (Select a row to inspect associated events)
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-scroll-container conversation-table-scroll">
+            <table class="data-table selectable-table" id="conversationsTable">
+              <thead>
+                <tr>
+                  <th>Timestamp (Local)</th>
+                  <th>Conversation ID</th>
+                  <th>User Query</th>
+                  <th>Agent Response</th>
+                  <th>Agent Type</th>
+                  <th>Events</th>
+                </tr>
+              </thead>
+              <tbody id="conversationsTbody">
+                <tr><td colspan="6" class="text-center text-muted">No conversations recorded yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Table: Events for Conversation -->
+      <div class="glass-card full-width-card">
+        <div class="card-header">
+          <div class="card-title" id="eventsTableTitle">
+            <span class="card-icon">⚡</span> Events for Conversation: <span class="badge" id="selectedConvBadge">None Selected</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-scroll-container">
+            <table class="data-table" id="eventsTable">
+              <thead>
+                <tr>
+                  <th>Time & Date (Local)</th>
+                  <th>Event Type</th>
+                  <th>Invoker</th>
+                  <th>Target</th>
+                  <th>Short Description</th>
+                </tr>
+              </thead>
+              <tbody id="eventsTbody">
+                <tr><td colspan="5" class="text-center text-muted">Select a conversation row above to view its detailed event trace.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- =================================================================== -->
+  <!-- MODAL DIALOGS                                                       -->
+  <!-- =================================================================== -->
+
+  <!-- Modal 1: Shutdown Warning Dialog -->
+  <div class="modal-overlay hidden" id="shutdownModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3><span class="modal-icon text-danger">⚠️</span> Shutdown Application and Services</h3>
+      </div>
+      <div class="modal-body">
+        <p class="modal-alert-text">
+          Warning: This action will shutdown the app and all backend services started by it. All users will be affected by this action.
+        </p>
+        <p>To confirm, please type exactly <strong>Shutdown the service</strong> in the box below:</p>
+        <input type="text" id="shutdownConfirmInput" class="input-text" placeholder="Shutdown the service">
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelShutdown" class="btn-secondary">Cancel</button>
+        <button id="btnConfirmShutdown" class="btn-danger" disabled>Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Change Embedder Model Stern Warning Dialog -->
+  <div class="modal-overlay hidden" id="changeModelModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3><span class="modal-icon text-danger">⚠️</span> Change Embedder Model</h3>
+      </div>
+      <div class="modal-body">
+        <p class="modal-alert-text">
+          STERN WARNING: Changing the embedding model will <strong>delete all vector data</strong> currently in the document and skill databases! Vectors generated with different models cannot be mixed.
+        </p>
+        <p>New model selected: <strong id="modalTargetModelName">nomic-embed-text</strong></p>
+        <p>To confirm, please type exactly <strong>Change model and delete data</strong> in the box below:</p>
+        <input type="text" id="changeModelConfirmInput" class="input-text" placeholder="Change model and delete data">
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelChangeModel" class="btn-secondary">Cancel</button>
+        <button id="btnConfirmChangeModel" class="btn-danger" disabled>Delete Data</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Clear Logs Confirmation Dialog -->
+  <div class="modal-overlay hidden" id="clearLogsModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3><span class="modal-icon text-danger">⚠️</span> Clear Audit Logs</h3>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to delete all audit and conversation logs from <code>database/log.json</code>? This action cannot be undone.</p>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelClearLogs" class="btn-secondary">Cancel</button>
+        <button id="btnConfirmClearLogs" class="btn-danger">Confirm Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Event Detail JSON Inspector Dialog -->
+  <div class="modal-overlay hidden" id="eventDetailModal">
+    <div class="modal-box modal-box-large">
+      <div class="modal-header">
+        <h3><span class="modal-icon">📄</span> Audit Event Payload Inspector</h3>
+        <button id="btnCloseEventModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="event-meta-grid" id="eventModalMeta">
+          <!-- Meta items dynamically injected -->
+        </div>
+
+        <!-- Prompt Section -->
+        <div class="event-detail-section">
+          <div class="event-detail-section-title">
+            <span>💬</span> Prompt / Input
+          </div>
+          <div id="eventModalPromptContainer"></div>
+        </div>
+
+        <!-- Response Section -->
+        <div class="event-detail-section">
+          <div class="event-detail-section-title">
+            <span>🤖</span> Response / Output
+          </div>
+          <div id="eventModalResponseContainer"></div>
+        </div>
+
+        <!-- Complete Raw JSON Section -->
+        <div class="event-detail-section">
+          <div class="event-detail-section-title">
+            <span>📋</span> Complete Event Payload (Raw JSON)
+          </div>
+          <div class="json-viewer-container">
+            <div class="json-viewer-header">
+              <span>Full Event Payload</span>
+              <button id="btnCopyJson" class="btn-copy">📋 Copy</button>
+            </div>
+            <pre class="json-code-block" id="eventModalJson"></pre>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCloseEventModal2" class="btn-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/static/js/chart.umd.min.js"></script>
+  <script src="/static/js/app.js"></script>
 </body>
-
 </html>

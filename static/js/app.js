@@ -1,1634 +1,1216 @@
 /**
- * Private RAG Frontend Application Logic
+ * Agent With RAG - Web Application Frontend Controller
  */
 
-// Application state
-let currentConversations = [];
-let currentLogs = [];
-let selectedConversationId = null;
-let activeModalPayload = null;
-let activeEmbedderModel = "all-minilm";
-let pendingEmbedderModel = null;
-let availableEmbedders = [];
-let availableChatModels = [];
-let selectedChatModel = "";
+document.addEventListener('DOMContentLoaded', () => {
+  // Global State
+  let currentActiveTab = 'page-chat';
+  let activeEmbedderModel = 'bge-m3';
+  let availableModelsData = [];
+  let chartThroughputInstance = null;
+  let chartTokensInstance = null;
+  let selectedConversationId = null;
+  let currentConversationsCache = [];
+  let currentEventsCache = [];
 
-document.addEventListener("DOMContentLoaded", () => {
-    checkHealth();
-    loadStats();
-    loadLogs();
-    loadEmbedderModels();
-    loadChatModels();
-});
+  // DOM Elements - Navigation & Header
+  const navTabs = document.querySelectorAll('.nav-tab');
+  const pageViews = document.querySelectorAll('.page-view');
+  const statusDot = document.getElementById('statusDot');
+  const statusSummary = document.getElementById('statusSummary');
+  const tooltipAgent = document.getElementById('tooltipAgent');
+  const tooltipOllama = document.getElementById('tooltipOllama');
+  const tooltipEmbedder = document.getElementById('tooltipEmbedder');
+  const tooltipVector = document.getElementById('tooltipVector');
+  const tooltipLlm = document.getElementById('tooltipLlm');
 
-// ==========================================
-// 1. Tab Switching
-// ==========================================
-function switchTab(tabId) {
-    // Hide all pages
-    document.querySelectorAll(".page-view").forEach(page => {
-        page.classList.remove("active");
+  // DOM Elements - Shutdown Modal
+  const btnShutdown = document.getElementById('btnShutdown');
+  const shutdownModal = document.getElementById('shutdownModal');
+  const shutdownConfirmInput = document.getElementById('shutdownConfirmInput');
+  const btnCancelShutdown = document.getElementById('btnCancelShutdown');
+  const btnConfirmShutdown = document.getElementById('btnConfirmShutdown');
+
+  // DOM Elements - Page 1 (Chat)
+  const chatModel = document.getElementById('chatModel');
+  const customEndpointBox = document.getElementById('customEndpointBox');
+  const customEndpoint = document.getElementById('customEndpoint');
+  const chatTemperature = document.getElementById('chatTemperature');
+  const chatMaxTokens = document.getElementById('chatMaxTokens');
+  const agentChoice = document.getElementById('agentChoice');
+  const chatMaxTurns = document.getElementById('chatMaxTurns');
+  const chatRagChunks = document.getElementById('chatRagChunks');
+  const chatSkills = document.getElementById('chatSkills');
+  const skillThresholdBox = document.getElementById('skillThresholdBox');
+  const chatSkillThreshold = document.getElementById('chatSkillThreshold');
+  const docThresholdInput = document.getElementById('docThresholdInput');
+  const chatMessages = document.getElementById('chatMessages');
+  const chatInput = document.getElementById('chatInput');
+  const btnSendMessage = document.getElementById('btnSendMessage');
+  const evidenceContainer = document.getElementById('evidenceContainer');
+
+  // DOM Elements - Page 2 (Ingestion)
+  const embedderSelect = document.getElementById('embedderSelect');
+  const btnUpdateSkills = document.getElementById('btnUpdateSkills');
+  const statChunksCount = document.getElementById('statChunksCount');
+  const statDocsCount = document.getElementById('statDocsCount');
+  const statDbSize = document.getElementById('statDbSize');
+  const ingestSourceInput = document.getElementById('ingestSourceInput');
+  const btnToggleChunking = document.getElementById('btnToggleChunking');
+  const chunkingContent = document.getElementById('chunkingContent');
+  const inputChunkSize = document.getElementById('inputChunkSize');
+  const inputChunkOverlap = document.getElementById('inputChunkOverlap');
+  const btnPopulateDb = document.getElementById('btnPopulateDb');
+  const ingestSpinner = document.getElementById('ingestSpinner');
+  const btnResetDb = document.getElementById('btnResetDb');
+  const storageStatusBanner = document.getElementById('storageStatusBanner');
+  const ingestedDocsTbody = document.getElementById('ingestedDocsTbody');
+  const availableModelsTbody = document.getElementById('availableModelsTbody');
+
+  // DOM Elements - Change Model Modal
+  const changeModelModal = document.getElementById('changeModelModal');
+  const modalTargetModelName = document.getElementById('modalTargetModelName');
+  const changeModelConfirmInput = document.getElementById('changeModelConfirmInput');
+  const btnCancelChangeModel = document.getElementById('btnCancelChangeModel');
+  const btnConfirmChangeModel = document.getElementById('btnConfirmChangeModel');
+  let pendingModelSwitch = null;
+
+  // DOM Elements - Page 3 (Telemetry)
+  const telemetryModelFilter = document.getElementById('telemetryModelFilter');
+  const btnRefreshTelemetry = document.getElementById('btnRefreshTelemetry');
+  const telTotalPrompts = document.getElementById('telTotalPrompts');
+  const telTotalResponses = document.getElementById('telTotalResponses');
+  const telTotalErrors = document.getElementById('telTotalErrors');
+  const telTotalInTokens = document.getElementById('telTotalInTokens');
+  const telTotalOutTokens = document.getElementById('telTotalOutTokens');
+  const telIntervalSelect = document.getElementById('telIntervalSelect');
+  const telRangeSelect = document.getElementById('telRangeSelect');
+  const customDateBoxes = document.getElementById('customDateBoxes');
+  const telStartDate = document.getElementById('telStartDate');
+  const telEndDate = document.getElementById('telEndDate');
+  const valTtft = document.getElementById('valTtft');
+  const valItl = document.getElementById('valItl');
+  const valTps = document.getElementById('valTps');
+  const valTpot = document.getElementById('valTpot');
+
+  // DOM Elements - Page 4 (Audit Log)
+  const btnClearLogs = document.getElementById('btnClearLogs');
+  const btnRefreshLogs = document.getElementById('btnRefreshLogs');
+  const auditTotalPrompts = document.getElementById('auditTotalPrompts');
+  const auditModelCalls = document.getElementById('auditModelCalls');
+  const auditOllamaEmbeds = document.getElementById('auditOllamaEmbeds');
+  const auditAvgLatency = document.getElementById('auditAvgLatency');
+  const conversationsTbody = document.getElementById('conversationsTbody');
+  const eventsTbody = document.getElementById('eventsTbody');
+  const selectedConvBadge = document.getElementById('selectedConvBadge');
+  const clearLogsModal = document.getElementById('clearLogsModal');
+  const btnCancelClearLogs = document.getElementById('btnCancelClearLogs');
+  const btnConfirmClearLogs = document.getElementById('btnConfirmClearLogs');
+
+  // DOM Elements - Event Detail Modal
+  const eventDetailModal = document.getElementById('eventDetailModal');
+  const eventModalMeta = document.getElementById('eventModalMeta');
+  const eventModalPromptContainer = document.getElementById('eventModalPromptContainer');
+  const eventModalResponseContainer = document.getElementById('eventModalResponseContainer');
+  const eventModalJson = document.getElementById('eventModalJson');
+  const btnCloseEventModal = document.getElementById('btnCloseEventModal');
+  const btnCloseEventModal2 = document.getElementById('btnCloseEventModal2');
+  const btnCopyJson = document.getElementById('btnCopyJson');
+
+  // ---------------------------------------------------------------------------
+  // Tab Navigation
+  // ---------------------------------------------------------------------------
+  navTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const targetId = tab.getAttribute('data-target');
+      if (!targetId || targetId === currentActiveTab) return;
+
+      navTabs.forEach(t => t.classList.remove('active'));
+      pageViews.forEach(p => p.classList.remove('active'));
+
+      tab.classList.add('active');
+      const targetPage = document.getElementById(targetId);
+      if (targetPage) targetPage.classList.add('active');
+
+      currentActiveTab = targetId;
+
+      // Lazy load view data
+      if (targetId === 'page-ingest') {
+        loadIngestionData();
+      } else if (targetId === 'page-telemetry') {
+        loadTelemetryData();
+      } else if (targetId === 'page-audit') {
+        loadAuditLogs();
+      }
     });
+  });
 
-    // Deactivate all tab buttons
-    document.querySelectorAll(".nav-tab").forEach(btn => {
-        btn.classList.remove("active");
-        btn.setAttribute("aria-selected", "false");
-    });
-
-    // Activate selected page and button
-    const targetPage = document.getElementById(tabId);
-    if (targetPage) {
-        targetPage.classList.add("active");
-    }
-
-    if (tabId === "pageIngest") {
-        const btn = document.getElementById("tabBtnIngest");
-        btn.classList.add("active");
-        btn.setAttribute("aria-selected", "true");
-        loadStats();
-    } else if (tabId === "pageQuery") {
-        const btn = document.getElementById("tabBtnQuery");
-        btn.classList.add("active");
-        btn.setAttribute("aria-selected", "true");
-        document.getElementById("inputQuestion").focus();
-    } else if (tabId === "pageTelemetry") {
-        const btn = document.getElementById("tabBtnTelemetry");
-        if (btn) {
-            btn.classList.add("active");
-            btn.setAttribute("aria-selected", "true");
-        }
-        loadTelemetry();
-    } else if (tabId === "pageLogs") {
-        const btn = document.getElementById("tabBtnLogs");
-        btn.classList.add("active");
-        btn.setAttribute("aria-selected", "true");
-        loadLogs();
-    }
-}
-
-// ==========================================
-// 2. Health & Status
-// ==========================================
-async function checkHealth() {
-    const pill = document.getElementById("backendStatusPill");
-    const label = document.getElementById("backendStatusLabel");
-    const dot = pill.querySelector(".status-dot");
-
+  // ---------------------------------------------------------------------------
+  // System Health Monitoring
+  // ---------------------------------------------------------------------------
+  async function checkHealth() {
     try {
-        const res = await fetch("/api/health");
-        const data = await res.json();
+      const res = await fetch('/api/health');
+      if (!res.ok) throw new Error('Health check failed');
+      const data = await res.json();
+      
+      const s = data.services || {};
+      tooltipAgent.textContent = s.agent || 'Unknown';
+      tooltipOllama.textContent = `${s.ollama || 'Offline'} (${s.ollama_active_model || 'bge-m3'})`;
+      tooltipEmbedder.textContent = s.ollama_active_model || 'bge-m3';
+      tooltipVector.textContent = s.vector_store || 'Disconnected';
+      tooltipLlm.textContent = s.llm_provider || 'Not Configured';
 
-        if (data.status === "online") {
-            const ollamaStatus = data.ollama?.available ? "Ollama Ready" : "Ollama Offline";
-            const gemmaStatus = data.gemma?.api_key_configured ? "Gemma Ready" : "Missing API Key";
-            
-            label.textContent = `${ollamaStatus} • ${gemmaStatus}`;
-            dot.classList.remove("error");
-            
-            if (data.gemma?.primary_model) {
-                const modelBadge = document.getElementById("activeGemmaModel");
-                if (modelBadge) {
-                    modelBadge.textContent = data.gemma.primary_model.replace("models/", "");
-                }
-            }
-        } else {
-            label.textContent = "Service Error";
-            dot.classList.add("error");
-        }
-    } catch (err) {
-        label.textContent = "Server Offline";
-        dot.classList.add("error");
+      if (data.status === 'Online') {
+        statusDot.className = 'status-dot online';
+        statusSummary.textContent = `Agent: Online (${s.ollama_active_model || 'bge-m3'})`;
+      } else if (data.status === 'Degraded') {
+        statusDot.className = 'status-dot degraded';
+        statusSummary.textContent = 'Agent: Degraded';
+      } else {
+        statusDot.className = 'status-dot offline';
+        statusSummary.textContent = `Agent: ${data.status}`;
+      }
+    } catch (e) {
+      statusDot.className = 'status-dot offline';
+      statusSummary.textContent = 'Agent: Offline';
     }
-}
+  }
 
-// ==========================================
-// 3. Page 1: Vector DB Ingestion
-// ==========================================
-function toggleSourceTypeInputs() {
-    const isUrl = document.getElementById("radioUrl").checked;
-    const label = document.getElementById("labelInputPath");
-    const input = document.getElementById("inputPath");
-    const hint = document.getElementById("hintInputPath");
+  // Periodic health check every 5 seconds
+  checkHealth();
+  setInterval(checkHealth, 5000);
 
-    if (isUrl) {
-        label.textContent = "Web URL to Crawl & Ingest";
-        input.placeholder = "https://en.wikipedia.org/wiki/Retrieval-augmented_generation";
-        hint.textContent = "Fetches article text, strips HTML tags, and breaks into vector chunks.";
-    } else {
-        label.textContent = "Local Directory Path to Ingest";
-        input.placeholder = "./sample_docs or /path/to/my/documents";
-        hint.textContent = "Recursively parses .txt, .md, .pdf, .json, and code files in directory.";
-    }
-}
+  // ---------------------------------------------------------------------------
+  // Shutdown Confirmation Flow
+  // ---------------------------------------------------------------------------
+  btnShutdown.addEventListener('click', () => {
+    shutdownConfirmInput.value = '';
+    btnConfirmShutdown.disabled = true;
+    shutdownModal.classList.remove('hidden');
+    shutdownConfirmInput.focus();
+  });
 
-function setPreset(type, value) {
-    if (type === "url") {
-        document.getElementById("radioUrl").checked = true;
-    } else {
-        document.getElementById("radioDir").checked = true;
-    }
-    toggleSourceTypeInputs();
-    document.getElementById("inputPath").value = value;
-}
+  shutdownConfirmInput.addEventListener('input', () => {
+    btnConfirmShutdown.disabled = (shutdownConfirmInput.value.trim() !== 'Shutdown the service');
+  });
 
-async function handleIngest(event) {
-    event.preventDefault();
-    const isUrl = document.getElementById("radioUrl").checked;
-    const sourceType = isUrl ? "url" : "directory";
-    const path = document.getElementById("inputPath").value.trim();
-    const chunkSize = document.getElementById("inputChunkSize").value;
-    const chunkOverlap = document.getElementById("inputChunkOverlap").value;
+  btnCancelShutdown.addEventListener('click', () => {
+    shutdownModal.classList.add('hidden');
+  });
 
-    if (!path) return;
-
-    // UI Progress State
-    const submitBtn = document.getElementById("btnSubmitIngest");
-    const spinner = document.getElementById("ingestSpinner");
-    const emptyState = document.getElementById("ingestEmptyState");
-    const activeCard = document.getElementById("ingestActiveCard");
-    const title = document.getElementById("ingestTitle");
-    const message = document.getElementById("ingestMessage");
-    const badge = document.getElementById("ingestBadge");
-    const elapsed = document.getElementById("ingestElapsed");
-
-    submitBtn.disabled = true;
-    spinner.style.display = "inline-block";
-    emptyState.style.display = "none";
-    activeCard.style.display = "block";
-
-    badge.textContent = "Processing";
-    badge.className = "status-badge";
-    title.textContent = `Ingesting ${sourceType === "url" ? "Web Page" : "Directory"}...`;
-    message.textContent = `Extracting text, chunking, and computing Ollama embeddings for ${path}...`;
-
-    const startTime = Date.now();
-    const timer = setInterval(() => {
-        elapsed.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-    }, 100);
-
+  btnConfirmShutdown.addEventListener('click', async () => {
+    btnConfirmShutdown.disabled = true;
+    btnConfirmShutdown.textContent = 'Shutting down...';
     try {
-        const response = await fetch("/api/ingest", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                source_type: sourceType,
-                path: path,
-                chunk_size: parseInt(chunkSize, 10),
-                chunk_overlap: parseInt(chunkOverlap, 10)
-            })
+      await fetch('/api/shutdown', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: 'Shutdown the service' }),
+      });
+      document.body.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0a0e17;color:#f1f5f9;font-family:sans-serif;">
+          <h2 style="margin-bottom:1rem;color:#f87171;">Application & Services Terminated</h2>
+          <p style="color:#94a3b8;">All services started by Agent-with-RAG have been safely shut down. You may close this tab.</p>
+        </div>
+      `;
+    } catch (e) {
+      alert('Shutdown initiated.');
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Page 1: Chat Initialization & Logic
+  // ---------------------------------------------------------------------------
+  async function loadModelsAndSkills() {
+    try {
+      // 1. Fetch LLM models
+      const mRes = await fetch('/api/models');
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        availableModelsData = mData.models || [];
+        chatModel.innerHTML = '';
+
+        availableModelsData.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = `${m.id} (Max tokens: ${m.output_token_limit})`;
+          if (m.id === mData.default_model) {
+            opt.selected = true;
+          }
+          chatModel.appendChild(opt);
         });
 
-        clearInterval(timer);
-        const data = await response.json();
+        // Add Custom Model option
+        const customOpt = document.createElement('option');
+        customOpt.value = 'Custom Model';
+        customOpt.textContent = 'Custom Model (HTTP Endpoint)';
+        chatModel.appendChild(customOpt);
 
-        if (response.ok && data.status === "success") {
-            badge.textContent = "Indexed";
-            badge.classList.add("badge-success");
-            title.textContent = "Vector Database Updated!";
-            message.textContent = `Saved ${data.chunks_count} chunks into database/. Total chunks in DB: ${data.total_documents_in_db}.`;
-            showToast(`Ingested ${data.chunks_count} chunks from ${path}!`, "success");
-            loadStats();
-            loadLogs();
-        } else {
-            badge.textContent = "Failed";
-            badge.classList.add("badge-error");
-            title.textContent = "Ingestion Error";
-            message.textContent = data.error || data.message || "An unknown error occurred during ingestion.";
-            showToast(data.error || "Ingestion failed", "error");
-        }
-    } catch (err) {
-        clearInterval(timer);
-        badge.textContent = "Failed";
-        badge.classList.add("badge-error");
-        title.textContent = "Network Error";
-        message.textContent = err.message;
-        showToast("Connection to server failed", "error");
-    } finally {
-        submitBtn.disabled = false;
-        spinner.style.display = "none";
-    }
-}
+        updateTokenConstraints();
+      }
 
-async function loadStats() {
-    try {
-        const res = await fetch("/api/stats");
-        const data = await res.json();
-
-        if (data.vector_store) {
-            document.getElementById("statTotalChunks").textContent = data.vector_store.total_chunks || 0;
-            document.getElementById("statTotalSources").textContent = data.vector_store.unique_sources || 0;
-            document.getElementById("statDbSize").textContent = `${data.vector_store.db_size_mb || 0} MB`;
-
-            // Populate Sources List with documents from Document Database
-            const listElem = document.getElementById("indexedSourcesList");
-            const sources = data.vector_store.sources_list || data.vector_store.sources || [];
-            const details = data.vector_store.source_details || [];
-            
-            if (sources.length === 0) {
-                listElem.innerHTML = `<p class="text-muted" style="padding: 10px 0;">No documents indexed yet in Document Database.</p>`;
-            } else if (details.length > 0) {
-                listElem.innerHTML = details.map(d => {
-                    const icon = d.is_url ? "🌐" : "📄";
-                    const shortName = d.name || d.source;
-                    const chunkLabel = d.chunk_count ? `${d.chunk_count} chunk${d.chunk_count > 1 ? 's' : ''}` : '';
-                    return `
-                    <div class="source-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.04); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
-                        <div style="display: flex; align-items: center; gap: 10px; overflow: hidden; flex: 1; margin-right: 8px;">
-                            <span style="font-size: 16px;">${icon}</span>
-                            <div style="display: flex; flex-direction: column; overflow: hidden;">
-                                <span class="source-title" style="font-weight: 600; font-size: 13px;" title="${escapeHtml(d.source)}">${escapeHtml(shortName)}</span>
-                                <span style="font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(d.source)}">${escapeHtml(d.source)}</span>
-                            </div>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-                            ${chunkLabel ? `<span class="badge" style="font-size: 11px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">${chunkLabel}</span>` : ''}
-                            <span class="badge badge-private">Docs DB</span>
-                        </div>
-                    </div>`;
-                }).join("");
-            } else {
-                listElem.innerHTML = sources.map(s => `
-                    <div class="source-item">
-                        <span class="source-title" title="${escapeHtml(s)}">${escapeHtml(s)}</span>
-                        <span class="badge badge-private">Docs DB</span>
-                    </div>
-                `).join("");
-            }
-        }
-
-        if (data.logs_summary) {
-            document.getElementById("logBadgeCount").textContent = data.logs_summary.total_logs || 0;
-            document.getElementById("metricTotalCalls").textContent = data.logs_summary.total_logs || 0;
-            document.getElementById("metricGemmaCalls").textContent = data.logs_summary.type_breakdown?.google_ai_studio_gemma || 0;
-            
-            const ollamaCount = (data.logs_summary.type_breakdown?.local_ollama_embedding || 0) + 
-                                (data.logs_summary.type_breakdown?.local_ollama_embed_batch || 0);
-            document.getElementById("metricOllamaCalls").textContent = ollamaCount;
-            document.getElementById("metricAvgLatency").textContent = `${data.logs_summary.avg_latency_ms || 0} ms`;
-        }
-    } catch (err) {
-        console.error("Failed to load stats:", err);
-    }
-}
-
-async function confirmResetDb() {
-    if (!confirm("Are you sure you want to reset the private vector database? All indexed document vectors will be erased.")) {
-        return;
-    }
-    try {
-        const res = await fetch("/api/database/reset", { method: "POST" });
-        const data = await res.json();
-        if (res.ok) {
-            showToast("Vector database reset successfully.", "info");
-            loadStats();
-        } else {
-            showToast(data.error || "Reset failed", "error");
-        }
-    } catch (err) {
-        showToast("Error resetting database", "error");
-    }
-}
-
-// ==========================================
-// 4. Page 2: Private RAG Query (Gemma)
-// ==========================================
-function fillQuestion(text) {
-    const input = document.getElementById("inputQuestion");
-    input.value = text;
-    input.focus();
-}
-
-function handleTextareaKey(event) {
-    if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        handleQuery(event);
-    }
-}
-
-async function handleQuery(event) {
-    if (event) event.preventDefault();
-    const input = document.getElementById("inputQuestion");
-    const question = input.value.trim();
-    const topK = document.getElementById("selectTopK").value;
-    const submitBtn = document.getElementById("btnSubmitQuery");
-    const spinner = document.getElementById("querySpinner");
-    const qaFeed = document.getElementById("qaFeed");
-
-    if (!question) return;
-
-    // Append User Bubble
-    appendMessage("user", question);
-    input.value = "";
-
-    // Append Assistant Loading Placeholder
-    const modelDisplayName = getSelectedChatModelName();
-    const assistantMsgElem = appendMessage("assistant", `Searching private vector database and generating answer with ${modelDisplayName}...`, true);
-
-    submitBtn.disabled = true;
-    spinner.style.display = "inline-block";
-
-    const startTime = Date.now();
-
-    try {
-        const payload = {
-            question: question,
-            top_k: parseInt(topK, 10)
-        };
-        if (selectedChatModel) {
-            payload.model = selectedChatModel;
-            if (selectedChatModel === "custom_model_api") {
-                const endpointInput = document.getElementById("inputCustomEndpoint");
-                if (endpointInput && endpointInput.value.trim()) {
-                    payload.custom_endpoint = endpointInput.value.trim();
-                }
-            }
-        }
-
-        const res = await fetch("/api/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-
-        const data = await res.json();
-        const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        if (res.ok) {
-            updateAssistantMessage(
-                assistantMsgElem, 
-                data.answer, 
-                data.model ? `Model: ${data.model.replace("models/", "")} • ${duration}s • Log ID: ${data.log_id ? data.log_id.slice(0, 8) : 'N/A'}` : null,
-                data.components || [],
-                data.conversation_id
-            );
-
-            // Render Retrieved Context Chunks on right panel
-            renderRetrievedChunks(data.sources || []);
-            loadStats();
-        } else {
-            updateAssistantMessage(
-                assistantMsgElem, 
-                `⚠️ Error generating answer: ${data.error || "Server error"}`, 
-                "Error"
-            );
-            showToast(data.error || "Query failed", "error");
-        }
-    } catch (err) {
-        updateAssistantMessage(
-            assistantMsgElem, 
-            `⚠️ Network error: Could not reach backend server (${err.message}).`, 
-            "Offline"
-        );
-    } finally {
-        submitBtn.disabled = false;
-        spinner.style.display = "none";
-        qaFeed.scrollTop = qaFeed.scrollHeight;
-    }
-}
-
-function appendMessage(role, text, isLoading = false) {
-    const qaFeed = document.getElementById("qaFeed");
-    const msg = document.createElement("div");
-    msg.className = `chat-message ${role}`;
-
-    const bubble = document.createElement("div");
-    bubble.className = "chat-bubble";
-    bubble.innerHTML = formatMarkdown(text);
-    if (isLoading) {
-        bubble.classList.add("loading-pulse");
-    }
-
-    msg.appendChild(bubble);
-    qaFeed.appendChild(msg);
-    qaFeed.scrollTop = qaFeed.scrollHeight;
-    return msg;
-}
-
-let _componentCardSeq = 0;
-
-function updateAssistantMessage(msgElem, text, metaText, components = [], conversationId = null) {
-    const bubble = msgElem.querySelector(".chat-bubble");
-    bubble.classList.remove("loading-pulse");
-    bubble.innerHTML = formatMarkdown(text);
-
-    // If components trace provided, render the comprehensive pipeline trace directly in the message
-    if (components && components.length > 0) {
-        _componentCardSeq++;
-        const boxId = `comp-box-${_componentCardSeq}`;
+      // 2. Fetch Skills
+      const sRes = await fetch('/api/skills');
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        const skillsList = sData.skills || [];
         
-        const compBox = document.createElement("div");
-        compBox.className = "message-components-box";
-        compBox.id = boxId;
-
-        const pillsHtml = components.map((c, i) => {
-            const cardId = `${boxId}-card-${i}`;
-            const compClass = (c.name || "comp").toLowerCase().replace(/\s+/g, '-');
-            const durationTag = c.duration_ms !== undefined && c.duration_ms !== null ? `${c.duration_ms}ms` : '';
-            return `
-                <span class="comp-pill comp-pill-${compClass}" onclick="toggleSingleComponent('${cardId}', event)" title="Click to jump to ${escapeHtml(c.name)} Request & Response">
-                    <span>${c.icon || '⚙️'}</span>
-                    <span>${escapeHtml(c.name)}</span>
-                    <span class="comp-time">${durationTag}</span>
-                </span>
-            `;
-        }).join("");
-
-        const detailsHtml = components.map((c, i) => {
-            const cardId = `${boxId}-card-${i}`;
-            const reqJson = JSON.stringify(c.request || {}, null, 2);
-            const resJson = JSON.stringify(c.response || {}, null, 2);
-            const statusClass = (c.status || "success") === "error" ? "badge-error" : "badge-success";
-            const roleBadge = c.role ? `<span class="badge badge-info" style="font-size: 10.5px;">${escapeHtml(c.role)}</span>` : "";
-
-            return `
-                <div class="component-card" id="${cardId}">
-                    <div class="component-card-top">
-                        <div class="component-card-title">
-                            <span>${c.icon || '⚙️'}</span>
-                            <strong>${escapeHtml(c.name)}</strong>
-                            ${roleBadge}
-                        </div>
-                        <div class="component-card-meta">
-                            <span class="badge ${statusClass}">${(c.status || 'SUCCESS').toUpperCase()}</span>
-                            <span>${c.duration_ms !== undefined && c.duration_ms !== null ? c.duration_ms + ' ms' : ''}</span>
-                        </div>
-                    </div>
-                    ${c.description ? `<div class="component-desc">${escapeHtml(c.description)}</div>` : ''}
-                    <div class="req-res-split">
-                        <div class="req-pane">
-                            <div class="pane-header">
-                                <span>📤 Request Payload</span>
-                                <button class="copy-mini-btn" onclick="copySnippet(this)">Copy</button>
-                            </div>
-                            <pre class="code-box-pre"><code>${escapeHtml(reqJson)}</code></pre>
-                        </div>
-                        <div class="res-pane">
-                            <div class="pane-header">
-                                <span>📥 Response Payload</span>
-                                <button class="copy-mini-btn" onclick="copySnippet(this)">Copy</button>
-                            </div>
-                            <pre class="code-box-pre"><code>${escapeHtml(resJson)}</code></pre>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join("");
-
-        compBox.innerHTML = `
-            <div class="components-header" onclick="toggleComponentsDrawer(this)">
-                <span class="components-title">
-                    <span style="color: var(--accent-cyan);">⚡</span> 
-                    Pipeline Trace (${components.length} Components: ${components.map(c => c.name).join(', ')})
-                </span>
-                <span class="toggle-hint">Click to inspect Requests & Responses ▼</span>
-            </div>
-            <div class="component-pills-row">
-                ${pillsHtml}
-            </div>
-            <div class="components-details-container" style="display: none;">
-                ${detailsHtml}
-                ${conversationId ? `
-                    <button type="button" class="btn-inspect-conv" onclick="goToAuditLogs('${escapeHtml(conversationId)}')">
-                        <span>🔍 Inspect full execution timeline in Audit Logs & DB Explorer</span>
-                    </button>
-                ` : ''}
-            </div>
+        // Reset skills dropdown options preserving Vector Store Selects and LLM Selects
+        chatSkills.innerHTML = `
+          <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
+          <option value="LLM Selects">LLM Selects</option>
         `;
-        bubble.appendChild(compBox);
-    }
-
-    if (metaText) {
-        let meta = msgElem.querySelector(".chat-meta");
-        if (!meta) {
-            meta = document.createElement("div");
-            meta.className = "chat-meta";
-            msgElem.appendChild(meta);
-        }
-        meta.textContent = metaText;
-    }
-}
-
-function renderRetrievedChunks(chunks) {
-    const container = document.getElementById("contextBody");
-    const countBadge = document.getElementById("retrievedCountBadge");
-
-    countBadge.textContent = `${chunks.length} Chunks`;
-
-    if (!chunks || chunks.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-icon">🔍</div>
-                <h4>No Relevant Chunks Found</h4>
-                <p>Ensure documents are indexed in Tab 1 before asking questions.</p>
-            </div>
-        `;
-        return;
-    }
-
-    container.innerHTML = chunks.map((chunk, idx) => {
-        const title = chunk.metadata?.title || chunk.metadata?.source || `Document ${idx + 1}`;
-        const score = (chunk.score * 100).toFixed(1);
-        const path = chunk.metadata?.source || "";
-
-        return `
-            <div class="context-chunk-card">
-                <div class="chunk-header">
-                    <span class="chunk-source-badge" title="${escapeHtml(path)}">#${idx + 1} ${escapeHtml(title)}</span>
-                    <span class="chunk-score" title="Cosine Similarity">${score}% match</span>
-                </div>
-                <div class="chunk-text">${escapeHtml(chunk.content)}</div>
-            </div>
-        `;
-    }).join("");
-}
-
-// ==========================================
-// 5. Page 3: Two-Table Audit Logs & Conversation Inspector
-// ==========================================
-async function loadLogs() {
-    await loadLogsAndConversations();
-}
-
-async function loadLogsAndConversations() {
-    try {
-        const [convRes, logsRes] = await Promise.all([
-            fetch("/api/conversations?limit=100"),
-            fetch("/api/logs?limit=250")
-        ]);
-        const convData = await convRes.json();
-        const logsData = await logsRes.json();
-
-        currentConversations = convData.conversations || [];
-        currentLogs = logsData.logs || [];
-
-        renderConversationsTable();
-        filterEvents();
-        loadStats();
-    } catch (err) {
-        console.error("Failed to load audit logs and conversations:", err);
-    }
-}
-
-function renderConversationsTable() {
-    const tbody = document.getElementById("conversationsTableBody");
-    const badge = document.getElementById("convCountBadge");
-    const metricConv = document.getElementById("metricTotalConversations");
-
-    if (badge) badge.textContent = `${currentConversations.length} Conversations`;
-    if (metricConv) metricConv.textContent = currentConversations.length;
-
-    if (!tbody) return;
-
-    if (!currentConversations || currentConversations.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 24px;">No conversations recorded yet. Ask a question in the Chat tab!</td></tr>`;
-        return;
-    }
-
-    tbody.innerHTML = currentConversations.map(conv => {
-        const timeFormatted = formatTimestamp(conv.timestamp);
-        const isActive = selectedConversationId === conv.conversation_id;
-        const activeClass = isActive ? "active-row" : "";
-        const queryDisplay = conv.user_query || "-";
-        const respDisplay = conv.agent_response || "-";
-
-        return `
-            <tr class="clickable-row ${activeClass}" onclick="selectConversation('${escapeHtml(conv.conversation_id)}')">
-                <td class="mono-cell" title="${escapeHtml(conv.conversation_id)}">
-                    <strong>${escapeHtml(conv.conversation_id)}</strong>
-                </td>
-                <td class="mono-cell">${escapeHtml(timeFormatted)}</td>
-                <td class="query-cell" title="${escapeHtml(queryDisplay)}">${escapeHtml(truncate(queryDisplay, 65))}</td>
-                <td class="response-cell" title="${escapeHtml(respDisplay)}">${escapeHtml(truncate(respDisplay, 65))}</td>
-            </tr>
-        `;
-    }).join("");
-}
-
-function selectConversation(convId) {
-    selectedConversationId = convId;
-    const filterBadge = document.getElementById("selectedConvFilterBadge");
-    const showAllBtn = document.getElementById("btnShowAllEvents");
-    const subtitle = document.getElementById("eventsTableSubtitle");
-
-    if (filterBadge) filterBadge.textContent = `Conversation: ${convId}`;
-    if (showAllBtn) showAllBtn.style.display = "inline-flex";
-    if (subtitle) subtitle.textContent = `Showing events for conversation ${convId}. Click any event row to inspect full JSON payload.`;
-
-    renderConversationsTable();
-    filterEvents();
-}
-
-function showAllEvents() {
-    selectedConversationId = null;
-    const filterBadge = document.getElementById("selectedConvFilterBadge");
-    const showAllBtn = document.getElementById("btnShowAllEvents");
-    const subtitle = document.getElementById("eventsTableSubtitle");
-
-    if (filterBadge) filterBadge.textContent = "All Events";
-    if (showAllBtn) showAllBtn.style.display = "none";
-    if (subtitle) subtitle.textContent = "Click any event row to inspect full JSON payload.";
-
-    renderConversationsTable();
-    filterEvents();
-}
-
-function filterEvents() {
-    const typeFilter = document.getElementById("filterCallType") ? document.getElementById("filterCallType").value.trim() : "";
-    const searchFilter = document.getElementById("logSearchInput") ? document.getElementById("logSearchInput").value.toLowerCase().trim() : "";
-    const tbody = document.getElementById("eventsTableBody");
-
-    if (!tbody) return;
-
-    let filtered = currentLogs;
-
-    // Filter by selected conversation if chosen
-    if (selectedConversationId) {
-        filtered = filtered.filter(e => e.conversation_id === selectedConversationId);
-    }
-
-    // Filter by component event type
-    if (typeFilter) {
-        const tf = typeFilter.toLowerCase();
-        filtered = filtered.filter(e => {
-            const et = (e.event_type || e.type || "").toLowerCase();
-            if (tf === "agent") return et.includes("agent");
-            if (tf === "llm") return et.includes("llm") || et.includes("gemma");
-            if (tf === "embedder") return et.includes("embed") || et.includes("ollama");
-            if (tf === "tool") return et.includes("tool");
-            if (tf === "external api") return et.includes("external") || et.includes("api");
-            if (tf === "vector store") return et.includes("vector");
-            return et.includes(tf);
+        skillsList.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s.name;
+          opt.textContent = `Skill: ${s.name}`;
+          chatSkills.appendChild(opt);
         });
+      }
+    } catch (e) {
+      console.error('Failed to load models or skills:', e);
     }
+  }
 
-    // Search filter
-    if (searchFilter) {
-        filtered = filtered.filter(e => {
-            const desc = (e.short_description || "").toLowerCase();
-            const inv = (e.invoker || "").toLowerCase();
-            const target = (e.target || "").toLowerCase();
-            const et = (e.event_type || e.type || "").toLowerCase();
-            const payloadStr = JSON.stringify(e.payload || e.arguments || {}).toLowerCase();
-            return desc.includes(searchFilter) || inv.includes(searchFilter) || target.includes(searchFilter) || et.includes(searchFilter) || payloadStr.includes(searchFilter);
-        });
-    }
-
-    if (filtered.length === 0) {
-        const msg = selectedConversationId 
-            ? "No events found for this conversation matching the filter."
-            : "No events match your filter criteria.";
-        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted" style="padding: 24px;">${msg}</td></tr>`;
-        return;
-    }
-
-    tbody.innerHTML = filtered.map(event => {
-        const timeFormatted = formatTimestamp(event.timestamp || event.time);
-        const eventType = event.event_type || event.type || "Event";
-        const invoker = event.invoker || "Agent";
-        const target = event.target || "-";
-        const shortDesc = event.short_description || "-";
-
-        let typeBadgeClass = "badge-private";
-        const etLower = eventType.toLowerCase();
-        if (etLower.includes("llm") || etLower.includes("gemma")) typeBadgeClass = "badge-info";
-        else if (etLower.includes("tool")) typeBadgeClass = "badge-success";
-        else if (etLower.includes("query") || etLower === "agent") typeBadgeClass = "badge-purple";
-        else if (etLower.includes("response")) typeBadgeClass = "badge-emerald";
-        else if (etLower.includes("vector") || etLower.includes("ollama") || etLower === "embedder") typeBadgeClass = "badge-cyan";
-        else if (etLower.includes("external") || etLower.includes("api")) typeBadgeClass = "badge-warning";
-        else if (etLower.includes("error")) typeBadgeClass = "badge-error";
-
-        return `
-            <tr class="clickable-row" onclick="openEventModal('${escapeHtml(event.id)}')">
-                <td class="mono-cell">${escapeHtml(timeFormatted)}</td>
-                <td><span class="badge ${typeBadgeClass}">${escapeHtml(eventType)}</span></td>
-                <td><span class="invoker-tag">${escapeHtml(invoker)}</span></td>
-                <td class="target-cell" title="${escapeHtml(target)}">${escapeHtml(truncate(target, 35))}</td>
-                <td class="desc-cell" title="${escapeHtml(shortDesc)}">${escapeHtml(truncate(shortDesc, 65))}</td>
-            </tr>
-        `;
-    }).join("");
-}
-
-function openEventModal(eventId) {
-    const event = currentLogs.find(l => l.id === eventId);
-    if (!event) return;
-
-    activeModalPayload = event;
-
-    const modalTitle = document.getElementById("modalTitle");
-    const typeBadge = document.getElementById("modalTypeBadge");
-    const metaBar = document.getElementById("modalMetaBar");
-    const descText = document.getElementById("modalEventDescription");
-    const reqViewer = document.getElementById("modalRequestJson");
-    const resViewer = document.getElementById("modalResponseJson");
-    const jsonViewer = document.getElementById("modalArgsJson");
-
-    if (modalTitle) modalTitle.textContent = `${event.event_type || event.type || 'Invocation'} Event Details`;
-    if (typeBadge) {
-        typeBadge.textContent = (event.status || "SUCCESS").toUpperCase();
-        typeBadge.className = `badge ${event.status === 'error' ? 'badge-error' : 'badge-success'}`;
-    }
-
-    if (metaBar) {
-        metaBar.innerHTML = `
-            <span><strong>Time:</strong> ${event.timestamp || event.time}</span> | 
-            <span><strong>Invoker:</strong> ${escapeHtml(event.invoker || 'Agent')}</span> | 
-            <span><strong>Target:</strong> ${escapeHtml(event.target || '-')}</span> | 
-            <span><strong>Duration:</strong> ${event.duration_ms !== null && event.duration_ms !== undefined ? event.duration_ms + ' ms' : '-'}</span> | 
-            <span><strong>Conv:</strong> ${escapeHtml(event.conversation_id || 'system')}</span>
-        `;
-    }
-
-    if (descText) descText.textContent = event.short_description || "No description provided.";
-
-    // Extract standardized request and response payloads
-    const reqData = (event.payload && event.payload.request) || event.arguments || {};
-    const resData = (event.payload && event.payload.response) || event.response || {};
-
-    if (reqViewer) reqViewer.textContent = JSON.stringify(reqData, null, 2);
-    if (resViewer) resViewer.textContent = JSON.stringify(resData, null, 2);
-
-    // Display comprehensive sanitized event payload
-    const displayObj = {
-        id: event.id,
-        conversation_id: event.conversation_id,
-        timestamp: event.timestamp || event.time,
-        event_type: event.event_type || event.type,
-        invoker: event.invoker,
-        target: event.target,
-        short_description: event.short_description,
-        status: event.status,
-        duration_ms: event.duration_ms,
-        payload: event.payload || { request: reqData, response: resData }
-    };
-
-    if (jsonViewer) jsonViewer.textContent = JSON.stringify(displayObj, null, 2);
-
-    document.getElementById("payloadModal").style.display = "flex";
-}
-
-function closeModal() {
-    const modal = document.getElementById("payloadModal");
-    if (modal) modal.style.display = "none";
-    activeModalPayload = null;
-}
-
-function closeModalOnBackdrop(event) {
-    if (event.target.id === "payloadModal") {
-        closeModal();
-    }
-}
-
-function toggleComponentsDrawer(headerElem) {
-    const container = headerElem.parentElement.querySelector(".components-details-container");
-    const hint = headerElem.querySelector(".toggle-hint");
-    if (!container) return;
-    const isHidden = container.style.display === "none";
-    container.style.display = isHidden ? "flex" : "none";
-    if (hint) {
-        hint.textContent = isHidden ? "Click to collapse ▲" : "Click to inspect Requests & Responses ▼";
-    }
-}
-
-function toggleSingleComponent(cardId, event) {
-    if (event) event.stopPropagation();
-    const card = document.getElementById(cardId);
-    if (!card) return;
-    const container = card.closest(".components-details-container");
-    if (container && container.style.display === "none") {
-        container.style.display = "flex";
-        const header = container.parentElement.querySelector(".components-header .toggle-hint");
-        if (header) header.textContent = "Click to collapse ▲";
-    }
-    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    card.style.borderColor = "var(--accent-cyan)";
-    setTimeout(() => {
-        card.style.borderColor = "";
-    }, 1800);
-}
-
-function copySnippet(btnElem) {
-    const pre = btnElem.closest(".req-pane, .res-pane").querySelector("pre code");
-    if (!pre) return;
-    navigator.clipboard.writeText(pre.textContent).then(() => {
-        const originalText = btnElem.textContent;
-        btnElem.textContent = "Copied!";
-        setTimeout(() => { btnElem.textContent = originalText; }, 1800);
-    }).catch(() => showToast("Failed to copy", "error"));
-}
-
-function copyModalSubField(subfield) {
-    if (!activeModalPayload) return;
-    const data = (activeModalPayload.payload && activeModalPayload.payload[subfield]) || activeModalPayload[subfield] || {};
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2))
-        .then(() => showToast(`Copied ${subfield} payload to clipboard!`, "success"))
-        .catch(() => showToast("Failed to copy", "error"));
-}
-
-function goToAuditLogs(convId) {
-    switchTab("pageLogs");
-    setTimeout(() => {
-        selectConversation(convId);
-    }, 200);
-}
-
-function copyModalJson(field) {
-    if (!activeModalPayload) return;
-    const jsonStr = JSON.stringify(activeModalPayload, null, 2);
-    navigator.clipboard.writeText(jsonStr)
-        .then(() => showToast("Detailed JSON copied to clipboard!", "success"))
-        .catch(() => showToast("Failed to copy JSON", "error"));
-}
-
-function formatTimestamp(isoStr) {
-    if (!isoStr) return "-";
-    try {
-        const d = new Date(isoStr);
-        return d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + 
-               " (" + d.toISOString().slice(0, 10) + ")";
-    } catch {
-        return isoStr;
-    }
-}
-
-function truncate(str, maxLen = 50) {
-    if (!str) return "";
-    return str.length > maxLen ? str.slice(0, maxLen) + "..." : str;
-}
-
-async function confirmClearLogs() {
-    if (!confirm("Are you sure you want to clear database/logs.json and database/conversations.json? All logged calls and conversations will be purged.")) {
-        return;
-    }
-    try {
-        const res = await fetch("/api/logs/clear", { method: "POST" });
-        if (res.ok) {
-            showToast("Audit logs and conversations cleared.", "info");
-            selectedConversationId = null;
-            loadLogsAndConversations();
-        }
-    } catch (err) {
-        showToast("Failed to clear logs", "error");
-    }
-}
-
-// ==========================================
-// Utilities
-// ==========================================
-function formatMarkdown(text) {
-    if (!text) return "";
-    let html = escapeHtml(text);
-    // Bold
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    // Italic
-    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-    // Line breaks
-    html = html.replace(/\n/g, '<br>');
-    // Code blocks
-    html = html.replace(/`([^`]+)`/g, '<code style="background: rgba(0,0,0,0.3); padding: 2px 5px; border-radius: 4px; font-family: monospace;">$1</code>');
-    return html;
-}
-
-function escapeHtml(str) {
-    if (typeof str !== "string") str = String(str);
-    return str
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
-
-function showToast(message, type = "info") {
-    const toast = document.getElementById("appToast");
-    const msgElem = document.getElementById("toastMessage");
-    const iconElem = document.getElementById("toastIcon");
-
-    msgElem.textContent = message;
-    if (type === "success") iconElem.textContent = "✅";
-    else if (type === "error") iconElem.textContent = "❌";
-    else iconElem.textContent = "ℹ️";
-
-    toast.style.display = "flex";
-    setTimeout(() => {
-        toast.style.display = "none";
-    }, 3500);
-}
-
-// ==========================================
-// 6. Embedder Model Management & Warning Modal
-// ==========================================
-async function loadEmbedderModels() {
-    try {
-        const res = await fetch("/api/embedder/models");
-        const data = await res.json();
-        if (data.status !== "success") return;
-
-        activeEmbedderModel = data.current_model || "all-minilm";
-        availableEmbedders = data.models || [];
-
-        // 1. Populate Dropdown in Document Source Configuration header
-        const selectElem = document.getElementById("embedderSelect");
-        if (selectElem) {
-            selectElem.innerHTML = availableEmbedders.map(m => {
-                const isSelected = m.id === activeEmbedderModel || activeEmbedderModel.startsWith(m.id + ":");
-                const statusTag = m.installed ? " (Ready)" : " (Pull Needed)";
-                return `<option value="${escapeHtml(m.id)}" ${isSelected ? "selected" : ""}>${escapeHtml(m.name)} • ${m.dimensions}d${statusTag}</option>`;
-            }).join("");
-        }
-
-        // 2. Populate Reference Table at Bottom of Page 1
-        const tableBody = document.getElementById("embeddersTableBody");
-        if (tableBody) {
-            tableBody.innerHTML = availableEmbedders.map(m => {
-                const isCurrent = m.id === activeEmbedderModel || activeEmbedderModel.startsWith(m.id + ":");
-                let statusBadge = "";
-                if (isCurrent) {
-                    statusBadge = '<span class="badge badge-success">✓ Active Model</span>';
-                } else if (m.installed) {
-                    statusBadge = '<span class="badge badge-info">Installed locally</span>';
-                } else {
-                    statusBadge = `<span class="badge badge-private" title="Will pull on demand or via 'ollama pull ${escapeHtml(m.id)}'">Available to Pull</span>`;
-                }
-
-                return `
-                    <tr class="${isCurrent ? 'row-active-model' : ''}">
-                        <td>
-                            <div class="model-col">
-                                <span class="model-name">${escapeHtml(m.name)}</span>
-                                <span class="model-id">${escapeHtml(m.id)}</span>
-                            </div>
-                        </td>
-                        <td><span class="dim-badge">${m.dimensions} dims</span></td>
-                        <td>${escapeHtml(m.context_window)}</td>
-                        <td>${escapeHtml(m.size)}</td>
-                        <td class="use-case">
-                            <div>${escapeHtml(m.description)}</div>
-                            <small class="text-muted" style="display:block; margin-top:2px;"><strong>Best for:</strong> ${escapeHtml(m.recommended_for)}</small>
-                        </td>
-                        <td>${statusBadge}</td>
-                    </tr>
-                `;
-            }).join("");
-        }
-    } catch (err) {
-        console.error("Failed to load embedder models:", err);
-    }
-}
-
-function handleEmbedderDropdownChange(event) {
-    const selectedModel = event.target.value;
-    if (selectedModel === activeEmbedderModel) return;
-
-    pendingEmbedderModel = selectedModel;
-
-    // Open Confirmation Warning Modal
-    const modal = document.getElementById("modelChangeModal");
-    const promptCode = document.getElementById("requiredConfirmPhrase");
-    const input = document.getElementById("confirmModelChangeInput");
-    const okBtn = document.getElementById("btnConfirmModelChange");
-    const hint = document.getElementById("confirmMatchHint");
-
-    const expectedPhrase = `Change to ${pendingEmbedderModel}`;
-    promptCode.textContent = expectedPhrase;
-
-    input.value = "";
-    input.classList.remove("input-matched");
-    okBtn.disabled = true;
-    hint.textContent = "Exact text match required to enable the OK button.";
-    hint.style.color = "var(--text-muted)";
-
-    modal.style.display = "flex";
-    setTimeout(() => input.focus(), 50);
-}
-
-function validateModelChangeInput() {
-    const input = document.getElementById("confirmModelChangeInput");
-    const okBtn = document.getElementById("btnConfirmModelChange");
-    const hint = document.getElementById("confirmMatchHint");
-
-    if (!pendingEmbedderModel) return;
-
-    const expectedPhrase = `Change to ${pendingEmbedderModel}`;
-    const currentValue = input.value.trim();
-
-    if (currentValue === expectedPhrase) {
-        okBtn.disabled = false;
-        input.classList.add("input-matched");
-        hint.textContent = "✓ Phrase matches! Click OK to switch model and purge vector storage.";
-        hint.style.color = "var(--accent-emerald)";
+  function updateTokenConstraints() {
+    const selected = chatModel.value;
+    if (selected === 'Custom Model') {
+      customEndpointBox.classList.remove('hidden');
+      chatMaxTokens.max = 32768;
     } else {
-        okBtn.disabled = true;
-        input.classList.remove("input-matched");
-        hint.textContent = "Exact text match required to enable the OK button.";
-        hint.style.color = "var(--text-muted)";
+      customEndpointBox.classList.add('hidden');
+      const found = availableModelsData.find(m => m.id === selected);
+      if (found) {
+        chatMaxTokens.max = found.output_token_limit;
+        if (parseInt(chatMaxTokens.value) > found.output_token_limit) {
+          chatMaxTokens.value = found.output_token_limit;
+        }
+      }
     }
-}
+  }
 
-function cancelModelChange() {
-    const modal = document.getElementById("modelChangeModal");
-    modal.style.display = "none";
+  chatModel.addEventListener('change', updateTokenConstraints);
 
-    // Abort and restore dropdown to current model
-    const selectElem = document.getElementById("embedderSelect");
-    if (selectElem) {
-        selectElem.value = activeEmbedderModel;
+  // Skill mode selection handler
+  chatSkills.addEventListener('change', () => {
+    if (chatSkills.value === 'Vector Store Selects' || chatSkills.value === 'Vector Store') {
+      skillThresholdBox.classList.remove('hidden');
+    } else {
+      skillThresholdBox.classList.add('hidden');
     }
+  });
 
-    pendingEmbedderModel = null;
-    const input = document.getElementById("confirmModelChangeInput");
-    if (input) input.value = "";
-}
+  // Quick prompt chips
+  document.querySelectorAll('.btn-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      chatInput.value = btn.getAttribute('data-prompt');
+      chatInput.focus();
+    });
+  });
 
-function closeModelChangeModalOnBackdrop(event) {
-    if (event.target.id === "modelChangeModal") {
-        cancelModelChange();
+  // Chat message sending
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
     }
-}
+  });
 
-async function executeModelChange() {
-    if (!pendingEmbedderModel) return;
+  btnSendMessage.addEventListener('click', sendMessage);
 
-    const okBtn = document.getElementById("btnConfirmModelChange");
-    const cancelBtn = document.getElementById("btnCancelModelChange");
-    const spinner = document.getElementById("modelChangeSpinner");
-    const targetModel = pendingEmbedderModel;
-    const confirmationPhrase = `Change to ${targetModel}`;
+  async function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
 
-    okBtn.disabled = true;
-    cancelBtn.disabled = true;
-    spinner.style.display = "inline-block";
+    chatInput.value = '';
+    const welcome = chatMessages.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
+    // 1. Append User Message Bubble
+    appendUserMessage(text);
+
+    // 2. Append Pending Agent Bubble
+    const pendingAgentBubble = appendPendingAgentBubble();
+    btnSendMessage.disabled = true;
 
     try {
-        const res = await fetch("/api/embedder/change", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                new_model: targetModel,
-                confirmation_phrase: confirmationPhrase
-            })
-        });
+      const payload = {
+        message: text,
+        agent: agentChoice.value,
+        model: chatModel.value,
+        temperature: parseFloat(chatTemperature.value) || 0.7,
+        max_tokens: parseInt(chatMaxTokens.value) || 4096,
+        max_turns: parseInt(chatMaxTurns.value) || 3,
+        rag_chunks: parseInt(chatRagChunks.value) || 5,
+        skill_mode: chatSkills.value,
+        skill_threshold: parseFloat(chatSkillThreshold.value) || 0.2,
+        doc_threshold: parseFloat(docThresholdInput.value) || 0.3,
+        custom_endpoint: customEndpoint.value.trim(),
+      };
 
-        const data = await res.json();
-        if (res.ok && data.status === "success") {
-            activeEmbedderModel = targetModel;
-            pendingEmbedderModel = null;
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-            // Close modal
-            document.getElementById("modelChangeModal").style.display = "none";
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Server error processing message.');
 
-            showToast(`Switched embedder to '${targetModel}'. Vector DB was purged.`, "success");
+      // Update pending bubble with full response and detail box
+      updateAgentBubble(pendingAgentBubble, data);
 
-            // Refresh UI components
-            await loadEmbedderModels();
-            await loadStats();
-            await checkHealth();
+      // Render retrieved context evidence in Right Card
+      renderEvidence(data.retrieved_evidence || {});
+
+    } catch (err) {
+      pendingAgentBubble.querySelector('.message-bubble').textContent = `Error: ${err.message}`;
+      pendingAgentBubble.querySelector('.message-bubble').style.borderColor = 'rgba(239, 68, 68, 0.4)';
+    } finally {
+      btnSendMessage.disabled = false;
+      chatInput.focus();
+    }
+  }
+
+  function appendUserMessage(text) {
+    const row = document.createElement('div');
+    row.className = 'message-row user';
+    row.innerHTML = `<div class="message-bubble">${escapeHtml(text)}</div>`;
+    chatMessages.appendChild(row);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function appendPendingAgentBubble() {
+    const row = document.createElement('div');
+    row.className = 'message-row agent';
+    row.innerHTML = `
+      <div class="message-bubble" style="color:var(--text-muted);">
+        <span class="spinner-icon">⏳</span> Reasoning and executing tools...
+      </div>
+    `;
+    chatMessages.appendChild(row);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return row;
+  }
+
+  function updateAgentBubble(row, data) {
+    const bubble = row.querySelector('.message-bubble');
+    bubble.innerHTML = formatMarkdownText(data.response || '(No response text)');
+
+    // Create Detail Box with anchored "Show Logs" button
+    const detailBox = document.createElement('div');
+    detailBox.className = 'agent-detail-box';
+
+    const steps = data.steps || [];
+    let bubblesHtml = '';
+
+    steps.forEach(st => {
+      const compClass = (st.component || 'agent').toLowerCase();
+      bubblesHtml += `
+        <div class="step-bubble ${compClass}" title="${escapeHtml(st.title)}">
+          <span>${st.icon || '🔹'}</span>
+          <span>${escapeHtml(st.component)}</span>
+          <span class="elapsed">${st.elapsed_ms || 0}ms</span>
+        </div>
+      `;
+    });
+
+    let logsHtml = '';
+    steps.forEach(st => {
+      logsHtml += `
+        <div class="step-log-item">
+          <strong>${st.icon || '🔹'} [${escapeHtml(st.component)}] ${escapeHtml(st.title)}</strong> (${st.elapsed_ms || 0}ms)<br>
+          <span style="color:var(--text-muted);">${escapeHtml(st.summary || '')}</span>
+          <pre style="margin-top:4px;white-space:pre-wrap;color:#93c5fd;">${escapeHtml(st.logs || '')}</pre>
+        </div>
+      `;
+    });
+
+    detailBox.innerHTML = `
+      <div class="detail-box-header">
+        <div class="component-bubbles-row">${bubblesHtml}</div>
+        <button class="btn-show-logs">Show Logs</button>
+      </div>
+      <div class="detail-box-content">${logsHtml || '<p>No intermediate step logs recorded.</p>'}</div>
+    `;
+
+    // Toggle expand / collapse on click
+    const btnShowLogs = detailBox.querySelector('.btn-show-logs');
+    const detailContent = detailBox.querySelector('.detail-box-content');
+
+    btnShowLogs.addEventListener('click', () => {
+      const isExpanded = detailContent.classList.contains('expanded');
+      if (isExpanded) {
+        detailContent.classList.remove('expanded');
+        btnShowLogs.textContent = 'Show Logs';
+      } else {
+        detailContent.classList.add('expanded');
+        btnShowLogs.textContent = 'Hide Logs';
+      }
+    });
+
+    row.appendChild(detailBox);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function renderEvidence(evidence) {
+    const skills = evidence.skills || [];
+    const docs = evidence.documents || [];
+
+    if (skills.length === 0 && docs.length === 0) {
+      evidenceContainer.innerHTML = `
+        <div class="empty-placeholder">
+          <span class="empty-icon">📂</span>
+          <p>No vector store context retrieved for this conversation.</p>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+
+    // Render Skills evidence
+    if (skills.length > 0) {
+      html += `
+        <div class="evidence-doc-group">
+          <div class="evidence-doc-header">
+            <div class="evidence-doc-title"><span>⚡</span> Skills Vector Store Matches</div>
+            <span class="similarity-badge">${skills.length} matched</span>
+          </div>
+          <div class="evidence-doc-body">
+            ${skills.map(s => `
+              <div class="evidence-chunk-item">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                  <strong style="color:#fde047;">${escapeHtml(s.name)}</strong>
+                  <span style="color:var(--text-muted);font-size:0.75rem;">Score: ${s.similarity}</span>
+                </div>
+                <div style="color:var(--text-secondary);font-size:0.75rem;">${escapeHtml(s.description || '')}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Render Documents evidence grouped by document
+    if (docs.length > 0) {
+      docs.forEach(doc => {
+        const chunks = doc.chunks || [];
+        html += `
+          <div class="evidence-doc-group">
+            <div class="evidence-doc-header">
+              <div class="evidence-doc-title"><span>📄</span> ${escapeHtml(doc.doc_name)}</div>
+              <span class="similarity-badge">Top Match: ${doc.highest_similarity}</span>
+            </div>
+            <div class="evidence-doc-body">
+              ${chunks.map(ch => `
+                <div class="evidence-chunk-item">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:3px;font-size:0.72rem;color:var(--text-muted);">
+                    <span>Chunk #${ch.index || 0}</span>
+                    <span>Similarity: ${ch.similarity}</span>
+                  </div>
+                  <div>${escapeHtml(ch.text)}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    evidenceContainer.innerHTML = html;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Page 2: Ingestion Logic
+  // ---------------------------------------------------------------------------
+  async function loadIngestionData() {
+    try {
+      // 1. Stats
+      const sRes = await fetch('/api/vectordb/stats');
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        statChunksCount.textContent = sData.total_chunks || 0;
+        statDocsCount.textContent = sData.total_documents || 0;
+        statDbSize.textContent = sData.db_size_mb || '0.0';
+        activeEmbedderModel = sData.active_model || 'bge-m3';
+      }
+
+      // 2. Ingested Docs
+      const dRes = await fetch('/api/vectordb/documents');
+      if (dRes.ok) {
+        const dData = await dRes.json();
+        const docs = dData.documents || [];
+        if (docs.length === 0) {
+          ingestedDocsTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">No documents ingested.</td></tr>`;
         } else {
-            showToast(data.error || "Failed to change embedder model.", "error");
-            cancelModelChange();
+          ingestedDocsTbody.innerHTML = docs.map(d => `
+            <tr>
+              <td><strong>${escapeHtml(d.doc_name)}</strong></td>
+              <td>${d.chunk_count}</td>
+              <td>${d.total_chars.toLocaleString()}</td>
+              <td>
+                <button class="btn-table-delete" data-doc="${escapeHtml(d.doc_name)}">Delete</button>
+              </td>
+            </tr>
+          `).join('');
+
+          // Bind delete buttons
+          ingestedDocsTbody.querySelectorAll('.btn-table-delete').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const docName = btn.getAttribute('data-doc');
+              if (confirm(`Delete document '${docName}' from vector store?`)) {
+                await fetch(`/api/vectordb/document?doc_name=${encodeURIComponent(docName)}`, { method: 'DELETE' });
+                loadIngestionData();
+              }
+            });
+          });
         }
-    } catch (err) {
-        showToast(`Network error: ${err.message}`, "error");
-        cancelModelChange();
-    } finally {
-        spinner.style.display = "none";
-        cancelBtn.disabled = false;
-    }
-}
+      }
 
-// ==========================================
-// 7. Google AI Studio Chat Model Selection & Custom LLM
-// ==========================================
-async function loadChatModels() {
-    try {
-        const res = await fetch("/api/models");
-        const data = await res.json();
-        if (data.status !== "success") return;
-
-        availableChatModels = data.models || [];
-        if (!selectedChatModel && data.default_model) {
-            selectedChatModel = data.default_model;
-        }
-
-        const selectElem = document.getElementById("chatModelSelect");
-        if (selectElem) {
-            selectElem.innerHTML = availableChatModels.map(m => {
-                const isSelected = (m.id === selectedChatModel) || (!selectedChatModel && m.is_default);
-                if (isSelected) {
-                    selectedChatModel = m.id;
-                }
-                return `<option value="${escapeHtml(m.id)}" ${isSelected ? "selected" : ""}>${escapeHtml(m.name)}</option>`;
-            }).join("");
-        }
-
-        syncCustomEndpointVisibility();
-        updateChatModelBadge();
-    } catch (err) {
-        console.error("Failed to load models:", err);
-    }
-}
-
-function handleChatModelChange(event) {
-    selectedChatModel = event.target.value;
-    syncCustomEndpointVisibility();
-    updateChatModelBadge();
-    const modelName = getSelectedChatModelName();
-    showToast(`Selected model: ${modelName}`, "info");
-}
-
-function syncCustomEndpointVisibility() {
-    const box = document.getElementById("customEndpointBox");
-    if (!box) return;
-    if (selectedChatModel === "custom_model_api") {
-        box.style.display = "flex";
-        const input = document.getElementById("inputCustomEndpoint");
-        if (input && !input.value) {
-            input.value = "http://127.0.0.1:8000/v1/chat/completions";
-        }
-    } else {
-        box.style.display = "none";
-    }
-}
-
-function getSelectedChatModelName() {
-    if (selectedChatModel === "custom_model_api") return "Custom Model API";
-    const found = availableChatModels.find(m => m.id === selectedChatModel);
-    if (found && found.name) return found.name;
-    if (selectedChatModel) return selectedChatModel.replace("models/", "");
-    return "AI Model";
-}
-
-function updateChatModelBadge() {
-    const badge = document.getElementById("activeModelTag");
-    if (!badge) return;
-    if (selectedChatModel === "custom_model_api") {
-        badge.textContent = "Custom Private LLM";
-        badge.title = "Direct private LLM endpoint execution";
-        badge.className = "badge badge-primary";
-        return;
-    }
-    badge.className = "badge badge-success";
-    const found = availableChatModels.find(m => m.id === selectedChatModel);
-    if (found) {
-        badge.textContent = found.name.length > 22 ? found.name.slice(0, 20) + "..." : found.name;
-        badge.title = `${found.id} - ${found.description || 'Google AI Studio text model'}`;
-    }
-}
-
-// ==========================================================================
-// Application Shutdown Handlers
-// ==========================================================================
-
-function openShutdownModal() {
-    const modal = document.getElementById("shutdownModal");
-    if (modal) {
-        modal.style.display = "flex";
-        document.body.style.overflow = "hidden";
-    }
-}
-
-function closeShutdownModal() {
-    const modal = document.getElementById("shutdownModal");
-    if (modal) {
-        modal.style.display = "none";
-        document.body.style.overflow = "";
-    }
-}
-
-function closeShutdownModalOnBackdrop(e) {
-    if (e.target && e.target.id === "shutdownModal") {
-        closeShutdownModal();
-    }
-}
-
-async function executeAppShutdown() {
-    const btn = document.getElementById("btnConfirmShutdown");
-    const cancelBtn = document.getElementById("btnCancelShutdown");
-    const spinner = document.getElementById("shutdownSpinner");
-
-    if (btn) btn.disabled = true;
-    if (cancelBtn) cancelBtn.disabled = true;
-    if (spinner) spinner.style.display = "inline-block";
-
-    try {
-        const resp = await fetch("/api/shutdown", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "shutdown" })
+      // 3. Models
+      const mRes = await fetch('/api/vectordb/models');
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        const models = mData.models || [];
+        
+        // Update Embedder Select dropdown
+        embedderSelect.innerHTML = '';
+        models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.name;
+          opt.textContent = `${m.name} (${m.status})`;
+          if (m.is_active) opt.selected = true;
+          embedderSelect.appendChild(opt);
         });
-        const data = await resp.json().catch(() => ({}));
 
-        const modalBody = document.querySelector("#shutdownModal .modal-body");
-        if (modalBody) {
-            modalBody.innerHTML = `
-                <div style="text-align: center; padding: 18px 8px;">
-                    <div style="font-size: 44px; margin-bottom: 12px;">🛑</div>
-                    <h3 style="color: #fda4af; margin-bottom: 8px; font-size: 18px;">Application Shut Down</h3>
-                    <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6;">
-                        ${escapeHtml(data.message || "Agent with RAG server is shutting down. The application has been disabled.")}
-                    </p>
-                    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 14px;">
-                        The server process is terminating and is no longer accessible. You may now close this browser tab.
-                    </p>
-                </div>
-            `;
-        }
-        const modalFooter = document.querySelector("#shutdownModal .modal-footer");
-        if (modalFooter) {
-            modalFooter.innerHTML = `<button type="button" class="btn btn-outline" onclick="closeShutdownModal()">Close Dialog</button>`;
-        }
-
-        // Update top status indicator to offline
-        const statusLabel = document.getElementById("backendStatusLabel");
-        const statusDot = document.querySelector("#backendStatusPill .status-dot");
-        if (statusLabel) statusLabel.textContent = "Server Offline";
-        if (statusDot) {
-            statusDot.className = "status-dot error";
-            statusDot.title = "Server has shut down";
-        }
-    } catch (err) {
-        console.warn("Shutdown request dispatched, server may have already stopped:", err);
-        const modalBody = document.querySelector("#shutdownModal .modal-body");
-        if (modalBody) {
-            modalBody.innerHTML = `
-                <div style="text-align: center; padding: 18px 8px;">
-                    <div style="font-size: 44px; margin-bottom: 12px;">🛑</div>
-                    <h3 style="color: #fda4af; margin-bottom: 8px; font-size: 18px;">Application Shut Down</h3>
-                    <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6;">
-                        Agent with RAG server process has terminated and is now offline.
-                    </p>
-                    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 14px;">
-                        You may now close this browser tab.
-                    </p>
-                </div>
-            `;
-        }
+        // Update Models Table
+        availableModelsTbody.innerHTML = models.map(m => `
+          <tr>
+            <td><strong>${escapeHtml(m.name)}</strong></td>
+            <td>${m.dimensions}</td>
+            <td>${m.context_window}</td>
+            <td>${escapeHtml(m.size)}</td>
+            <td>${escapeHtml(m.description)}</td>
+            <td>
+              <span class="status-badge ${m.is_active ? 'active' : (m.is_installed ? 'installed' : 'available')}">
+                ${m.status}
+              </span>
+            </td>
+          </tr>
+        `).join('');
+      }
+    } catch (e) {
+      console.error('Failed to load ingestion data:', e);
     }
-}
+  }
 
-// ==========================================
-// 10. Telemetry & Performance Analytics
-// ==========================================
-let telemetryRequestsChart = null;
-let telemetryTokensChart = null;
-let telemetryIsLoading = false;
+  // Sample URLs click
+  document.querySelectorAll('.btn-sample-url').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ingestSourceInput.value = btn.getAttribute('data-url');
+      ingestSourceInput.focus();
+    });
+  });
 
-async function loadTelemetry(isManualRefresh = false) {
-    if (telemetryIsLoading) return;
-    telemetryIsLoading = true;
+  // Collapsible toggle
+  btnToggleChunking.addEventListener('click', () => {
+    chunkingContent.classList.toggle('hidden');
+    const arrow = btnToggleChunking.querySelector('.collapsible-arrow');
+    arrow.textContent = chunkingContent.classList.contains('hidden') ? '▼' : '▲';
+  });
 
-    const refreshBtn = document.getElementById("btnRefreshTelemetry");
-    const refreshIcon = refreshBtn ? refreshBtn.querySelector(".btn-icon") : null;
-    if (refreshIcon) {
-        refreshIcon.style.display = "inline-block";
-        refreshIcon.style.transition = "transform 0.5s ease";
-        refreshIcon.style.transform = "rotate(360deg)";
+  // Populate DB Button
+  btnPopulateDb.addEventListener('click', async () => {
+    const source = ingestSourceInput.value.trim();
+    if (!source) {
+      alert('Please enter a URL or local path.');
+      return;
     }
+
+    btnPopulateDb.disabled = true;
+    ingestSpinner.classList.remove('hidden');
+    storageStatusBanner.innerHTML = '<span class="status-indicator-busy">⏳ Ingestion in progress...</span>';
 
     try {
-        const modelSelect = document.getElementById("telemetryModelSelect");
-        const intervalSelect = document.getElementById("telemetryIntervalSelect");
-        const timeRangeSelect = document.getElementById("telemetryTimeRangeSelect");
-        const startDateInput = document.getElementById("telemetryStartDate");
-        const endDateInput = document.getElementById("telemetryEndDate");
+      const res = await fetch('/api/vectordb/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: source,
+          chunk_size: parseInt(inputChunkSize.value) || 1000,
+          chunk_overlap: parseInt(inputChunkOverlap.value) || 200,
+        }),
+      });
 
-        const selectedModel = modelSelect ? modelSelect.value : "all";
-        const selectedInterval = intervalSelect ? intervalSelect.value : "15m";
-        const selectedTimeRange = timeRangeSelect ? timeRangeSelect.value : "1d";
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ingestion failed');
 
-        let url = `/api/telemetry?model=${encodeURIComponent(selectedModel)}&interval=${encodeURIComponent(selectedInterval)}&time_range=${encodeURIComponent(selectedTimeRange)}`;
-
-        if (selectedTimeRange === "custom") {
-            const startDate = startDateInput ? startDateInput.value : "";
-            const endDate = endDateInput ? endDateInput.value : "";
-            if (startDate) url += `&start_date=${encodeURIComponent(startDate)}`;
-            if (endDate) url += `&end_date=${encodeURIComponent(endDate)}`;
-        }
-
-        const res = await fetch(url);
-        if (!res.ok) {
-            throw new Error(`Server returned HTTP ${res.status}`);
-        }
-        const json = await res.json();
-        if (json.status !== "success") {
-            throw new Error(json.message || "Failed to load telemetry data");
-        }
-
-        const data = json.data || json;
-
-        // 1. Update Top 5 Statistics Metric Cards
-        const totals = data.summary || data.totals || {};
-        const totalPromptsEl = document.getElementById("statTotalPrompts");
-        const totalResponsesEl = document.getElementById("statTotalResponses");
-        const totalErrorsEl = document.getElementById("statTotalErrors");
-        const totalInputTokensEl = document.getElementById("statTotalInputTokens");
-        const totalOutputTokensEl = document.getElementById("statTotalOutputTokens");
-
-        if (totalPromptsEl) totalPromptsEl.textContent = Number(totals.total_prompts || 0).toLocaleString();
-        if (totalResponsesEl) totalResponsesEl.textContent = Number(totals.total_responses || 0).toLocaleString();
-        if (totalErrorsEl) totalErrorsEl.textContent = Number(totals.total_errors || 0).toLocaleString();
-        if (totalInputTokensEl) totalInputTokensEl.textContent = Number(totals.total_input_tokens || 0).toLocaleString();
-        if (totalOutputTokensEl) totalOutputTokensEl.textContent = Number(totals.total_output_tokens || 0).toLocaleString();
-
-        // 2. Populate Model Filter Dropdown
-        const models = data.models || data.available_models || [];
-        if (modelSelect && Array.isArray(models)) {
-            const currentVal = modelSelect.value;
-            const existingOptions = Array.from(modelSelect.options).map(o => o.value);
-            const newOptions = ["all", ...models];
-            const hasChanged = existingOptions.length !== newOptions.length || !newOptions.every(m => existingOptions.includes(m));
-
-            if (hasChanged) {
-                modelSelect.innerHTML = `<option value="all">All Models</option>`;
-                models.forEach(m => {
-                    const opt = document.createElement("option");
-                    opt.value = m;
-                    opt.textContent = m;
-                    modelSelect.appendChild(opt);
-                });
-                if (newOptions.includes(currentVal)) {
-                    modelSelect.value = currentVal;
-                } else {
-                    modelSelect.value = "all";
-                }
-            }
-        }
-
-        // 3. Update Interval Badges on Graph Cards
-        const intervalLabels = {
-            "1m": "1 min interval",
-            "15m": "15 min interval",
-            "1h": "1 hr interval",
-            "1d": "1 day interval"
-        };
-        const currentInterval = (data.filters && data.filters.interval) || data.interval || "15m";
-        const intervalText = intervalLabels[currentInterval] || `${currentInterval} interval`;
-        const leftBadge = document.getElementById("leftPlotIntervalBadge");
-        const rightBadge = document.getElementById("rightPlotIntervalBadge");
-        if (leftBadge) leftBadge.textContent = intervalText;
-        if (rightBadge) rightBadge.textContent = intervalText;
-
-        // 4. Render Dual Graphs (Chart.js)
-        renderTelemetryCharts(data.time_series || []);
-
-        if (isManualRefresh) {
-            showToast("Telemetry metrics refreshed successfully", "success");
-        }
+      alert(data.message || 'Ingestion complete!');
+      ingestSourceInput.value = '';
+      loadIngestionData();
     } catch (err) {
-        console.error("Error loading telemetry:", err);
-        showToast("Failed to fetch telemetry data: " + err.message, "error");
+      alert(`Ingestion error: ${err.message}`);
     } finally {
-        telemetryIsLoading = false;
-        if (refreshIcon) {
-            setTimeout(() => {
-                refreshIcon.style.transform = "none";
-            }, 500);
-        }
+      btnPopulateDb.disabled = false;
+      ingestSpinner.classList.add('hidden');
+      storageStatusBanner.innerHTML = '<span class="status-indicator-idle">Idle (Ready)</span>';
     }
-}
+  });
 
-function renderTelemetryCharts(series) {
-    if (typeof Chart === "undefined") {
-        console.warn("Chart.js is not loaded, skipping chart rendering");
-        return;
+  // Reset DB Button
+  btnResetDb.addEventListener('click', async () => {
+    if (confirm('Are you sure you want to reset the document vector database? All ingested chunks will be removed.')) {
+      await fetch('/api/vectordb/reset', { method: 'POST' });
+      loadIngestionData();
     }
+  });
 
-    let labels = [];
-    let promptsData = [];
-    let responsesData = [];
-    let errorsData = [];
-    let inputTokensData = [];
-    let outputTokensData = [];
-
-    if (Array.isArray(series)) {
-        labels = series.map(item => item.timestamp || item.label || "");
-        promptsData = series.map(item => item.prompts || 0);
-        responsesData = series.map(item => item.responses || 0);
-        errorsData = series.map(item => item.errors || 0);
-        inputTokensData = series.map(item => item.input_tokens || 0);
-        outputTokensData = series.map(item => item.output_tokens || 0);
-    } else if (series && typeof series === "object") {
-        labels = series.labels || [];
-        promptsData = series.prompts || [];
-        responsesData = series.responses || [];
-        errorsData = series.errors || [];
-        inputTokensData = series.input_tokens || [];
-        outputTokensData = series.output_tokens || [];
+  // Update Skills Database Button
+  btnUpdateSkills.addEventListener('click', async () => {
+    btnUpdateSkills.disabled = true;
+    btnUpdateSkills.textContent = 'Updating...';
+    try {
+      const res = await fetch('/api/skills/update', { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || 'Skills updated!');
+      loadIngestionData();
+      loadModelsAndSkills();
+    } catch (e) {
+      alert('Failed to update skills.');
+    } finally {
+      btnUpdateSkills.disabled = false;
+      btnUpdateSkills.innerHTML = '<span class="icon">🔄</span> Update Skills Database';
     }
+  });
 
-    const commonScales = {
+  // Change Embedder Model Dropdown with Stern Warning
+  embedderSelect.addEventListener('change', () => {
+    const targetModel = embedderSelect.value;
+    if (targetModel === activeEmbedderModel) return;
+
+    pendingModelSwitch = targetModel;
+    modalTargetModelName.textContent = targetModel;
+    changeModelConfirmInput.value = '';
+    btnConfirmChangeModel.disabled = true;
+    changeModelModal.classList.remove('hidden');
+    changeModelConfirmInput.focus();
+  });
+
+  changeModelConfirmInput.addEventListener('input', () => {
+    btnConfirmChangeModel.disabled = (changeModelConfirmInput.value.trim() !== 'Change model and delete data');
+  });
+
+  btnCancelChangeModel.addEventListener('click', () => {
+    changeModelModal.classList.add('hidden');
+    embedderSelect.value = activeEmbedderModel;
+    pendingModelSwitch = null;
+  });
+
+  btnConfirmChangeModel.addEventListener('click', async () => {
+    if (!pendingModelSwitch) return;
+    btnConfirmChangeModel.disabled = true;
+    btnConfirmChangeModel.textContent = 'Switching...';
+
+    try {
+      const res = await fetch('/api/vectordb/change-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: pendingModelSwitch,
+          confirmation: 'Change model and delete data',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to change embedder model');
+
+      alert(data.message || 'Embedder model switched successfully!');
+      activeEmbedderModel = data.active_model;
+      changeModelModal.classList.add('hidden');
+      loadIngestionData();
+      checkHealth();
+    } catch (e) {
+      alert(`Error: ${e.message}`);
+      embedderSelect.value = activeEmbedderModel;
+    } finally {
+      btnConfirmChangeModel.disabled = false;
+      btnConfirmChangeModel.textContent = 'Delete Data';
+      pendingModelSwitch = null;
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Page 3: Telemetry & Charts
+  // ---------------------------------------------------------------------------
+  async function loadTelemetryData() {
+    try {
+      const params = new URLSearchParams({
+        model: telemetryModelFilter.value,
+        interval: telIntervalSelect.value,
+        time_range: telRangeSelect.value,
+      });
+
+      if (telRangeSelect.value === 'Custom' && telStartDate.value && telEndDate.value) {
+        params.append('start_date', telStartDate.value);
+        params.append('end_date', telEndDate.value);
+      }
+
+      const res = await fetch(`/api/telemetry?${params.toString()}`);
+      if (!res.ok) throw new Error('Failed to fetch telemetry data');
+      const data = await res.json();
+
+      // 1. Update Used Models Dropdown
+      const usedModels = data.used_models || [];
+      const currentSelected = telemetryModelFilter.value;
+      telemetryModelFilter.innerHTML = '<option value="All Models">All Models</option>';
+      usedModels.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        if (m === currentSelected) opt.selected = true;
+        telemetryModelFilter.appendChild(opt);
+      });
+
+      // 2. Summary stats
+      const s = data.summary || {};
+      telTotalPrompts.textContent = (s.total_prompts || 0).toLocaleString();
+      telTotalResponses.textContent = (s.total_responses || 0).toLocaleString();
+      telTotalErrors.textContent = (s.total_errors || 0).toLocaleString();
+      telTotalInTokens.textContent = (s.total_input_tokens || 0).toLocaleString();
+      telTotalOutTokens.textContent = (s.total_output_tokens || 0).toLocaleString();
+
+      // 3. Performance stats
+      const p = data.performance || {};
+      valTtft.textContent = `${p.ttft_ms || 0} ms`;
+      valItl.textContent = `${p.itl_ms || 0} ms`;
+      valTps.textContent = `${p.tps || 0} tok/s`;
+      valTpot.textContent = `${p.tpot_ms || 0} ms/tok`;
+
+      // 4. Render Charts
+      renderTelemetryCharts(data.charts || {});
+
+    } catch (e) {
+      console.error('Failed to load telemetry:', e);
+    }
+  }
+
+  function renderTelemetryCharts(chartsData) {
+    const labels = chartsData.labels || [];
+    const prompts = chartsData.prompts || [];
+    const responses = chartsData.responses || [];
+    const errors = chartsData.errors || [];
+    const inTokens = chartsData.input_tokens || [];
+    const outTokens = chartsData.output_tokens || [];
+
+    // Destroy existing Chart instances
+    if (chartThroughputInstance) chartThroughputInstance.destroy();
+    if (chartTokensInstance) chartTokensInstance.destroy();
+
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 } } },
+      },
+      scales: {
         x: {
-            grid: {
-                color: "rgba(255, 255, 255, 0.05)",
-                drawBorder: false
-            },
-            ticks: {
-                color: "#94a3b8",
-                font: { size: 10.5, family: "'Inter', sans-serif" },
-                maxRotation: 45,
-                minRotation: 0,
-                autoSkip: true,
-                maxTicksLimit: 12
-            }
+          grid: { color: 'rgba(255, 255, 255, 0.05)' },
+          ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } },
         },
         y: {
-            beginAtZero: true,
-            grid: {
-                color: "rgba(255, 255, 255, 0.05)",
-                drawBorder: false
-            },
-            ticks: {
-                color: "#94a3b8",
-                font: { size: 10.5, family: "'Inter', sans-serif" },
-                precision: 0
-            }
-        }
-    };
-
-    const commonPlugins = {
-        legend: {
-            position: "top",
-            labels: {
-                color: "#cbd5e1",
-                font: { size: 12, family: "'Inter', sans-serif" },
-                boxWidth: 14,
-                boxHeight: 14,
-                usePointStyle: true,
-                pointStyle: "circle",
-                padding: 16
-            }
+          beginAtZero: true,
+          grid: { color: 'rgba(255, 255, 255, 0.05)' },
+          ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } },
         },
-        tooltip: {
-            backgroundColor: "rgba(15, 21, 35, 0.95)",
-            titleColor: "#f8fafc",
-            bodyColor: "#cbd5e1",
-            borderColor: "rgba(56, 189, 248, 0.3)",
-            borderWidth: 1,
-            padding: 10,
-            cornerRadius: 8,
-            titleFont: { size: 12, weight: "bold" },
-            bodyFont: { size: 12 }
-        }
+      },
     };
 
-    // 1. Left Plot: Requests Activity (Prompts, Responses, Errors)
-    const requestsCanvas = document.getElementById("telemetryRequestsChart");
-    if (requestsCanvas) {
-        if (telemetryRequestsChart) {
-            telemetryRequestsChart.destroy();
-        }
-        const ctxReq = requestsCanvas.getContext("2d");
-        telemetryRequestsChart = new Chart(ctxReq, {
-            type: "line",
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: "Prompts",
-                        data: promptsData,
-                        borderColor: "#6366f1",
-                        backgroundColor: "rgba(99, 102, 241, 0.15)",
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        pointHoverRadius: 5,
-                        fill: false
-                    },
-                    {
-                        label: "Responses",
-                        data: responsesData,
-                        borderColor: "#10b981",
-                        backgroundColor: "rgba(16, 185, 129, 0.15)",
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        pointHoverRadius: 5,
-                        fill: false
-                    },
-                    {
-                        label: "Errors",
-                        data: errorsData,
-                        borderColor: "#f43f5e",
-                        backgroundColor: "rgba(244, 63, 94, 0.15)",
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        pointHoverRadius: 5,
-                        fill: false
-                    }
-                ]
+    // Chart 1: Throughput
+    const ctx1 = document.getElementById('chartThroughput');
+    if (ctx1 && window.Chart) {
+      chartThroughputInstance = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Prompts',
+              data: prompts,
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+              tension: 0.3,
+              fill: true,
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: {
-                    mode: "index",
-                    intersect: false
-                },
-                scales: commonScales,
-                plugins: commonPlugins
-            }
-        });
+            {
+              label: 'Responses',
+              data: responses,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              tension: 0.3,
+              fill: true,
+            },
+            {
+              label: 'Errors',
+              data: errors,
+              borderColor: '#ef4444',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              tension: 0.3,
+              fill: true,
+            },
+          ],
+        },
+        options: chartOptions,
+      });
     }
 
-    // 2. Right Plot: Token Throughput (Input & Output Tokens)
-    const tokensCanvas = document.getElementById("telemetryTokensChart");
-    if (tokensCanvas) {
-        if (telemetryTokensChart) {
-            telemetryTokensChart.destroy();
-        }
-        const ctxTok = tokensCanvas.getContext("2d");
-        telemetryTokensChart = new Chart(ctxTok, {
-            type: "line",
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: "Input Tokens",
-                        data: inputTokensData,
-                        borderColor: "#06b6d4",
-                        backgroundColor: "rgba(6, 182, 212, 0.15)",
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        pointHoverRadius: 5,
-                        fill: false
-                    },
-                    {
-                        label: "Output Tokens",
-                        data: outputTokensData,
-                        borderColor: "#a855f7",
-                        backgroundColor: "rgba(168, 85, 247, 0.15)",
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        pointHoverRadius: 5,
-                        fill: false
-                    }
-                ]
+    // Chart 2: Tokens
+    const ctx2 = document.getElementById('chartTokens');
+    if (ctx2 && window.Chart) {
+      chartTokensInstance = new Chart(ctx2, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Input Tokens',
+              data: inTokens,
+              borderColor: '#8b5cf6',
+              backgroundColor: 'rgba(139, 92, 246, 0.1)',
+              tension: 0.3,
+              fill: true,
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: {
-                    mode: "index",
-                    intersect: false
-                },
-                scales: commonScales,
-                plugins: commonPlugins
-            }
-        });
+            {
+              label: 'Output Tokens',
+              data: outTokens,
+              borderColor: '#06b6d4',
+              backgroundColor: 'rgba(6, 182, 212, 0.1)',
+              tension: 0.3,
+              fill: true,
+            },
+          ],
+        },
+        options: chartOptions,
+      });
     }
-}
+  }
 
-function handleTelemetryModelChange() {
-    loadTelemetry();
-}
-
-function handleTelemetryIntervalChange() {
-    loadTelemetry();
-}
-
-function handleTelemetryTimeRangeChange() {
-    const rangeSelect = document.getElementById("telemetryTimeRangeSelect");
-    const customBar = document.getElementById("telemetryCustomDates");
-    if (!rangeSelect) return;
-
-    if (rangeSelect.value === "custom") {
-        if (customBar) customBar.style.display = "flex";
-        const startInput = document.getElementById("telemetryStartDate");
-        const endInput = document.getElementById("telemetryEndDate");
-        if (startInput && !startInput.value) {
-            const d = new Date();
-            d.setDate(d.getDate() - 7);
-            startInput.value = d.toISOString().split("T")[0];
-        }
-        if (endInput && !endInput.value) {
-            endInput.value = new Date().toISOString().split("T")[0];
-        }
-        loadTelemetry();
+  btnRefreshTelemetry.addEventListener('click', loadTelemetryData);
+  telemetryModelFilter.addEventListener('change', loadTelemetryData);
+  telIntervalSelect.addEventListener('change', loadTelemetryData);
+  
+  telRangeSelect.addEventListener('change', () => {
+    if (telRangeSelect.value === 'Custom') {
+      customDateBoxes.classList.remove('hidden');
     } else {
-        if (customBar) customBar.style.display = "none";
-        loadTelemetry();
+      customDateBoxes.classList.add('hidden');
+      loadTelemetryData();
     }
-}
+  });
 
-function applyCustomDates() {
-    const startInput = document.getElementById("telemetryStartDate");
-    const endInput = document.getElementById("telemetryEndDate");
-    if (!startInput || !endInput || !startInput.value || !endInput.value) {
-        showToast("Please select both starting and ending dates.", "warning");
-        return;
-    }
-    if (startInput.value > endInput.value) {
-        showToast("Starting date cannot be later than ending date.", "warning");
-        return;
-    }
-    loadTelemetry();
-}
+  telStartDate.addEventListener('change', loadTelemetryData);
+  telEndDate.addEventListener('change', loadTelemetryData);
 
-function refreshTelemetry() {
-    loadTelemetry(true);
-}
+  // ---------------------------------------------------------------------------
+  // Page 4: Audit Logs & Events
+  // ---------------------------------------------------------------------------
+  async function loadAuditLogs() {
+    try {
+      const res = await fetch('/api/logs');
+      if (!res.ok) throw new Error('Failed to fetch logs');
+      const data = await res.json();
+
+      // Stats
+      const st = data.statistics || {};
+      auditTotalPrompts.textContent = st.total_user_prompts || 0;
+      auditModelCalls.textContent = st.total_model_calls || 0;
+      auditOllamaEmbeds.textContent = st.total_ollama_embeds || 0;
+      auditAvgLatency.textContent = st.avg_latency_ms || '0.0';
+
+      // Conversations Table
+      currentConversationsCache = data.conversations || [];
+      if (currentConversationsCache.length === 0) {
+        conversationsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No conversations recorded yet.</td></tr>`;
+        eventsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No conversation events to display.</td></tr>`;
+        selectedConvBadge.textContent = 'None Selected';
+        return;
+      }
+
+      conversationsTbody.innerHTML = currentConversationsCache.map(c => `
+        <tr class="conv-row ${c.conversation_id === selectedConversationId ? 'selected-row' : ''}" data-cid="${escapeHtml(c.conversation_id)}">
+          <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(c.timestamp)}</span></td>
+          <td><code style="color:#a5b4fc;">${escapeHtml(c.conversation_id)}</code></td>
+          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.user_query)}</td>
+          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.agent_response)}</td>
+          <td><span class="badge">${escapeHtml(c.agent_type)}</span></td>
+          <td><strong>${c.event_count}</strong></td>
+        </tr>
+      `).join('');
+
+      // Bind row clicks
+      conversationsTbody.querySelectorAll('.conv-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const cid = row.getAttribute('data-cid');
+          selectConversation(cid);
+        });
+      });
+
+      // Auto-select first conversation if none selected
+      if (!selectedConversationId && currentConversationsCache.length > 0) {
+        selectConversation(currentConversationsCache[0].conversation_id);
+      } else if (selectedConversationId) {
+        selectConversation(selectedConversationId);
+      }
+
+    } catch (e) {
+      console.error('Failed to load audit logs:', e);
+    }
+  }
+
+  async function selectConversation(cid) {
+    selectedConversationId = cid;
+    selectedConvBadge.textContent = cid;
+
+    // Highlight row
+    conversationsTbody.querySelectorAll('.conv-row').forEach(row => {
+      if (row.getAttribute('data-cid') === cid) {
+        row.classList.add('selected-row');
+      } else {
+        row.classList.remove('selected-row');
+      }
+    });
+
+    // Fetch conversation events
+    try {
+      const res = await fetch(`/api/logs/${encodeURIComponent(cid)}`);
+      if (!res.ok) throw new Error('Failed to load events');
+      const data = await res.json();
+      currentEventsCache = data.events || [];
+
+      if (currentEventsCache.length === 0) {
+        eventsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No events recorded for this conversation.</td></tr>`;
+        return;
+      }
+
+      eventsTbody.innerHTML = currentEventsCache.map((evt, idx) => `
+        <tr class="event-row" data-idx="${idx}">
+          <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(evt.local_time)}</span></td>
+          <td><span class="step-bubble ${evt.event_type.toLowerCase().replace(/\s+/g, '-')}">${escapeHtml(evt.event_type)}</span></td>
+          <td><strong>${escapeHtml(evt.invoker)}</strong></td>
+          <td>${escapeHtml(evt.target)}</td>
+          <td>${escapeHtml(evt.short_description)}</td>
+        </tr>
+      `).join('');
+
+      // Bind click to open detail inspector
+      eventsTbody.querySelectorAll('.event-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const idx = parseInt(row.getAttribute('data-idx'));
+          const evt = currentEventsCache[idx];
+          if (evt) showEventDetailModal(evt);
+        });
+      });
+
+    } catch (e) {
+      eventsTbody.innerHTML = `<tr><td colspan="5" class="text-danger">Error loading events: ${e.message}</td></tr>`;
+    }
+  }
+
+  function extractPromptAndResponse(evt) {
+    const payload = evt.payload || {};
+    let prompt = null;
+    let response = null;
+
+    // Extract Prompt / Input
+    if (payload.prompt !== undefined && payload.prompt !== null) {
+      prompt = payload.prompt;
+      if (payload.system_instruction && typeof prompt === 'string') {
+        prompt = `[System Instruction]\n${payload.system_instruction}\n\n[User Prompt]\n${prompt}`;
+      }
+    } else if (payload.message !== undefined && payload.message !== null) {
+      prompt = payload.message;
+    } else if (payload.query !== undefined && payload.query !== null) {
+      prompt = payload.query;
+    } else if (payload.arguments !== undefined && payload.arguments !== null) {
+      prompt = payload.arguments;
+    } else if (payload.text_sample !== undefined && payload.text_sample !== null) {
+      prompt = payload.text_sample;
+    } else if (payload.input !== undefined && payload.input !== null) {
+      prompt = payload.input;
+    }
+
+    // Extract Response / Output
+    if (payload.response_text !== undefined && payload.response_text !== null) {
+      response = payload.response_text;
+    } else if (payload.response !== undefined && payload.response !== null) {
+      response = payload.response;
+    } else if (payload.result !== undefined && payload.result !== null) {
+      response = payload.result;
+    } else if (payload.matches !== undefined && payload.matches !== null) {
+      response = payload.matches;
+    } else if (payload.results !== undefined && payload.results !== null) {
+      response = payload.results;
+    } else if (payload.output !== undefined && payload.output !== null) {
+      response = payload.output;
+    } else if (payload.raw_response !== undefined && payload.raw_response !== null) {
+      response = payload.raw_response;
+    }
+
+    // Contextual fallback: if neither is set, use description for prompt
+    if (prompt === null && response === null && evt.short_description) {
+      prompt = evt.short_description;
+    }
+
+    return { prompt, response };
+  }
+
+  function renderFormattedContent(content, container) {
+    if (!container) return;
+
+    if (content === null || content === undefined || content === '') {
+      container.innerHTML = `<div class="text-muted-box">None recorded for this event step.</div>`;
+      return;
+    }
+
+    // Determine if content is JSON or a JSON string
+    let isJson = false;
+    let parsedObj = null;
+
+    if (typeof content === 'object') {
+      isJson = true;
+      parsedObj = content;
+    } else if (typeof content === 'string') {
+      const trimmed = content.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try {
+          parsedObj = JSON.parse(trimmed);
+          isJson = true;
+        } catch (e) {
+          isJson = false;
+        }
+      }
+    }
+
+    if (isJson && parsedObj !== null) {
+      const jsonStr = JSON.stringify(parsedObj, null, 2);
+      container.innerHTML = `
+        <div class="json-viewer-container">
+          <div class="json-viewer-header">
+            <span><i class="fas fa-code"></i> JSON Viewer</span>
+            <button type="button" class="btn-copy">📋 Copy</button>
+          </div>
+          <pre class="json-code-block">${escapeHtml(jsonStr)}</pre>
+        </div>
+      `;
+      const copyBtn = container.querySelector('.btn-copy');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(jsonStr);
+          copyBtn.textContent = '✅ Copied!';
+          setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+        });
+      }
+    } else {
+      const textStr = typeof content === 'string' ? content : String(content);
+      container.innerHTML = `
+        <div class="human-readable-text-box">
+          <div class="text-box-header">
+            <span><i class="fas fa-align-left"></i> Human Readable Text</span>
+            <button type="button" class="btn-copy">📋 Copy</button>
+          </div>
+          <div class="text-box-content">${escapeHtml(textStr)}</div>
+        </div>
+      `;
+      const copyBtn = container.querySelector('.btn-copy');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(textStr);
+          copyBtn.textContent = '✅ Copied!';
+          setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+        });
+      }
+    }
+  }
+
+  function showEventDetailModal(evt) {
+    eventModalMeta.innerHTML = `
+      <div><span style="color:var(--text-muted);">Event ID:</span> <code>${escapeHtml(evt.id || '')}</code></div>
+      <div><span style="color:var(--text-muted);">Time (Local):</span> <strong>${escapeHtml(evt.local_time || '')}</strong></div>
+      <div><span style="color:var(--text-muted);">Event Type:</span> <strong style="color:#60a5fa;">${escapeHtml(evt.event_type || '')}</strong></div>
+      <div><span style="color:var(--text-muted);">Latency:</span> <strong>${evt.elapsed_ms ? `${evt.elapsed_ms} ms` : 'N/A'}</strong></div>
+      <div><span style="color:var(--text-muted);">Invoker:</span> <strong>${escapeHtml(evt.invoker || '')}</strong></div>
+      <div><span style="color:var(--text-muted);">Target:</span> <strong>${escapeHtml(evt.target || '')}</strong></div>
+      <div style="grid-column: span 2;"><span style="color:var(--text-muted);">Description:</span> <strong>${escapeHtml(evt.short_description || '')}</strong></div>
+    `;
+
+    const { prompt, response } = extractPromptAndResponse(evt);
+    renderFormattedContent(prompt, eventModalPromptContainer);
+    renderFormattedContent(response, eventModalResponseContainer);
+
+    const jsonText = JSON.stringify(evt.payload || {}, null, 2);
+    eventModalJson.textContent = jsonText;
+    eventDetailModal.classList.remove('hidden');
+  }
+
+  btnCloseEventModal.addEventListener('click', () => eventDetailModal.classList.add('hidden'));
+  btnCloseEventModal2.addEventListener('click', () => eventDetailModal.classList.add('hidden'));
+
+  btnCopyJson.addEventListener('click', () => {
+    navigator.clipboard.writeText(eventModalJson.textContent);
+    btnCopyJson.textContent = '✅ Copied!';
+    setTimeout(() => { btnCopyJson.textContent = '📋 Copy'; }, 2000);
+  });
+
+  // Clear Logs Modal Flow
+  btnClearLogs.addEventListener('click', () => {
+    clearLogsModal.classList.remove('hidden');
+  });
+
+  btnCancelClearLogs.addEventListener('click', () => {
+    clearLogsModal.classList.add('hidden');
+  });
+
+  btnConfirmClearLogs.addEventListener('click', async () => {
+    try {
+      await fetch('/api/logs/clear', { method: 'POST' });
+      clearLogsModal.classList.add('hidden');
+      selectedConversationId = null;
+      loadAuditLogs();
+    } catch (e) {
+      alert('Failed to clear logs.');
+    }
+  });
+
+  btnRefreshLogs.addEventListener('click', loadAuditLogs);
+
+  // ---------------------------------------------------------------------------
+  // Utility Functions
+  // ---------------------------------------------------------------------------
+  function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatMarkdownText(text) {
+    if (!text) return '';
+    let clean = escapeHtml(text);
+    // Bold
+    clean = clean.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Code blocks
+    clean = clean.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;overflow-x:auto;">$1</pre>');
+    // Inline code
+    clean = clean.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:2px 5px;border-radius:4px;color:#93c5fd;">$1</code>');
+    // Newlines to br
+    clean = clean.replace(/\n/g, '<br>');
+    return clean;
+  }
+
+  // Initial Data Load
+  loadModelsAndSkills();
+});
