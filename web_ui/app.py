@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 import requests
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, has_request_context
 from dotenv import load_dotenv
 
 # Load secrets/.env
@@ -54,13 +54,18 @@ def resolve_url(url, host, port):
         return url.replace(f"{host}:{port}", f"127.0.0.1:{port}")
     return url
 
-def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model=""):
+def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model="", user=None, domain=None):
     try:
         url = resolve_url(LOGGING_URL, "logging", 8006)
+        u_session = session.get("user") if has_request_context() else {}
+        u = user or (u_session.get("email") if isinstance(u_session, dict) else None)
+        d = domain or (u_session.get("domain") if isinstance(u_session, dict) else None)
         requests.post(f"{url}/api/logs", json={
             "invoker": invoker,
             "recipient": recipient,
             "conversation_id": conv_id,
+            "user": u,
+            "domain": d,
             "type": event_type,
             "short_description": desc,
             "payload": payload,
@@ -82,50 +87,6 @@ CONTAINER_DIR_MAP = {
     "logging": "logging"
 }
 
-def get_container_keys_file(container_name):
-    # Check docker mounted container_secrets first
-    docker_c_sec = f"/app/container_secrets/{container_name}/keys"
-    if os.path.exists(os.path.dirname(docker_c_sec)):
-        return docker_c_sec
-    if container_name == "web_ui" and os.path.exists("/app/secrets"):
-        return "/app/secrets/keys"
-
-    # Fallback to local filesystem relative to project root
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    c_folder = CONTAINER_DIR_MAP.get(container_name, container_name)
-    sec_dir = os.path.join(base, c_folder, "secrets")
-    os.makedirs(sec_dir, exist_ok=True)
-    return os.path.join(sec_dir, "keys")
-
-def load_container_keys(container_name):
-    keys = {}
-    path = get_container_keys_file(container_name)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            keys[k.strip()] = v.strip()
-                        else:
-                            keys[line] = line
-        except Exception as e:
-            print(f"[WebUI] Error reading keys for {container_name}: {e}")
-    return keys
-
-def save_container_keys(container_name, keys_dict):
-    path = get_container_keys_file(container_name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for k, v in keys_dict.items():
-            if v and str(v).strip():
-                f.write(f"{k.strip()}={str(v).strip()}\n")
-
-def get_web_ui_key(target_service):
-    k_map = load_container_keys("web_ui")
-    return k_map.get(target_service) or k_map.get("all")
 
 @app.route("/")
 def index():
@@ -254,20 +215,29 @@ def log_page_view():
 @app.route("/api/users", methods=["GET", "POST"])
 def proxy_users():
     url = resolve_url(AUTH_URL, "auth_service", 8001)
+    user = session.get("user") or {}
     if request.method == "POST":
-        user = session.get("user")
-        if user and user.get("role") != "Admin":
+        if user.get("role") != "Admin":
             return jsonify({"status": "failed", "error": "Only users with Admin access can create user accounts"}), 403
-        r = requests.post(f"{url}/api/users", json=request.get_json(silent=True), timeout=5)
+        data = request.get_json(silent=True) or {}
+        if user.get("domain"):
+            data["creator_domain"] = user.get("domain")
+        data["creator_role"] = user.get("role")
+        r = requests.post(f"{url}/api/users", json=data, timeout=5)
         return jsonify(r.json()), r.status_code
     else:
-        r = requests.get(f"{url}/api/users", timeout=5)
+        params = {}
+        if user.get("domain"):
+            params["domain"] = user.get("domain")
+        if user.get("role"):
+            params["role"] = user.get("role")
+        r = requests.get(f"{url}/api/users", params=params, timeout=5)
         return jsonify(r.json()), r.status_code
 
 @app.route("/api/users/bulk_delete", methods=["POST"])
 def proxy_bulk_delete_users():
-    user = session.get("user")
-    if user and user.get("role") != "Admin":
+    user = session.get("user") or {}
+    if user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can delete user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
     try:
@@ -278,87 +248,127 @@ def proxy_bulk_delete_users():
 
 @app.route("/api/users/<int:uid>/role", methods=["PUT"])
 def proxy_update_user_role(uid):
-    user = session.get("user")
-    if user and user.get("role") != "Admin":
+    user = session.get("user") or {}
+    if user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can modify user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
-    r = requests.put(f"{url}/api/users/{uid}/role", json=request.get_json(silent=True), timeout=5)
+    params = {}
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
+    r = requests.put(f"{url}/api/users/{uid}/role", json=request.get_json(silent=True), params=params, timeout=5)
     return jsonify(r.json()), r.status_code
 
 @app.route("/api/users/<int:uid>/reset_password", methods=["POST"])
 def proxy_reset_password(uid):
-    user = session.get("user")
-    if user and user.get("role") != "Admin":
+    user = session.get("user") or {}
+    if user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can modify user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
-    r = requests.post(f"{url}/api/users/{uid}/reset_password", json=request.get_json(silent=True), timeout=5)
+    params = {}
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
+    r = requests.post(f"{url}/api/users/{uid}/reset_password", json=request.get_json(silent=True), params=params, timeout=5)
     return jsonify(r.json()), r.status_code
 
 @app.route("/api/users/<int:uid>", methods=["DELETE"])
 def proxy_delete_user(uid):
-    user = session.get("user")
-    if user and user.get("role") != "Admin":
+    user = session.get("user") or {}
+    if user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can modify user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
-    r = requests.delete(f"{url}/api/users/{uid}", timeout=5)
+    params = {}
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
+    r = requests.delete(f"{url}/api/users/{uid}", params=params, timeout=5)
     return jsonify(r.json()), r.status_code
 
 @app.route("/api/users/activity_logs", methods=["GET"])
 def proxy_user_activity():
     url = resolve_url(AUTH_URL, "auth_service", 8001)
-    r = requests.get(f"{url}/api/users/activity_logs", timeout=5)
-    return jsonify(r.json()), r.status_code
-
-@app.route("/api/keys", methods=["GET", "POST"])
-def proxy_keys():
-    url = resolve_url(AUTH_URL, "auth_service", 8001)
-    if request.method == "POST":
-        r = requests.post(f"{url}/api/keys", json=request.get_json(silent=True), timeout=5)
-    else:
-        r = requests.get(f"{url}/api/keys", timeout=5)
-    return jsonify(r.json()), r.status_code
-
-@app.route("/api/keys/<int:kid>", methods=["PUT", "DELETE"])
-def proxy_key_action(kid):
-    url = resolve_url(AUTH_URL, "auth_service", 8001)
-    if request.method == "PUT":
-        r = requests.put(f"{url}/api/keys/{kid}", json=request.get_json(silent=True), timeout=5)
-    else:
-        r = requests.delete(f"{url}/api/keys/{kid}", timeout=5)
-    return jsonify(r.json()), r.status_code
-
-@app.route("/api/keys/bulk_delete", methods=["POST"])
-def proxy_bulk_delete_keys():
-    url = resolve_url(AUTH_URL, "auth_service", 8001)
-    try:
-        r = requests.post(f"{url}/api/keys/bulk_delete", json=request.get_json(silent=True), timeout=5)
-        return jsonify(r.json()), r.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-@app.route("/api/keys/<int:kid>/activities", methods=["GET"])
-def proxy_key_activities(kid):
-    url = resolve_url(AUTH_URL, "auth_service", 8001)
-    key_prefix = request.args.get("key_prefix", "")
+    user = session.get("user") or {}
     params = {}
-    if key_prefix:
-        params["key_prefix"] = key_prefix
-    try:
-        r = requests.get(f"{url}/api/keys/{kid}/activities", params=params, timeout=5)
-        return jsonify(r.json()), r.status_code
-    except Exception as e:
-        return jsonify({"status": "failed", "error": str(e)}), 502
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
+    r = requests.get(f"{url}/api/users/activity_logs", params=params, timeout=5)
+    return jsonify(r.json()), r.status_code
 
-@app.route("/api/keys/activities", methods=["GET"])
-def proxy_all_key_activities():
-    url = resolve_url(AUTH_URL, "auth_service", 8001)
-    key_name = request.args.get("key_name", "")
-    key_prefix = request.args.get("key_prefix", "")
+@app.route("/api/jwt/activities", methods=["GET"])
+def get_jwt_activities():
+    user = session.get("user") or {}
+    domain = user.get("domain")
+    role = (user.get("role") or "User").lower()
+    email = user.get("email")
+
+    url = resolve_url(LOGGING_URL, "logging", 8006)
     try:
-        r = requests.get(f"{url}/api/keys/activities", params={"key_name": key_name, "key_prefix": key_prefix}, timeout=5)
-        return jsonify(r.json()), r.status_code
-    except Exception as e:
-        return jsonify({"status": "failed", "error": str(e)}), 502
+        r = requests.get(f"{url}/api/logs", timeout=5)
+        logs = r.json() if r.status_code == 200 else []
+        if isinstance(logs, dict) and "logs" in logs:
+            logs = logs["logs"]
+    except Exception:
+        logs = []
+
+    # Filter to ONLY initial requests from the user
+    # Primary user-initiated events:
+    # 'send_chat_request', 'user_session_login', 'user_session_logout', 'page_view', 'vectordb_ingest', 'vectordb_delete', 'user_registration'
+    PRIMARY_TYPES = {
+        "send_chat_request": "Chat Query (Agent)",
+        "user_session_login": "Session Login",
+        "user_session_logout": "Session Logout",
+        "vectordb_ingest": "Vector DB Document Ingest",
+        "vectordb_delete": "Vector DB Document Delete",
+        "user_registration": "User Registration",
+        "page_view": "Navigation Page View"
+    }
+
+    activities = []
+    for l in reversed(logs):
+        etype = l.get("type", "")
+        invoker = (l.get("invoker") or "").lower()
+        if etype not in PRIMARY_TYPES and invoker not in ["web ui", "web_ui", "client", "user"]:
+            continue
+
+        log_user = l.get("user") or l.get("payload", {}).get("user_name") or l.get("payload", {}).get("username") or ""
+        log_domain = l.get("domain") or ""
+        if not log_domain and "@" in log_user:
+            log_domain = log_user.split("@", 1)[1]
+
+        # Multi-tenant domain scoping:
+        if role != "admin" or domain:
+            if domain:
+                if log_domain and log_domain != domain:
+                    continue
+                if not log_domain and log_user and not log_user.endswith(f"@{domain}"):
+                    continue
+            if role == "user":
+                if email and log_user and log_user != email:
+                    continue
+
+        recip = l.get("recipient") or "agents"
+        desc = l.get("short_description") or ""
+        if not desc and isinstance(l.get("payload"), dict):
+            p = l.get("payload")
+            desc = p.get("message") or p.get("desc") or f"{etype} initiated"
+
+        activities.append({
+            "created_at": l.get("timestamp"),
+            "user_email": log_user or email or "User",
+            "domain": log_domain or domain or "Global",
+            "recipient": recip,
+            "request_type": PRIMARY_TYPES.get(etype, etype.replace("_", " ").title()),
+            "status": l.get("status") or "Success",
+            "details": desc
+        })
+
+    return jsonify({"status": "success", "count": len(activities), "activities": activities})
 
 # -------------------------------------------------------------
 # Chat & Agents APIs
@@ -379,27 +389,31 @@ def proxy_chat():
     data["conversation_id"] = conv_id
     url = resolve_url(AGENTS_URL, "agents", 8002)
 
+    user = session.get("user") or {}
+    username = user.get("email") or data.get("user") or "anonymous"
+    domain = user.get("domain") or data.get("domain") or ""
+    data["user"] = username
+    data["username"] = username
+    data["domain"] = domain
+
     # Log outgoing chat request from Web UI to Agents
     log_event(
         invoker="Web UI",
         recipient="agents",
         event_type="send_chat_request",
-        desc=f"Web UI submitted query: '{data.get('message', '')[:80]}'",
+        desc=f"Web UI submitted query from {username}: '{data.get('message', '')[:80]}'",
         payload=data,
-        conv_id=conv_id
+        conv_id=conv_id,
+        user=username,
+        domain=domain
     )
 
-    # Attach configured API key for agents and active JWT token
-    agent_key = data.get("api_key") or get_web_ui_key("agents")
+    # Attach active JWT token
     jwt_token = data.get("jwt_token") or session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    if agent_key:
-        data["api_key"] = agent_key
     if jwt_token:
         data["jwt_token"] = jwt_token
 
     headers = {"Content-Type": "application/json"}
-    if agent_key:
-        headers["X-API-Key"] = agent_key
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
 
@@ -430,7 +444,9 @@ def proxy_chat():
             payload=res_data,
             conv_id=conv_id,
             duration_ms=res_data.get("elapsed_ms", 0),
-            model=res_data.get("model", "")
+            model=res_data.get("model", ""),
+            user=username,
+            domain=domain
         )
         return jsonify(res_data), r.status_code
     except Exception as e:
@@ -441,7 +457,9 @@ def proxy_chat():
             desc=f"Agent request failed: {e}",
             payload={"error": str(e)},
             conv_id=conv_id,
-            status="error"
+            status="error",
+            user=username,
+            domain=domain
         )
         return jsonify({"error": f"Agent service unreachable: {e}"}), 502
 
@@ -733,6 +751,22 @@ def proxy_update_skills():
 @app.route("/api/vectordb/populate", methods=["POST"])
 @app.route("/api/vectordb/ingest", methods=["POST"])
 def populate_vectordb():
+    user = session.get("user") or {}
+    if not user:
+        auth_hdr = request.headers.get("Authorization", "")
+        if auth_hdr.startswith("Bearer "):
+            t = auth_hdr.split(" ", 1)[1].strip()
+            try:
+                from jwt_auth import decode_jwt_token
+                p = decode_jwt_token(t)
+                if p:
+                    user = {"email": p.get("email"), "role": p.get("role", "User"), "domain": p.get("domain")}
+            except Exception:
+                pass
+    user_role = (user.get("role") or "User").lower()
+    if user_role == "user":
+        return jsonify({"error": "Role 'User' is not permitted to load documents into the vector database. Editor or Admin role required."}), 403
+
     data = request.get_json(silent=True) or {}
     source = data.get("source", "").strip()
     chunk_size = int(data.get("chunk_size", 800))
@@ -813,28 +847,30 @@ def populate_vectordb():
     if not content:
         return jsonify({"error": "Extracted text content is empty"}), 400
 
-    url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
-    doc_rag_key = get_web_ui_key("doc_rag")
-    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     user = session.get("user") or {}
+    user_role = (user.get("role") or "User").lower()
+    if user_role == "user":
+        return jsonify({"error": "Role 'User' is not permitted to load documents into the vector database. Editor or Admin role required."}), 403
+
+    doc_type = data.get("type", "Documents")
+
+    url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     domain = user.get("domain")
 
     req_body = {
         "name": doc_name,
         "complete_text": content,
         "chunk_size": chunk_size,
-        "overlap": overlap
+        "overlap": overlap,
+        "type": doc_type
     }
     if domain:
         req_body["domain"] = domain
-    if doc_rag_key:
-        req_body["api_key"] = doc_rag_key
     if jwt_token:
         req_body["jwt_token"] = jwt_token
 
     headers = {"Content-Type": "application/json"}
-    if doc_rag_key:
-        headers["X-API-Key"] = doc_rag_key
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
 
@@ -842,7 +878,17 @@ def populate_vectordb():
         r = requests.post(f"{url}/api/rag/documents/add", json=req_body, headers=headers, timeout=30)
         res_data = r.json()
         if r.status_code == 200:
-            res_data["message"] = f"Successfully ingested '{doc_name}' ({res_data.get('chunks_created', 0)} chunks)."
+            target_label = "Skill" if "skill" in doc_type.lower() else "Document"
+            res_data["message"] = f"Successfully ingested {target_label.lower()} '{doc_name}' into {target_label}s database ({res_data.get('chunks_created', 0)} chunks)."
+            log_event(
+                invoker="Web UI",
+                recipient="doc_rag",
+                event_type="vectordb_ingest",
+                desc=f"User {user.get('email', 'unknown')} ingested {target_label.lower()} '{doc_name}'",
+                payload={"name": doc_name, "type": doc_type, "domain": domain},
+                user=user.get("email"),
+                domain=domain
+            )
         return jsonify(res_data), r.status_code
     except Exception as e:
         return jsonify({"error": f"Vector store unreachable: {e}"}), 502
@@ -862,15 +908,23 @@ def proxy_delete_doc(doc_name=None):
 
     name = urllib.parse.unquote(raw_name)
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
-    doc_rag_key = get_web_ui_key("doc_rag")
     jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     headers = {}
-    if doc_rag_key:
-        headers["X-API-Key"] = doc_rag_key
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
     try:
         r = requests.delete(f"{url}/api/rag/documents/{urllib.parse.quote(name)}", headers=headers, timeout=5)
+        user = session.get("user") or {}
+        if r.status_code == 200:
+            log_event(
+                invoker="Web UI",
+                recipient="doc_rag",
+                event_type="vectordb_delete",
+                desc=f"User {user.get('email', 'unknown')} deleted document '{name}'",
+                payload={"name": name},
+                user=user.get("email"),
+                domain=user.get("domain")
+            )
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"error": f"Failed to delete document: {e}"}), 502
@@ -878,10 +932,10 @@ def proxy_delete_doc(doc_name=None):
 @app.route("/api/vectordb/reset", methods=["POST"])
 def proxy_reset_db():
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
-    doc_rag_key = get_web_ui_key("doc_rag")
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     headers = {}
-    if doc_rag_key:
-        headers["X-API-Key"] = doc_rag_key
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
     try:
         r = requests.post(f"{url}/api/rag/reset", headers=headers, timeout=5)
         return jsonify(r.json()), r.status_code
@@ -928,8 +982,16 @@ def proxy_telemetry():
 @app.route("/api/logs", methods=["GET"])
 def proxy_audit_conversations():
     url = resolve_url(LOGGING_URL, "logging", 8006)
+    user = session.get("user") or {}
+    params = dict(request.args)
+    if user.get("email"):
+        params["user"] = user.get("email")
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
     try:
-        r = requests.get(f"{url}/api/conversations", params=request.args, timeout=5)
+        r = requests.get(f"{url}/api/conversations", params=params, timeout=5)
         return jsonify(r.json())
     except Exception:
         return jsonify({"conversations": [], "statistics": {}})
@@ -938,9 +1000,17 @@ def proxy_audit_conversations():
 @app.route("/api/logs/<conv_id>", methods=["GET"])
 def proxy_audit_events(conv_id):
     url = resolve_url(LOGGING_URL, "logging", 8006)
+    user = session.get("user") or {}
+    params = dict(request.args)
+    if user.get("email"):
+        params["user"] = user.get("email")
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
     try:
-        r = requests.get(f"{url}/api/conversations/{conv_id}/events", params=request.args, timeout=5)
-        return jsonify(r.json())
+        r = requests.get(f"{url}/api/conversations/{conv_id}/events", params=params, timeout=5)
+        return jsonify(r.json()), r.status_code
     except Exception:
         return jsonify({"events": []})
 
@@ -1093,30 +1163,6 @@ def restart_all_containers():
                 pass
     return jsonify({"status": "success", "message": "All containers restarted"})
 
-@app.route("/api/containers/<name>/keys", methods=["GET"])
-def get_container_keys_endpoint(name):
-    keys = load_container_keys(name)
-    return jsonify({"status": "success", "container": name, "keys": keys})
-
-@app.route("/api/containers/<name>/keys", methods=["POST"])
-def update_container_keys_endpoint(name):
-    data = request.get_json(silent=True) or {}
-    keys = load_container_keys(name)
-    if "keys" in data and isinstance(data["keys"], dict):
-        for k, v in data["keys"].items():
-            if v and str(v).strip():
-                keys[k.strip()] = str(v).strip()
-            else:
-                keys.pop(k.strip(), None)
-    elif "target" in data:
-        t = data["target"].strip()
-        k = data.get("api_key", "").strip()
-        if k:
-            keys[t] = k
-        else:
-            keys.pop(t, None)
-    save_container_keys(name, keys)
-    return jsonify({"status": "success", "container": name, "keys": keys})
 
 @app.route("/api/app/shutdown", methods=["POST"])
 def app_shutdown():

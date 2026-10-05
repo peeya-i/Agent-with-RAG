@@ -144,27 +144,34 @@ def can_access_document(doc_metadata: dict, auth_ctx: dict) -> bool:
     return False
 
 def check_auth(api_key, required_level="read", invoker="agent"):
+    # Check if current request has JWT Bearer token or jwt_token in body
+    try:
+        from flask import has_request_context, request as flask_req
+        if has_request_context():
+            auth_hdr = flask_req.headers.get("Authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                t = auth_hdr.split(" ", 1)[1].strip()
+                jwt_p = decode_jwt_token(t)
+                if jwt_p:
+                    return True, "Valid JWT"
+            req_data = flask_req.get_json(silent=True) or {}
+            tok = req_data.get("jwt_token") or req_data.get("token")
+            if tok:
+                jwt_p = decode_jwt_token(tok)
+                if jwt_p:
+                    return True, "Valid JWT"
+    except Exception:
+        pass
+
     if not api_key:
         return True, "Allowed (internal default)"
 
-    # If key is a valid JWT token
+    # Validate JWT token
     jwt_p = decode_jwt_token(api_key)
     if jwt_p:
         return True, "Valid JWT"
 
-    try:
-        url = resolve_url(AUTH_SERVICE_URL, "auth_service", 8001)
-        resp = requests.post(url, json={
-            "api_key": api_key,
-            "container": "Vector DB",
-            "access_level": required_level,
-            "invoker": invoker
-        }, timeout=2)
-        if resp.status_code == 200 and resp.json().get("valid"):
-            return True, "Valid"
-        return False, resp.json().get("error", "Unauthorized")
-    except Exception as e:
-        return True, f"Bypass: {e}"
+    return False, "Unauthorized: Valid JWT required"
 
 _ollama_available = None
 _ollama_last_check = 0
@@ -460,38 +467,53 @@ def add_document_or_skill():
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    if doc_type == "skill":
-        vector = get_embedding(vector_text, user_id=user_id)
-        skill_id = f"skill_{hashlib.md5(name.encode('utf-8')).hexdigest()}"
+    if doc_type in ["skill", "skills"]:
+        chunks = chunk_text(complete_text, chunk_size=chunk_size, overlap=overlap)
+        if not chunks:
+            chunks = [complete_text]
+
+        ids = []
+        embeddings = []
+        metadatas = []
+        documents = []
+
+        auth_ctx = get_rag_auth_context(request)
+        doc_domain = data.get("domain") or auth_ctx.get("domain") or "Global (All)"
+
+        for idx, c in enumerate(chunks):
+            skill_id = f"skill_{hashlib.md5((name + str(idx) + c[:50]).encode('utf-8')).hexdigest()}"
+            vec = get_embedding(c, user_id=user_id)
+            ids.append(skill_id)
+            embeddings.append(vec)
+            documents.append(c)
+            metadatas.append({
+                "type": "skill",
+                "name": name,
+                "skill_name": name,
+                "domain": doc_domain,
+                "date_time": now_iso,
+                "chunk_index": idx,
+                "total_chunks": len(chunks),
+                "chunk_size": len(c),
+                "vector_text": c
+            })
 
         try:
             skill_collection.upsert(
-                ids=[skill_id],
-                embeddings=[vector],
-                documents=[complete_text],
-                metadatas=[{
-                    "type": "skill",
-                    "name": name,
-                    "skill_name": name,
-                    "date_time": now_iso,
-                    "vector_text": vector_text
-                }]
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas
             )
         except Exception as e:
             if "dimension" in str(e).lower():
                 chroma_client.delete_collection("skills")
                 skill_collection = chroma_client.get_or_create_collection(name="skills", metadata={"hnsw:space": "cosine"})
                 skill_collection.upsert(
-                    ids=[skill_id],
-                    embeddings=[vector],
-                    documents=[complete_text],
-                    metadatas=[{
-                        "type": "skill",
-                        "name": name,
-                        "skill_name": name,
-                        "date_time": now_iso,
-                        "vector_text": vector_text
-                    }]
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=documents,
+                    metadatas=metadatas
                 )
             else:
                 raise e
@@ -500,7 +522,7 @@ def add_document_or_skill():
             invoker="Vector DB",
             recipient="logging",
             event_type="document_add",
-            short_desc=f"Added skill '{name}' to Vector DB",
+            short_desc=f"Added skill '{name}' ({len(chunks)} chunks) to Vector DB Skills database",
             req_payload={
                 "service": "Vector DB",
                 "user_id": user_id,
@@ -508,12 +530,20 @@ def add_document_or_skill():
                 "operation": "add",
                 "document_type": "skill",
                 "document_name": name,
+                "chunks_created": len(chunks),
                 "success_status": "success"
             },
-            resp_payload={"skill_id": skill_id, "status": "success"}
+            resp_payload={"status": "success", "chunks_created": len(chunks)}
         )
 
-        return jsonify({"status": "success", "type": "skill", "name": name, "skill_id": skill_id})
+        return jsonify({
+            "status": "success",
+            "type": "skill",
+            "name": name,
+            "document_name": name,
+            "chunks_created": len(chunks),
+            "total_characters": len(complete_text)
+        })
 
     else:
         # Document ingestion

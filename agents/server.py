@@ -56,51 +56,15 @@ try:
 except ImportError:
     from agents.jwt_auth import decode_jwt_token, extract_jwt_from_request
 
-def validate_agent_request_auth(api_key, invoker="web_ui"):
-    if not api_key:
-        return True, "No key provided"
+def validate_agent_request_auth(jwt_token, invoker="web_ui"):
+    if not jwt_token:
+        return True, "No token provided"
 
-    # Check if api_key is a valid JWT token
-    jwt_p = decode_jwt_token(api_key)
+    # Decode and validate JWT token
+    jwt_p = decode_jwt_token(jwt_token)
     if jwt_p:
         return True, "Valid JWT"
-
-    try:
-        url = AUTH_SERVICE_URL
-        if not os.environ.get("RUNNING_IN_DOCKER") and "auth_service:8001" in url:
-            url = url.replace("auth_service:8001", "127.0.0.1:8001")
-        resp = requests.post(url, json={
-            "api_key": api_key,
-            "container": "agents",
-            "access_level": "read",
-            "invoker": invoker
-        }, timeout=2)
-        if resp.status_code == 200 and resp.json().get("valid"):
-            return True, "Valid"
-        return False, resp.json().get("error", "Unauthorized")
-    except Exception as e:
-        return True, f"Bypass: {e}"
-
-# Load API keys previously configured for agent services from secrets/keys
-KEYS_FILE = os.path.join(SECRETS_DIR, "keys")
-def load_agent_keys():
-    keys = {}
-    if os.path.exists(KEYS_FILE):
-        try:
-            with open(KEYS_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            keys[k.strip()] = v.strip()
-                        else:
-                            keys[line] = line
-        except Exception as e:
-            print(f"[Agents] Error reading keys file: {e}")
-    return keys
-
-configured_agent_keys = load_agent_keys()
+    return False, "Unauthorized: Invalid JWT token"
 
 # Scan skills on startup from agents/skills/
 SKILLS_DIR = os.environ.get("SKILLS_DIR", os.path.join(os.path.dirname(__file__), "skills"))
@@ -112,8 +76,7 @@ def initial_startup_scan():
     if not hasattr(app, "_skills_scanned"):
         app._skills_scanned = True
         try:
-            rag_key = load_agent_keys().get("doc_rag")
-            loaded_skills = scan_and_load_skills(SKILLS_DIR, doc_rag_url=DOC_RAG_URL, api_key=rag_key)
+            loaded_skills = scan_and_load_skills(SKILLS_DIR, doc_rag_url=DOC_RAG_URL)
             print(f"[Agents] Initialized and loaded {len(loaded_skills)} skills to doc_RAG: {loaded_skills}")
         except Exception as e:
             print(f"[Agents] Startup skills scan deferred: {e}")
@@ -181,8 +144,6 @@ def process_chat():
     doc_threshold = float(data.get("doc_threshold", 0.3))
     max_chunks = int(data.get("max_chunks", 5))
     custom_endpoint = data.get("custom_endpoint") if "custom" in (model or "").lower() else None
-    api_key = data.get("api_key") or request.headers.get("X-API-Key")
-
     if not message.strip():
         return jsonify({"error": "Empty message"}), 400
 
@@ -190,18 +151,17 @@ def process_chat():
     jwt_token = data.get("jwt_token")
     if not jwt_token and auth_header.startswith("Bearer "):
         jwt_token = auth_header.split(" ", 1)[1].strip()
-    if not jwt_token and api_key and (api_key.startswith("eyJ") or "." in api_key):
-        jwt_token = api_key
 
-    # Validate API key or JWT if provided
-    token_to_validate = jwt_token or api_key
-    if token_to_validate:
-        is_valid, msg = validate_agent_request_auth(token_to_validate, invoker="web_ui")
+    # Validate JWT if provided
+    if jwt_token:
+        is_valid, msg = validate_agent_request_auth(jwt_token, invoker="web_ui")
         if not is_valid:
             return jsonify({"status": "error", "error": f"Authorization failed: {msg}"}), 403
 
-    configured_keys = load_agent_keys()
     runner = adk_agent if "ADK" in agent_type else custom_agent
+
+    user = data.get("user") or data.get("username") or data.get("email") or "anonymous"
+    domain = data.get("domain") or ""
 
     result = runner.run(
         message=message,
@@ -215,9 +175,9 @@ def process_chat():
         doc_threshold=doc_threshold,
         max_chunks=max_chunks,
         custom_endpoint=custom_endpoint,
-        api_key=api_key,
         jwt_token=jwt_token,
-        configured_keys=configured_keys
+        user=user,
+        domain=domain
     )
 
     return jsonify(result)
@@ -225,8 +185,7 @@ def process_chat():
 @app.route("/api/agent/reload_skills", methods=["POST"])
 def reload_skills():
     """Triggered by 'Update Skills Database' button in GUI."""
-    rag_key = load_agent_keys().get("doc_rag")
-    loaded = scan_and_load_skills(SKILLS_DIR, doc_rag_url=DOC_RAG_URL, api_key=rag_key)
+    loaded = scan_and_load_skills(SKILLS_DIR, doc_rag_url=DOC_RAG_URL)
     return jsonify({"status": "success", "loaded_skills": loaded, "count": len(loaded)})
 
 # FastMCP SSE Transport Endpoints

@@ -166,6 +166,11 @@ def ingest_log():
     input_tokens = data.get("input_tokens") or p_in_tok or 0
     output_tokens = data.get("output_tokens") or p_out_tok or 0
 
+    user = data.get("user") or (payload.get("user") if isinstance(payload, dict) else None) or (payload.get("username") if isinstance(payload, dict) else None) or (payload.get("user_name") if isinstance(payload, dict) else None) or (payload.get("email") if isinstance(payload, dict) else None) or ""
+    domain = data.get("domain") or (payload.get("domain") if isinstance(payload, dict) else None) or ""
+    if not domain and user and "@" in str(user):
+        domain = str(user).split("@")[-1].strip().lower()
+
     log_entry = {
         "id": f"log_{int(time.time() * 1000)}_{os.urandom(2).hex()}",
         "timestamp": data.get("timestamp") or datetime.now(timezone.utc).isoformat(),
@@ -173,6 +178,8 @@ def ingest_log():
         "invoker": data.get("invoker", "unknown"),
         "recipient": data.get("recipient", "unknown"),
         "conversation_id": data.get("conversation_id"),
+        "user": user,
+        "domain": domain,
         "short_description": data.get("short_description", ""),
         "payload": payload,
         "status": data.get("status", "success"),
@@ -278,11 +285,21 @@ def list_conversations():
         if l.get("model") and not conv["model"]:
             conv["model"] = l.get("model")
 
-        # Extract user query or agent response if logged
-        l_type = str(l.get("type") or l.get("event_type") or "")
         payload = l.get("payload", {})
         if not isinstance(payload, dict):
             payload = {}
+
+        u = l.get("user") or payload.get("user") or payload.get("user_name") or payload.get("username") or payload.get("email")
+        if u and not conv.get("user"):
+            conv["user"] = u
+        d = l.get("domain") or payload.get("domain")
+        if not d and u and "@" in str(u):
+            d = str(u).split("@")[-1].strip().lower()
+        if d and not conv.get("domain"):
+            conv["domain"] = d
+
+        # Extract user query or agent response if logged
+        l_type = str(l.get("type") or l.get("event_type") or "")
 
         if any(t in l_type for t in ["chat_request", "user_query", "prompt"]):
             query_text = payload.get("message") or payload.get("query") or payload.get("user_query") or payload.get("prompt")
@@ -324,12 +341,25 @@ def list_conversations():
                 conv["agent_response"] = r
 
     result = list(conversations.values())
+
+    # Role-based filtering of conversations
+    req_user = request.args.get("user")
+    req_domain = request.args.get("domain")
+    req_role = request.args.get("role")
+
+    if req_role in ["User", "Editor"] and req_user:
+        result = [c for c in result if (c.get("user") == req_user or c.get("user_email") == req_user)]
+    elif req_role == "Admin" and req_domain:
+        result = [c for c in result if (c.get("domain") == req_domain or (c.get("user") and str(c.get("user")).endswith("@" + req_domain)))]
+
     result.sort(key=lambda x: x["last_seen"], reverse=True)
 
     tz = get_request_tz()
     for conv in result:
         conv["local_timestamp"] = to_local_iso(conv.get("timestamp"), tz)
         conv["local_time"] = conv["local_timestamp"]
+        if not conv.get("user"):
+            conv["user"] = "anonymous"
 
     # Compute statistics for Log Viewer Header Pill
     total_prompts = sum(1 for l in logs if any(t in (l.get("type") or "") for t in ["chat_request", "prompt", "llm_request", "user_query"]) and (l.get("type") in ["chat_request", "send_chat_request"] or l.get("invoker") == "Web UI"))
@@ -356,6 +386,20 @@ def conversation_events(conversation_id):
     logs = load_logs()
     events = [l for l in logs if l.get("conversation_id") == conversation_id]
     events.sort(key=lambda x: x.get("timestamp", ""))
+
+    req_user = request.args.get("user")
+    req_domain = request.args.get("domain")
+    req_role = request.args.get("role")
+
+    if req_role in ["User", "Editor"] and req_user:
+        conv_users = {l.get("user") for l in events if l.get("user")}
+        if conv_users and req_user not in conv_users:
+            return jsonify({"conversation_id": conversation_id, "events": []}), 403
+    elif req_role == "Admin" and req_domain:
+        conv_domains = {l.get("domain") for l in events if l.get("domain")}
+        if conv_domains and req_domain not in conv_domains:
+            return jsonify({"conversation_id": conversation_id, "events": []}), 403
+
     enriched = []
     for l in events:
         e = dict(l)
@@ -365,6 +409,8 @@ def conversation_events(conversation_id):
         e["raw_timestamp"] = raw_ts
         e["local_time"] = to_local_iso(raw_ts, tz)
         e["elapsed_ms"] = l.get("duration_ms", 0)
+        e["user"] = l.get("user", "")
+        e["domain"] = l.get("domain", "")
         enriched.append(e)
     return jsonify({"conversation_id": conversation_id, "events": enriched})
 

@@ -125,60 +125,14 @@ def test_auth_service():
     assert unlocked_login.status_code == 200
     assert unlocked_login.get_json()["status"] == "success"
 
-    # Generate API key
-    key_res = client.post("/api/keys", json={
-        "key_name": "Test Key",
-        "creator_email": "admin",
-        "containers": ["tools", "doc_rag"],
-        "access_levels": ["Read", "Write"]
-    })
-    assert key_res.status_code == 201
-    key_data = key_res.get_json()
-    raw_key = key_data["api_key"]
-    assert raw_key.startswith("key-")
-
-    # Validate API key
-    val_res = client.post("/api/auth/validate_key", json={
-        "api_key": raw_key,
-        "container": "tools",
-        "access_level": "read"
-    })
-    assert val_res.status_code == 200
-    assert val_res.get_json()["valid"] is True
-
-    # Test API Key Activities
-    act_res = client.get(f"/api/keys/{key_data['key_id']}/activities")
-    assert act_res.status_code == 200
-    acts = act_res.get_json()["activities"]
-    assert len(acts) >= 2  # Key Generation + API Key Access
-
-    # Test that activities for keys with identical key_name are strictly isolated to their own key_id
-    dup_res1 = client.post("/api/keys", json={
-        "key_name": "Shared Key Name",
-        "containers": ["tools"],
-        "access_levels": ["read"],
-        "creator": "admin@example.com"
-    })
-    assert dup_res1.status_code == 201
-    k1_id = dup_res1.get_json()["key_id"]
-
-    dup_res2 = client.post("/api/keys", json={
-        "key_name": "Shared Key Name",
-        "containers": ["agents"],
-        "access_levels": ["write"],
-        "creator": "admin@example.com"
-    })
-    assert dup_res2.status_code == 201
-    k2_id = dup_res2.get_json()["key_id"]
-
-    # Query key 1 activities - must contain k1_id activities and NOT k2_id activities
-    act_k1 = client.get(f"/api/keys/{k1_id}/activities").get_json()["activities"]
-    assert len(act_k1) >= 1
-    assert all(a["key_id"] == k1_id for a in act_k1)
-
-    act_k2 = client.get(f"/api/keys/{k2_id}/activities").get_json()["activities"]
-    assert len(act_k2) >= 1
-    assert all(a["key_id"] == k2_id for a in act_k2)
+    # Verify JWT token generated upon login
+    login_data = unlocked_login.get_json()
+    assert "jwt_token" in login_data
+    jwt_tok = login_data["jwt_token"]
+    from jwt_auth import decode_jwt_token
+    payload = decode_jwt_token(jwt_tok)
+    assert payload is not None
+    assert payload.get("email") == uname
 
     # Test Admin Create User validation (empty fails)
     fail_create = client.post("/api/users", json={"username": "", "password": ""})
@@ -388,6 +342,8 @@ def test_web_ui_routes():
     assert b"page-containers" in res.data
     assert b"page-auth" in res.data
     assert b"loginModal" in res.data
+    assert b"btnRefreshSessionJwt" in res.data
+    assert b"btnRefreshJwtActivities" in res.data
 
 # 7. Test Person Information Skill & Employee Search Modularity
 def test_person_information_skill_modular():
@@ -458,4 +414,137 @@ def test_customer_information_skill_modular():
     matches = search_customers(keywords=["France"])
     assert len(matches) >= 1
     assert all(m["country"] == "France" for m in matches)
+
+# 9. Test RBAC, VectorDB Types, Prompt Sender, and Domain Scoping
+def test_rbac_and_multitenancy_extensions():
+    import auth_service.server as auth_srv
+    auth_client = auth_srv.app.test_client()
+
+    # Verify seed accounts
+    res_admin_a = auth_client.post("/api/auth/login", json={"username": "admin-1@example-a.com", "password": "password123"})
+    assert res_admin_a.status_code == 200
+    user_admin_a = res_admin_a.get_json()["user"]
+    assert user_admin_a["role"] == "Admin"
+    assert user_admin_a["domain"] == "example-a.com"
+
+    res_editor_a = auth_client.post("/api/auth/login", json={"username": "editor@example-a.com", "password": "password123"})
+    assert res_editor_a.status_code == 200
+    user_editor_a = res_editor_a.get_json()["user"]
+    assert user_editor_a["role"] == "Editor"
+    assert user_editor_a["domain"] == "example-a.com"
+
+    res_user_a = auth_client.post("/api/auth/login", json={"username": "user@example-a.com", "password": "password123"})
+    assert res_user_a.status_code == 200
+    user_user_a = res_user_a.get_json()["user"]
+    assert user_user_a["role"] == "User"
+    assert user_user_a["domain"] == "example-a.com"
+
+    # Domain Admin user list is scoped to example-a.com
+    list_res = auth_client.get("/api/users?domain=example-a.com&role=Admin")
+    assert list_res.status_code == 200
+    users = list_res.get_json().get("users", [])
+    assert all(u.get("domain") == "example-a.com" for u in users)
+    emails = [u["email"] for u in users]
+    assert "admin-1@example-a.com" in emails
+    assert "user@example-a.com" in emails
+    assert "admin-2@sample-b.com" not in emails
+
+    # Domain Admin cannot delete user in another domain
+    list_all = auth_client.get("/api/users")
+    user_b = next(u for u in list_all.get_json()["users"] if u["email"] == "user@sample-b.com")
+    del_res = auth_client.delete(f"/api/users/{user_b['id']}?domain=example-a.com&role=Admin")
+    assert del_res.status_code == 403
+
+    # Test Logging Service user sender & domain scoping
+    logging_srv = load_service("test_logging_module_2", "logging/server.py")
+    log_client = logging_srv.app.test_client()
+
+    log_client.post("/api/logs", json={
+        "type": "chat_interaction",
+        "invoker": "web_ui",
+        "recipient": "agent",
+        "conversation_id": "conv_user_a_1",
+        "user": "user@example-a.com",
+        "domain": "example-a.com",
+        "payload": {"prompt": "Hello from user A", "response": "Hi A!"},
+        "short_description": "User A interaction"
+    })
+    log_client.post("/api/logs", json={
+        "type": "chat_interaction",
+        "invoker": "web_ui",
+        "recipient": "agent",
+        "conversation_id": "conv_user_b_1",
+        "user": "user@sample-b.com",
+        "domain": "sample-b.com",
+        "payload": {"prompt": "Hello from user B", "response": "Hi B!"},
+        "short_description": "User B interaction"
+    })
+
+    # User A only sees their own conversations
+    conv_a = log_client.get("/api/conversations?user=user@example-a.com&role=User&domain=example-a.com")
+    assert conv_a.status_code == 200
+    c_list_a = conv_a.get_json().get("conversations", [])
+    c_ids_a = [c["conversation_id"] for c in c_list_a]
+    assert "conv_user_a_1" in c_ids_a
+    assert "conv_user_b_1" not in c_ids_a
+
+    # Domain Admin for example-a.com sees conv_user_a_1 but not conv_user_b_1
+    conv_admin_a = log_client.get("/api/conversations?user=admin-1@example-a.com&role=Admin&domain=example-a.com")
+    assert conv_admin_a.status_code == 200
+    c_ids_admin = [c["conversation_id"] for c in conv_admin_a.get_json().get("conversations", [])]
+    assert "conv_user_a_1" in c_ids_admin
+    assert "conv_user_b_1" not in c_ids_admin
+
+    # Global Admin sees both
+    conv_global = log_client.get("/api/conversations?user=admin&role=Admin")
+    assert conv_global.status_code == 200
+    c_ids_global = [c["conversation_id"] for c in conv_global.get_json().get("conversations", [])]
+    assert "conv_user_a_1" in c_ids_global
+    assert "conv_user_b_1" in c_ids_global
+
+    # Test doc_RAG routing for type "Skills" vs "Documents"
+    doc_rag_srv = load_service("test_doc_rag_module_2", "doc_RAG/server.py")
+    doc_client = doc_rag_srv.app.test_client()
+
+    add_skill_res = doc_client.post("/api/rag/documents/add", json={
+        "name": "troubleshooting_guide",
+        "complete_text": "Steps to resolve network timeouts and retry logic.",
+        "type": "Skills",
+        "domain": "example-a.com"
+    })
+    assert add_skill_res.status_code == 200
+    assert add_skill_res.get_json()["status"] == "success"
+
+    add_doc_res = doc_client.post("/api/rag/documents/add", json={
+        "name": "annual_review_2026",
+        "complete_text": "Company financial summary and corporate milestones.",
+        "type": "Documents",
+        "domain": "example-a.com"
+    })
+    assert add_doc_res.status_code == 200
+    assert add_doc_res.get_json()["status"] == "success"
+
+    # Test JWT Activities endpoint in Web UI
+    web_app_jwt = load_service("test_web_ui_jwt", "web_ui/app.py")
+    web_client_jwt = web_app_jwt.app.test_client()
+    with web_client_jwt.session_transaction() as sess:
+        sess["user"] = {"email": "admin@example-a.com", "role": "Admin", "domain": "example-a.com"}
+    jwt_acts_res = web_client_jwt.get("/api/jwt/activities")
+    assert jwt_acts_res.status_code == 200
+    assert "activities" in jwt_acts_res.get_json()
+
+    # Test Web UI role restriction on VectorDB ingestion
+    web_app = load_service("test_web_ui_module_2", "web_ui/app.py")
+    web_client = web_app.app.test_client()
+    with web_client.session_transaction() as sess:
+        sess["user"] = {"email": "user@example-a.com", "role": "User", "domain": "example-a.com"}
+        sess["user_role"] = "User"
+        sess["user_domain"] = "example-a.com"
+
+    ingest_user_res = web_client.post("/api/vectordb/ingest", json={
+        "source": "https://example.com/test.txt",
+        "type": "Documents"
+    })
+    assert ingest_user_res.status_code == 403
+    assert "cannot" in ingest_user_res.get_json().get("error", "").lower() or "not permitted" in ingest_user_res.get_json().get("error", "").lower()
 

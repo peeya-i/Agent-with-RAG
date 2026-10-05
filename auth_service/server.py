@@ -159,33 +159,28 @@ def init_db():
         cursor.execute("UPDATE users SET password_hash = ?, role = 'Admin', status = 'Active', domain = NULL WHERE email = 'admin'", (hashed_admin,))
         conn.commit()
 
-    # Seed test domain 1: user@example-a.com
-    cursor.execute("SELECT id FROM users WHERE email = 'user@example-a.com'")
-    hashed_a = generate_password_hash("password123")
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("user@example-a.com", hashed_a, "User", "Active", "example-a.com", datetime.now(timezone.utc).isoformat())
-        )
-        conn.commit()
-        print("Initialized test domain 1 user: user@example-a.com / password123")
-    else:
-        cursor.execute("UPDATE users SET password_hash = ?, domain = 'example-a.com', status = 'Active' WHERE email = 'user@example-a.com'", (hashed_a,))
-        conn.commit()
+    # Seed accounts helper
+    def seed_user(email, password, role, domain):
+        h = generate_password_hash(password)
+        cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (email, h, role, "Active", domain, datetime.now(timezone.utc).isoformat())
+            )
+            print(f"Initialized {role} user: {email}")
+        else:
+            cursor.execute("UPDATE users SET password_hash = ?, role = ?, domain = ?, status = 'Active' WHERE email = ?", (h, role, domain, email))
 
-    # Seed test domain 2: user@sample-b.com
-    cursor.execute("SELECT id FROM users WHERE email = 'user@sample-b.com'")
-    hashed_b = generate_password_hash("password123")
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("user@sample-b.com", hashed_b, "User", "Active", "sample-b.com", datetime.now(timezone.utc).isoformat())
-        )
-        conn.commit()
-        print("Initialized test domain 2 user: user@sample-b.com / password123")
-    else:
-        cursor.execute("UPDATE users SET password_hash = ?, domain = 'sample-b.com', status = 'Active' WHERE email = 'user@sample-b.com'", (hashed_b,))
-        conn.commit()
+    # Domain example-a.com accounts
+    seed_user("admin-1@example-a.com", "password123", "Admin", "example-a.com")
+    seed_user("editor@example-a.com", "password123", "Editor", "example-a.com")
+    seed_user("user@example-a.com", "password123", "User", "example-a.com")
+
+    # Domain sample-b.com accounts
+    seed_user("admin-2@sample-b.com", "password123", "Admin", "sample-b.com")
+    seed_user("editor@sample-b.com", "password123", "Editor", "sample-b.com")
+    seed_user("user@sample-b.com", "password123", "User", "sample-b.com")
 
     # Purge any deleted keys
     cursor.execute("DELETE FROM api_keys WHERE status = 'delete'")
@@ -371,9 +366,14 @@ def logout():
 # User Management APIs
 @app.route("/api/users", methods=["GET"])
 def list_users():
+    domain = request.args.get("domain")
+    role = request.args.get("role")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, email, role, status, created_at FROM users ORDER BY id ASC")
+    if role == "Admin" and domain:
+        cursor.execute("SELECT id, email, role, status, domain, created_at FROM users WHERE domain = ? ORDER BY id ASC", (domain,))
+    else:
+        cursor.execute("SELECT id, email, role, status, domain, created_at FROM users ORDER BY id ASC")
     users = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -385,8 +385,18 @@ def update_user_status(user_id):
     if new_status not in ["Active", "Locked"]:
         return jsonify({"error": "Invalid status"}), 400
 
+    creator_domain = request.args.get("domain") or data.get("creator_domain")
+    creator_role = request.args.get("role") or data.get("creator_role")
+
     conn = get_db()
     cursor = conn.cursor()
+    if creator_role == "Admin" and creator_domain:
+        cursor.execute("SELECT domain FROM users WHERE id = ?", (user_id,))
+        target = cursor.fetchone()
+        if not target or target["domain"] != creator_domain:
+            conn.close()
+            return jsonify({"error": "Unauthorized: Cannot manage users outside your domain"}), 403
+
     cursor.execute("UPDATE users SET status = ? WHERE id = ?", (new_status, user_id))
     conn.commit()
     conn.close()
@@ -399,8 +409,18 @@ def update_user_role(user_id):
     if new_role not in ["Admin", "Editor", "User"]:
         return jsonify({"error": "Invalid role"}), 400
 
+    creator_domain = request.args.get("domain") or data.get("creator_domain")
+    creator_role = request.args.get("role") or data.get("creator_role")
+
     conn = get_db()
     cursor = conn.cursor()
+    if creator_role == "Admin" and creator_domain:
+        cursor.execute("SELECT domain FROM users WHERE id = ?", (user_id,))
+        target = cursor.fetchone()
+        if not target or target["domain"] != creator_domain:
+            conn.close()
+            return jsonify({"error": "Unauthorized: Cannot manage users outside your domain"}), 403
+
     cursor.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
     conn.commit()
     conn.close()
@@ -409,16 +429,23 @@ def update_user_role(user_id):
 @app.route("/api/users/<int:user_id>/reset_password", methods=["POST"])
 def reset_password(user_id):
     data = request.get_json(silent=True) or {}
-    new_password = data.get("password") or "admin123"
+    new_password = data.get("password") or "password123"
     hashed = generate_password_hash(new_password)
+
+    creator_domain = request.args.get("domain") or data.get("creator_domain")
+    creator_role = request.args.get("role") or data.get("creator_role")
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+    cursor.execute("SELECT email, domain FROM users WHERE id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return jsonify({"error": "User not found"}), 404
+
+    if creator_role == "Admin" and creator_domain and row["domain"] != creator_domain:
+        conn.close()
+        return jsonify({"error": "Unauthorized: Cannot reset password for user outside your domain"}), 403
 
     cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed, user_id))
     cursor.execute(
@@ -431,13 +458,20 @@ def reset_password(user_id):
 
 @app.route("/api/users/<int:user_id>", methods=["DELETE"])
 def delete_user(user_id):
+    creator_domain = request.args.get("domain")
+    creator_role = request.args.get("role")
+
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+    cursor.execute("SELECT email, domain FROM users WHERE id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return jsonify({"error": "User not found"}), 404
+
+    if creator_role == "Admin" and creator_domain and row["domain"] != creator_domain:
+        conn.close()
+        return jsonify({"error": "Unauthorized: Cannot delete user outside your domain"}), 403
 
     cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
@@ -456,6 +490,11 @@ def admin_create_user():
     if status not in ["Active", "Locked"]:
         status = "Active"
 
+    creator_domain = request.args.get("domain") or data.get("creator_domain")
+    creator_role = request.args.get("role") or data.get("creator_role")
+
+    user_domain = creator_domain if (creator_role == "Admin" and creator_domain) else (data.get("domain") or get_domain_from_email(username))
+
     if not username or not password:
         return jsonify({"status": "failed", "error": "Username and password are required"}), 400
 
@@ -469,8 +508,8 @@ def admin_create_user():
     hashed = generate_password_hash(password)
     now_iso = datetime.now(timezone.utc).isoformat()
     cursor.execute(
-        "INSERT INTO users (email, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (username, hashed, role, status, now_iso)
+        "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (username, hashed, role, status, user_domain, now_iso)
     )
     user_id = cursor.lastrowid
     cursor.execute(
@@ -534,9 +573,20 @@ def get_user_activity_logs():
 # API Keys Management
 @app.route("/api/keys", methods=["GET"])
 def list_keys():
+    domain = request.args.get("domain")
+    role = request.args.get("role")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, key_name, key_prefix, creator_email, created_at, expires_at, containers, access_levels, status FROM api_keys WHERE status != 'delete' ORDER BY id DESC")
+    if role == "Admin" and domain:
+        cursor.execute("""
+            SELECT id, key_name, key_prefix, creator_email, created_at, expires_at, containers, access_levels, status 
+            FROM api_keys 
+            WHERE status != 'delete' 
+              AND (creator_email LIKE ? OR creator_email IN (SELECT email FROM users WHERE domain = ?))
+            ORDER BY id DESC
+        """, (f"%@{domain}", domain))
+    else:
+        cursor.execute("SELECT id, key_name, key_prefix, creator_email, created_at, expires_at, containers, access_levels, status FROM api_keys WHERE status != 'delete' ORDER BY id DESC")
     keys = []
     for r in cursor.fetchall():
         item = dict(r)
@@ -734,8 +784,18 @@ def bulk_delete_keys():
 @app.route("/api/keys/<int:key_id>/activities", methods=["GET"])
 def get_key_activities_by_id(key_id):
     key_prefix = request.args.get("key_prefix")
+    domain = request.args.get("domain")
+    role = request.args.get("role")
     conn = get_db()
     cursor = conn.cursor()
+    if role == "Admin" and domain:
+        cursor.execute("SELECT creator_email FROM api_keys WHERE id = ?", (key_id,))
+        krow = cursor.fetchone()
+        if krow:
+            c_email = krow["creator_email"] or ""
+            if not (c_email.endswith(f"@{domain}") or f"@{domain}" in c_email):
+                conn.close()
+                return jsonify({"status": "success", "key_id": key_id, "activities": []})
     if key_prefix:
         cursor.execute(
             "SELECT * FROM api_key_activity_logs WHERE key_id = ? AND key_prefix = ? ORDER BY id DESC",
@@ -754,9 +814,23 @@ def get_key_activities_by_id(key_id):
 def get_all_key_activities():
     key_name = request.args.get("key_name")
     key_prefix = request.args.get("key_prefix")
+    key_id = request.args.get("key_id")
+    domain = request.args.get("domain")
+    role = request.args.get("role")
+
     conn = get_db()
     cursor = conn.cursor()
-    if key_name and key_prefix:
+    if key_id:
+        if role == "Admin" and domain:
+            cursor.execute("""
+                SELECT a.* FROM api_key_activity_logs a
+                LEFT JOIN api_keys k ON a.key_id = k.id
+                WHERE a.key_id = ? AND (k.creator_email LIKE ? OR a.key_name LIKE ?)
+                ORDER BY a.id DESC
+            """, (key_id, f"%@{domain}", f"%{domain}%"))
+        else:
+            cursor.execute("SELECT * FROM api_key_activity_logs WHERE key_id = ? ORDER BY id DESC", (key_id,))
+    elif key_name and key_prefix:
         cursor.execute(
             "SELECT * FROM api_key_activity_logs WHERE key_name = ? AND key_prefix = ? ORDER BY id DESC",
             (key_name, key_prefix)
@@ -772,7 +846,15 @@ def get_all_key_activities():
             (key_name,)
         )
     else:
-        cursor.execute("SELECT * FROM api_key_activity_logs ORDER BY id DESC LIMIT 200")
+        if role == "Admin" and domain:
+            cursor.execute("""
+                SELECT a.* FROM api_key_activity_logs a
+                LEFT JOIN api_keys k ON a.key_id = k.id
+                WHERE (k.creator_email LIKE ? OR k.creator_email IN (SELECT email FROM users WHERE domain = ?) OR a.key_name LIKE ?)
+                ORDER BY a.id DESC LIMIT 200
+            """, (f"%@{domain}", domain, f"%{domain}%"))
+        else:
+            cursor.execute("SELECT * FROM api_key_activity_logs ORDER BY id DESC LIMIT 200")
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"status": "success", "activities": rows})

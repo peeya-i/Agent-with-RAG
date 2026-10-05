@@ -172,7 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (targetId === 'page-auth') {
         if (typeof loadUsers === 'function') loadUsers();
         if (typeof loadUserActivity === 'function') loadUserActivity();
-        if (typeof loadApiKeys === 'function') loadApiKeys();
+        if (typeof loadJwtActivities === 'function') loadJwtActivities();
       }
     });
   });
@@ -745,6 +745,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source: source,
+          type: (document.getElementById('ingestTypeSelect') ? document.getElementById('ingestTypeSelect').value : 'Documents'),
           chunk_size: parseInt(inputChunkSize.value) || 1000,
           chunk_overlap: parseInt(inputChunkOverlap.value) || 200,
         }),
@@ -1106,7 +1107,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Conversations Table
       currentConversationsCache = data.conversations || [];
       if (currentConversationsCache.length === 0) {
-        conversationsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No conversations recorded yet.</td></tr>`;
+        conversationsTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted">No conversations recorded yet.</td></tr>`;
         eventsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No conversation events to display.</td></tr>`;
         selectedConvBadge.textContent = 'None Selected';
         return;
@@ -1116,10 +1117,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const rawTs = c.local_timestamp || c.timestamp || c.last_seen || c.first_seen || '';
         const localTs = formatToLocalTime(rawTs);
         const evCount = c.event_count !== undefined ? c.event_count : (c.events_count || 0);
+        const userName = c.user || c.username || 'anonymous';
         return `
         <tr class="conv-row ${c.conversation_id === selectedConversationId ? 'selected-row' : ''}" data-cid="${escapeHtml(c.conversation_id)}">
           <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(localTs)}</span></td>
           <td><code style="color:#a5b4fc;">${escapeHtml(c.conversation_id)}</code></td>
+          <td><span class="badge" style="background:#4338ca;color:#e0e7ff;font-size:0.75rem;">${escapeHtml(userName)}</span></td>
           <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.user_query || '')}</td>
           <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.agent_response || '')}</td>
           <td><span class="badge">${escapeHtml(c.agent_type || 'Custom Agent')}</span></td>
@@ -1526,6 +1529,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function applyRolePermissions(user) {
     if (!user) return;
     const role = (user.role || 'User').toLowerCase();
+    const domain = user.domain || '';
+    const isGlobalAdmin = (role === 'admin' && !domain);
+
     if (headerUserEmail) headerUserEmail.textContent = user.email || 'admin';
     if (headerUserRole) {
       headerUserRole.textContent = user.role || 'User';
@@ -1538,25 +1544,54 @@ document.addEventListener('DOMContentLoaded', () => {
       profileRole.className = `user-profile-badge badge-${role}`;
     }
 
-    if (role === 'admin') {
-      tabVector.style.display = '';
-      tabAudit.style.display = '';
-      tabContainers.style.display = '';
-      tabAuth.style.display = '';
-      adminAuthSection.style.display = '';
-    } else if (role === 'editor') {
-      tabVector.style.display = '';
-      tabAudit.style.display = '';
-      tabContainers.style.display = 'none';
-      tabAuth.style.display = '';
-      adminAuthSection.style.display = 'none';
+    // Common tabs
+    if (tabVector) tabVector.style.display = '';
+    if (tabAudit) tabAudit.style.display = '';
+    if (tabAuth) tabAuth.style.display = '';
+
+    // Container Mgr tab: only Global Admin has access to host container orchestration
+    if (tabContainers) {
+      tabContainers.style.display = isGlobalAdmin ? '' : 'none';
+    }
+
+    // Password & API Mgnt -> User Accounts Management table:
+    // Global Admin and Domain Admins can manage user accounts. Editors and Users cannot.
+    if (adminAuthSection) {
+      adminAuthSection.style.display = (role === 'admin') ? '' : 'none';
+    }
+
+    // VectorDB Ingestion permissions:
+    // Role "User" cannot load documents (read-only view of global & org data).
+    // Role "Editor" and "Admin" can populate VectorDB.
+    const userNotice = document.getElementById('userIngestNotice');
+    if (role === 'user') {
+      if (btnPopulateDb) {
+        btnPopulateDb.disabled = true;
+        btnPopulateDb.style.opacity = '0.5';
+        btnPopulateDb.style.cursor = 'not-allowed';
+        btnPopulateDb.title = 'Users cannot ingest documents';
+      }
+      if (ingestSourceInput) ingestSourceInput.disabled = true;
+      if (userNotice) userNotice.classList.remove('hidden');
+      if (btnResetDb) {
+        btnResetDb.disabled = true;
+        btnResetDb.style.opacity = '0.5';
+        btnResetDb.style.cursor = 'not-allowed';
+      }
     } else {
-      // Regular user (tenant)
-      tabVector.style.display = '';
-      tabAudit.style.display = 'none';
-      tabContainers.style.display = 'none';
-      tabAuth.style.display = '';
-      adminAuthSection.style.display = 'none';
+      if (btnPopulateDb) {
+        btnPopulateDb.disabled = false;
+        btnPopulateDb.style.opacity = '';
+        btnPopulateDb.style.cursor = '';
+        btnPopulateDb.title = '';
+      }
+      if (ingestSourceInput) ingestSourceInput.disabled = false;
+      if (userNotice) userNotice.classList.add('hidden');
+      if (btnResetDb) {
+        btnResetDb.disabled = (role !== 'admin');
+        btnResetDb.style.opacity = (role !== 'admin') ? '0.5' : '';
+        btnResetDb.style.cursor = (role !== 'admin') ? 'not-allowed' : '';
+      }
     }
   }
 
@@ -1945,6 +1980,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnPasswords.classList.remove('active');
     subtabApiKeys.classList.add('active');
     subtabPasswords.classList.remove('active');
+    loadJwtActivities();
   };
 
   // Users Table & Management
@@ -2257,497 +2293,77 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
   }
 
-  // API Keys Table
-  const apiKeysTbody = document.getElementById('apiKeysTbody');
-  const btnOpenAddKeyModal = document.getElementById('btnOpenAddKeyModal');
-  const addKeyModal = document.getElementById('addKeyModal');
-  const btnCloseAddKeyModalX = document.getElementById('btnCloseAddKeyModalX');
-  const btnCancelAddKey = document.getElementById('btnCancelAddKey');
-  const btnProceedAddKey = document.getElementById('btnProceedAddKey');
-  const newKeyName = document.getElementById('newKeyName');
-  const newKeyContainerSelect = document.getElementById('newKeyContainerSelect');
-  const newKeyLevelSelect = document.getElementById('newKeyLevelSelect');
-  const btnAddContainerPerm = document.getElementById('btnAddContainerPerm');
-  const newKeyPermsList = document.getElementById('newKeyPermsList');
-  const newKeyExpiry = document.getElementById('newKeyExpiry');
+  // ---------------------------------------------------------------------------
+  // JWT Activities & Multi-Tenant Session
+  // ---------------------------------------------------------------------------
+  const apiKeyActivitiesTbody = document.getElementById('apiKeyActivitiesTbody');
+  const btnRefreshSessionJwt = document.getElementById('btnRefreshSessionJwt');
+  const btnRefreshJwtActivities = document.getElementById('btnRefreshJwtActivities');
 
-  const showKeyModal = document.getElementById('showKeyModal');
-  const displayGeneratedKeyInput = document.getElementById('displayGeneratedKeyInput');
-  const btnCopyGeneratedKey = document.getElementById('btnCopyGeneratedKey');
-  const btnCloseShowKeyModal = document.getElementById('btnCloseShowKeyModal');
-
-  // Edit API Key Modal elements
-  const editKeyModal = document.getElementById('editKeyModal');
-  const btnCloseEditKeyModalX = document.getElementById('btnCloseEditKeyModalX');
-  const btnCancelEditKey = document.getElementById('btnCancelEditKey');
-  const btnDeleteKey = document.getElementById('btnDeleteKey');
-  const btnUpdateKey = document.getElementById('btnUpdateKey');
-  const editKeyNameDisplay = document.getElementById('editKeyNameDisplay');
-  const editKeyNameInput = document.getElementById('editKeyNameInput');
-  const editKeyContainerSelect = document.getElementById('editKeyContainerSelect');
-  const editKeyLevelSelect = document.getElementById('editKeyLevelSelect');
-  const btnEditAddContainerPerm = document.getElementById('btnEditAddContainerPerm');
-  const editKeyRowsContainer = document.getElementById('editKeyRowsContainer');
-  const editKeyExpiry = document.getElementById('editKeyExpiry');
-  const editKeyId = document.getElementById('editKeyId');
-
-  // Batch delete & confirmation modals
-  const selectAllApiKeys = document.getElementById('selectAllApiKeys');
-  const btnDeleteSelectedKeys = document.getElementById('btnDeleteSelectedKeys');
-  const deleteSelectedKeysModal = document.getElementById('deleteSelectedKeysModal');
-  const deleteSelectedKeysList = document.getElementById('deleteSelectedKeysList');
-  const btnCloseDeleteSelectedKeysModalX = document.getElementById('btnCloseDeleteSelectedKeysModalX');
-  const btnCancelDeleteSelectedKeys = document.getElementById('btnCancelDeleteSelectedKeys');
-  const btnConfirmDeleteSelectedKeys = document.getElementById('btnConfirmDeleteSelectedKeys');
-
-  const confirmKeyActionModal = document.getElementById('confirmKeyActionModal');
-  const confirmKeyActionTitle = document.getElementById('confirmKeyActionTitle');
-  const confirmKeyActionMessage = document.getElementById('confirmKeyActionMessage');
-  const btnCloseConfirmKeyActionModalX = document.getElementById('btnCloseConfirmKeyActionModalX');
-  const btnCancelConfirmKeyAction = document.getElementById('btnCancelConfirmKeyAction');
-  const btnExecuteConfirmKeyAction = document.getElementById('btnExecuteConfirmKeyAction');
-
-  let configuredPerms = [];
-  let selectedKeyIds = new Set();
-  let currentLoadedKeys = [];
-
-  btnOpenAddKeyModal.onclick = () => {
-    newKeyName.value = '';
-    configuredPerms = [];
-    renderConfiguredPerms();
-    // Default 1 year from now
-    const d = new Date();
-    d.setFullYear(d.getFullYear() + 1);
-    newKeyExpiry.value = d.toISOString().slice(0, 16);
-    addKeyModal.classList.remove('hidden');
-  };
-
-  btnCloseAddKeyModalX.onclick = () => addKeyModal.classList.add('hidden');
-  btnCancelAddKey.onclick = () => addKeyModal.classList.add('hidden');
-
-  btnAddContainerPerm.onclick = () => {
-    const c = newKeyContainerSelect.value;
-    const l = newKeyLevelSelect.value;
-    configuredPerms.push({ container: c, level: l });
-    renderConfiguredPerms();
-  };
-
-  function renderConfiguredPerms() {
-    newKeyPermsList.innerHTML = '';
-    if (configuredPerms.length === 0) {
-      newKeyPermsList.innerHTML = '<span class="text-muted" style="font-size:0.82rem;">No permissions added yet. Click \'Add\' above.</span>';
-      return;
+  async function refreshActiveSessionJwt() {
+    try {
+      const resp = await fetch('/api/auth/me');
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.authenticated && data.user) {
+          currentUser = data.user;
+          currentJwt = data.jwt_token || currentJwt;
+          sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
+          sessionStorage.setItem('jwtToken', currentJwt);
+          updateJwtDisplay(currentUser, currentJwt);
+          applyRolePermissions(currentUser);
+        }
+      }
+    } catch (e) {
+      console.warn('Error refreshing session JWT:', e);
     }
-    configuredPerms.forEach((p, idx) => {
-      const chip = document.createElement('div');
-      chip.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#182234; padding:4px 10px; margin-bottom:4px; border-radius:4px; font-size:0.82rem;';
-      chip.innerHTML = `<span><strong>${escapeHtml(p.container)}</strong>: <span class="badge" style="background:#1e3a8a;color:#93c5fd;">${escapeHtml(p.level)}</span></span> <button type="button" class="btn-close" style="font-size:0.85rem;" onclick="removePerm(${idx})">&times;</button>`;
-      newKeyPermsList.appendChild(chip);
+  }
+
+  if (btnRefreshSessionJwt) {
+    btnRefreshSessionJwt.addEventListener('click', async () => {
+      await refreshActiveSessionJwt();
+      await loadJwtActivities();
     });
   }
 
-  window.removePerm = (idx) => {
-    configuredPerms.splice(idx, 1);
-    renderConfiguredPerms();
-  };
+  if (btnRefreshJwtActivities) {
+    btnRefreshJwtActivities.addEventListener('click', () => {
+      loadJwtActivities();
+    });
+  }
 
-  btnProceedAddKey.onclick = async () => {
-    const name = newKeyName.value.trim() || 'API Key';
-    const containers = configuredPerms.map(p => p.container);
-    const levels = configuredPerms.map(p => p.level);
-    const expiry = newKeyExpiry.value ? new Date(newKeyExpiry.value).toISOString() : null;
-
-    try {
-      const resp = await fetch('/api/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key_name: name,
-          creator_email: currentUser ? currentUser.email : 'admin',
-          containers: containers,
-          access_levels: levels,
-          expires_at: expiry
-        })
-      });
-      const data = await resp.json();
-      if (resp.ok && data.api_key) {
-        addKeyModal.classList.add('hidden');
-        displayGeneratedKeyInput.value = data.api_key;
-        showKeyModal.classList.remove('hidden');
-        loadApiKeys();
-      } else {
-        alert(data.error || 'Failed to create API key');
-      }
-    } catch (e) {
-      alert('Error creating API key');
-    }
-  };
-
-  btnCopyGeneratedKey.onclick = () => {
-    navigator.clipboard.writeText(displayGeneratedKeyInput.value);
-    btnCopyGeneratedKey.textContent = '✅ Copied!';
-    setTimeout(() => { btnCopyGeneratedKey.textContent = '📋 Copy'; }, 2000);
-  };
-  btnCloseShowKeyModal.onclick = () => showKeyModal.classList.add('hidden');
-
-  // API Keys Table & Activities
-  const apiKeyActivitiesTbody = document.getElementById('apiKeyActivitiesTbody');
-  const selectedApiKeyNameText = document.getElementById('selectedApiKeyNameText');
-  let activeSelectedKeyId = null;
-
-  async function loadApiKeyActivities(k) {
+  async function loadJwtActivities() {
     if (!apiKeyActivitiesTbody) return;
-    apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Loading activities...</td></tr>';
+    apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Loading JWT activities...</td></tr>';
     try {
-      const resp = await fetch(`/api/keys/${k.id}/activities?key_prefix=${encodeURIComponent(k.key_prefix || '')}`);
+      const resp = await fetch('/api/jwt/activities');
       const data = await resp.json();
       const activities = data.activities || [];
       apiKeyActivitiesTbody.innerHTML = '';
       if (activities.length === 0) {
-        apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No activity records found for this API key.</td></tr>';
+        apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No initial user request records found.</td></tr>';
         return;
       }
       activities.forEach(act => {
-        const actTr = document.createElement('tr');
+        const tr = document.createElement('tr');
         const isSuccess = (act.status || '').toLowerCase().includes('success');
-        const isDenied = (act.status || '').toLowerCase().includes('denied') || (act.status || '').toLowerCase().includes('expired') || (act.status || '').toLowerCase().includes('failure');
+        const isDenied = (act.status || '').toLowerCase().includes('denied') || (act.status || '').toLowerCase().includes('expired') || (act.status || '').toLowerCase().includes('failure') || (act.status || '').toLowerCase().includes('error');
         const badgeClass = isSuccess ? 'badge-user' : (isDenied ? 'badge-admin' : 'badge-editor');
 
-        actTr.innerHTML = `
-          <td>${act.created_at ? new Date(act.created_at).toLocaleString() : '-'}</td>
-          <td><strong>${escapeHtml(act.key_name || k.key_name)}</strong></td>
-          <td><code>${escapeHtml(act.key_prefix || k.key_prefix || '-')}</code></td>
-          <td>${escapeHtml(act.container_name || '-')}</td>
-          <td>${escapeHtml(act.access_level || '-')}</td>
-          <td><span class="badge badge-editor">${escapeHtml(act.action_type || 'Activity')}</span></td>
-          <td><span class="badge ${badgeClass}">${escapeHtml(act.status || 'Success')}</span></td>
-          <td style="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(act.details || '-')}">${escapeHtml(act.details || '-')}</td>
-        `;
-        apiKeyActivitiesTbody.appendChild(actTr);
-      });
-    } catch (e) {
-      apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Error loading activities.</td></tr>';
-    }
-  }
-
-  function selectApiKeyRow(k, tr) {
-    if (!tr) return;
-    activeSelectedKeyId = k.id;
-    apiKeysTbody.querySelectorAll('tr').forEach(r => r.classList.remove('active-key-row'));
-    tr.classList.add('active-key-row');
-    if (selectedApiKeyNameText) {
-      selectedApiKeyNameText.textContent = `${k.key_name} (${k.key_prefix})`;
-    }
-    loadApiKeyActivities(k);
-  }
-
-  async function loadApiKeys() {
-    try {
-      const resp = await fetch('/api/keys');
-      const data = await resp.json();
-      currentLoadedKeys = data.keys || [];
-      apiKeysTbody.innerHTML = '';
-
-      if (currentLoadedKeys.length === 0) {
-        apiKeysTbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No API keys found.</td></tr>';
-        if (selectAllApiKeys) selectAllApiKeys.checked = false;
-        if (btnDeleteSelectedKeys) btnDeleteSelectedKeys.disabled = true;
-        if (apiKeyActivitiesTbody) {
-          apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No API keys configured.</td></tr>';
-        }
-        if (selectedApiKeyNameText) selectedApiKeyNameText.textContent = 'None Selected';
-        return;
-      }
-
-      currentLoadedKeys.forEach(k => {
-        const isChecked = selectedKeyIds.has(k.id);
-        const tr = document.createElement('tr');
-        tr.style.cursor = 'pointer';
-        if (isChecked) tr.classList.add('selected-row');
-        if (activeSelectedKeyId === k.id) tr.classList.add('active-key-row');
-
         tr.innerHTML = `
-          <td style="text-align:center;">
-            <input type="checkbox" class="api-key-select-chk" data-id="${k.id}" ${isChecked ? 'checked' : ''}>
-          </td>
-          <td><strong>${escapeHtml(k.key_name)}</strong></td>
-          <td><code>${escapeHtml(k.key_prefix)}</code></td>
-          <td>${escapeHtml(k.creator_email)}</td>
-          <td>${k.created_at ? new Date(k.created_at).toLocaleString() : '-'}</td>
-          <td>${k.expires_at ? new Date(k.expires_at).toLocaleString() : '-'}</td>
-          <td>${(k.containers || []).join(', ') || '-'}</td>
-          <td>${(k.access_levels || []).join(', ') || '-'}</td>
-          <td><span class="badge ${k.status === 'active' ? 'badge-user' : (k.status === 'delete' ? 'badge-admin' : 'badge-inactive')}">${escapeHtml(k.status)}</span></td>
-          <td>
-            <button class="btn-secondary btn-edit-key" style="padding:2px 8px; font-size:0.75rem;">Edit</button>
-          </td>
+          <td>${act.created_at ? new Date(act.created_at).toLocaleString() : '-'}</td>
+          <td><strong>${escapeHtml(act.user_email || 'User')}</strong></td>
+          <td><span style="color:#38bdf8;">${escapeHtml(act.domain || '-')}</span></td>
+          <td><code>${escapeHtml(act.recipient || 'agents')}</code></td>
+          <td><span class="badge badge-editor">${escapeHtml(act.request_type || 'User Request')}</span></td>
+          <td><span class="badge ${badgeClass}">${escapeHtml(act.status || 'success')}</span></td>
+          <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(act.details || '-')}">${escapeHtml(act.details || '-')}</td>
         `;
-
-        // Click row to highlight and load activities
-        tr.addEventListener('click', (e) => {
-          if (e.target.closest('input[type="checkbox"]') || e.target.closest('.btn-edit-key')) return;
-          selectApiKeyRow(k, tr);
-        });
-
-        // Edit button click
-        const editBtn = tr.querySelector('.btn-edit-key');
-        if (editBtn) {
-          editBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openEditKeyModal(k);
-          });
-        }
-
-        apiKeysTbody.appendChild(tr);
+        apiKeyActivitiesTbody.appendChild(tr);
       });
-
-      // Bind row checkboxes
-      apiKeysTbody.querySelectorAll('.api-key-select-chk').forEach(chk => {
-        chk.addEventListener('change', (e) => {
-          e.stopPropagation();
-          const id = parseInt(chk.getAttribute('data-id'));
-          const tr = chk.closest('tr');
-          if (chk.checked) {
-            selectedKeyIds.add(id);
-            if (tr) tr.classList.add('selected-row');
-          } else {
-            selectedKeyIds.delete(id);
-            if (tr) tr.classList.remove('selected-row');
-          }
-          updateBulkDeleteBtnState();
-        });
-      });
-
-      updateBulkDeleteBtnState();
-
-      // If there's an active key selected, reload its activities
-      if (activeSelectedKeyId) {
-        const found = currentLoadedKeys.find(k => k.id === activeSelectedKeyId);
-        if (found) {
-          loadApiKeyActivities(found);
-        } else {
-          activeSelectedKeyId = null;
-        }
-      }
     } catch (e) {
-      console.error('Failed to load API keys:', e);
+      apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading JWT activities.</td></tr>';
     }
-  }
-
-  function updateBulkDeleteBtnState() {
-    if (btnDeleteSelectedKeys) {
-      btnDeleteSelectedKeys.disabled = (selectedKeyIds.size === 0);
-    }
-    if (selectAllApiKeys) {
-      selectAllApiKeys.checked = (currentLoadedKeys.length > 0 && selectedKeyIds.size === currentLoadedKeys.length);
-    }
-  }
-
-  // Select All Checkbox
-  if (selectAllApiKeys) {
-    selectAllApiKeys.addEventListener('change', () => {
-      const isChecked = selectAllApiKeys.checked;
-      selectedKeyIds.clear();
-      if (isChecked) {
-        currentLoadedKeys.forEach(k => selectedKeyIds.add(k.id));
-      }
-      apiKeysTbody.querySelectorAll('.api-key-select-chk').forEach(chk => {
-        chk.checked = isChecked;
-        const tr = chk.closest('tr');
-        if (tr) {
-          if (isChecked) tr.classList.add('selected-row');
-          else tr.classList.remove('selected-row');
-        }
-      });
-      if (btnDeleteSelectedKeys) {
-        btnDeleteSelectedKeys.disabled = (selectedKeyIds.size === 0);
-      }
-    });
-  }
-
-  // Delete Selected API Keys Button
-  if (btnDeleteSelectedKeys) {
-    btnDeleteSelectedKeys.onclick = () => {
-      if (selectedKeyIds.size === 0) return;
-      const selected = currentLoadedKeys.filter(k => selectedKeyIds.has(k.id));
-      if (deleteSelectedKeysList) {
-        deleteSelectedKeysList.innerHTML = `
-          <ul style="list-style:none; padding:0; margin:0;">
-            ${selected.map(s => `
-              <li style="padding:6px 0; border-bottom:1px solid #1e293b; display:flex; justify-content:space-between; align-items:center;">
-                <span><strong>${escapeHtml(s.key_name)}</strong></span>
-                <code>${escapeHtml(s.key_prefix)}</code>
-              </li>
-            `).join('')}
-          </ul>
-        `;
-      }
-      if (deleteSelectedKeysModal) deleteSelectedKeysModal.classList.remove('hidden');
-    };
-  }
-
-  if (btnCloseDeleteSelectedKeysModalX) {
-    btnCloseDeleteSelectedKeysModalX.onclick = () => deleteSelectedKeysModal.classList.add('hidden');
-  }
-  if (btnCancelDeleteSelectedKeys) {
-    btnCancelDeleteSelectedKeys.onclick = () => deleteSelectedKeysModal.classList.add('hidden');
-  }
-
-  if (btnConfirmDeleteSelectedKeys) {
-    btnConfirmDeleteSelectedKeys.onclick = async () => {
-      const ids = Array.from(selectedKeyIds);
-      if (ids.length === 0) return;
-      try {
-        await fetch('/api/keys/bulk_delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key_ids: ids })
-        });
-      } catch (e) {
-        for (const kid of ids) {
-          await fetch(`/api/keys/${kid}`, { method: 'DELETE' }).catch(() => {});
-        }
-      }
-      selectedKeyIds.clear();
-      if (deleteSelectedKeysModal) deleteSelectedKeysModal.classList.add('hidden');
-      loadApiKeys();
-    };
-  }
-
-  // Edit API Key Modal Logic
-  window.openEditKeyModal = (k) => {
-    editKeyId.value = k.id;
-    if (editKeyNameDisplay) editKeyNameDisplay.textContent = k.key_name;
-    if (editKeyNameInput) editKeyNameInput.value = k.key_name;
-    if (editKeyExpiry) {
-      editKeyExpiry.value = k.expires_at ? new Date(k.expires_at).toISOString().slice(0, 16) : '';
-    }
-    editKeyRowsContainer.innerHTML = '';
-
-    const containers = k.containers || [];
-    const levels = k.access_levels || [];
-
-    containers.forEach((c, idx) => {
-      const curLevel = levels[idx] || 'Read';
-      addEditKeyRow(c, curLevel);
-    });
-
-    if (containers.length === 0) {
-      editKeyRowsContainer.innerHTML = '<span class="text-muted" style="font-size:0.82rem;">No permissions configured. Use selector above to add.</span>';
-    }
-
-    editKeyModal.classList.remove('hidden');
-  };
-
-  function addEditKeyRow(container, level) {
-    const placeholder = editKeyRowsContainer.querySelector('.text-muted');
-    if (placeholder) placeholder.remove();
-
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#182234; padding:6px 12px; border-radius:4px; margin-bottom:4px;';
-    row.innerHTML = `
-      <span><strong>${escapeHtml(container)}</strong></span>
-      <select class="input-text edit-key-level-select" data-container="${escapeHtml(container)}" style="padding:4px 8px; font-size:0.82rem;">
-        <option value="Read" ${level === 'Read' ? 'selected' : ''}>Read</option>
-        <option value="Write" ${level === 'Write' ? 'selected' : ''}>Write</option>
-        <option value="Admin" ${level === 'Admin' ? 'selected' : ''}>Admin</option>
-        <option value="Delete" style="color:#ef4444;">Delete</option>
-      </select>
-    `;
-    editKeyRowsContainer.appendChild(row);
-  }
-
-  if (btnEditAddContainerPerm) {
-    btnEditAddContainerPerm.onclick = () => {
-      const c = editKeyContainerSelect.value;
-      const l = editKeyLevelSelect.value;
-      addEditKeyRow(c, l);
-    };
-  }
-
-  if (btnCloseEditKeyModalX) btnCloseEditKeyModalX.onclick = () => editKeyModal.classList.add('hidden');
-  if (btnCancelEditKey) btnCancelEditKey.onclick = () => editKeyModal.classList.add('hidden');
-
-  // Confirmation modal helpers
-  function showConfirmKeyAction(title, message, isDanger, onConfirm) {
-    if (confirmKeyActionTitle) confirmKeyActionTitle.innerHTML = `<span class="modal-icon ${isDanger ? 'text-danger' : 'text-primary'}">${isDanger ? '🗑️' : '✏️'}</span> ${escapeHtml(title)}`;
-    if (confirmKeyActionMessage) confirmKeyActionMessage.textContent = message;
-    if (btnExecuteConfirmKeyAction) {
-      btnExecuteConfirmKeyAction.className = isDanger ? 'btn-danger' : 'btn-primary';
-      btnExecuteConfirmKeyAction.textContent = isDanger ? 'Delete' : 'Update';
-      btnExecuteConfirmKeyAction.onclick = async () => {
-        confirmKeyActionModal.classList.add('hidden');
-        await onConfirm();
-      };
-    }
-    if (confirmKeyActionModal) confirmKeyActionModal.classList.remove('hidden');
-  }
-
-  if (btnCloseConfirmKeyActionModalX) {
-    btnCloseConfirmKeyActionModalX.onclick = () => confirmKeyActionModal.classList.add('hidden');
-  }
-  if (btnCancelConfirmKeyAction) {
-    btnCancelConfirmKeyAction.onclick = () => confirmKeyActionModal.classList.add('hidden');
-  }
-
-  // Delete button on Edit Key Modal
-  if (btnDeleteKey) {
-    btnDeleteKey.onclick = () => {
-      const kid = editKeyId.value;
-      const keyName = editKeyNameInput ? editKeyNameInput.value.trim() : (editKeyNameDisplay ? editKeyNameDisplay.textContent : 'API Key');
-      showConfirmKeyAction(
-        'Confirm Delete API Key',
-        `Are you sure you want to delete the API key "${keyName}"? This action cannot be undone.`,
-        true,
-        async () => {
-          await fetch(`/api/keys/${kid}`, { method: 'DELETE' });
-          editKeyModal.classList.add('hidden');
-          selectedKeyIds.delete(parseInt(kid));
-          loadApiKeys();
-        }
-      );
-    };
-  }
-
-  // Update button on Edit Key Modal
-  if (btnUpdateKey) {
-    btnUpdateKey.onclick = () => {
-      const kid = editKeyId.value;
-      const keyName = editKeyNameInput ? editKeyNameInput.value.trim() : (editKeyNameDisplay ? editKeyNameDisplay.textContent : 'API Key');
-      showConfirmKeyAction(
-        'Confirm Update API Key',
-        `Are you sure you want to update the settings and permissions for API key "${keyName}"?`,
-        false,
-        async () => {
-          const newContainers = [];
-          const newLevels = [];
-
-          editKeyRowsContainer.querySelectorAll('.edit-key-level-select').forEach(sel => {
-            const c = sel.getAttribute('data-container');
-            const l = sel.value;
-            if (l !== 'Delete') {
-              newContainers.push(c);
-              newLevels.push(l);
-            }
-          });
-
-          const expiry = editKeyExpiry && editKeyExpiry.value ? new Date(editKeyExpiry.value).toISOString() : null;
-
-          await fetch(`/api/keys/${kid}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              key_name: keyName,
-              containers: newContainers,
-              access_levels: newLevels,
-              expires_at: expiry
-            })
-          });
-          editKeyModal.classList.add('hidden');
-          loadApiKeys();
-        }
-      );
-    };
   }
 
   // Enhanced Context Evidence loader hook in chat and audit flow

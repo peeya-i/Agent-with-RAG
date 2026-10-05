@@ -147,27 +147,12 @@ def check_auth(api_key, invoker="agent"):
     if not api_key:
         return True, "Allowed (internal default)"
 
-    # If incoming key is a JWT token, decode and validate it
+    # Validate JWT token
     jwt_payload = decode_jwt_token(api_key)
     if jwt_payload:
         return True, "Valid JWT"
 
-    try:
-        url = AUTH_SERVICE_URL
-        if "auth_service:8001" in url and not os.environ.get("RUNNING_IN_DOCKER"):
-            url = url.replace("auth_service:8001", "127.0.0.1:8001")
-        resp = requests.post(url, json={
-            "api_key": api_key,
-            "container": "tools",
-            "access_level": "read",
-            "invoker": invoker
-        }, timeout=2)
-        if resp.status_code == 200 and resp.json().get("valid"):
-            return True, "Valid"
-        return False, resp.json().get("error", "Unauthorized")
-    except Exception as e:
-        # Fallback for bootstrapping
-        return True, f"Bypass: {e}"
+    return False, "Unauthorized: Valid JWT required"
 
 def log_tool_event(conv_id, invoker, tool_name, args, req_payload, resp_payload, status, dur_ms):
     try:
