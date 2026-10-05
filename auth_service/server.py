@@ -127,6 +127,20 @@ def init_db():
     );
     """)
 
+    # JWT tokens table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS jwt_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_email TEXT NOT NULL,
+        token_prefix TEXT NOT NULL,
+        token_hash TEXT UNIQUE NOT NULL,
+        full_token TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+    );
+    """)
+
     conn.commit()
 
     # Seed initial activity logs for pre-existing keys if none exist
@@ -185,6 +199,31 @@ def init_db():
     # Purge any deleted keys
     cursor.execute("DELETE FROM api_keys WHERE status = 'delete'")
     conn.commit()
+
+    # Seed active JWT tokens if table is empty
+    cursor.execute("SELECT count(*) as cnt FROM jwt_tokens")
+    if cursor.fetchone()["cnt"] == 0:
+        seed_token_users = [
+            ("admin", "Admin", None),
+            ("admin-1@example-a.com", "Admin", "example-a.com"),
+            ("editor@example-a.com", "Editor", "example-a.com"),
+            ("user@example-a.com", "User", "example-a.com"),
+            ("admin-2@sample-b.com", "Admin", "sample-b.com"),
+            ("editor@sample-b.com", "Editor", "sample-b.com"),
+            ("user@sample-b.com", "User", "sample-b.com"),
+        ]
+        now_dt = datetime.now(timezone.utc)
+        for u_email, u_role, u_domain in seed_token_users:
+            tok = generate_jwt_token(email=u_email, role=u_role, domain=u_domain, expires_in_seconds=86400)
+            tok_prefix = tok[:16] + "..."
+            tok_hash = hashlib.sha256(tok.encode("utf-8")).hexdigest()
+            created_iso = now_dt.isoformat()
+            expires_iso = (now_dt + timedelta(seconds=86400)).isoformat()
+            cursor.execute("""
+                INSERT OR IGNORE INTO jwt_tokens (user_email, token_prefix, token_hash, full_token, created_at, expires_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'active')
+            """, (u_email, tok_prefix, tok_hash, tok, created_iso, expires_iso))
+        conn.commit()
 
     conn.close()
 
@@ -303,6 +342,21 @@ def login():
         user_domain = dict(user).get("domain") or get_domain_from_email(username)
         # Create multi-tenant JWT token
         jwt_token = generate_jwt_token(email=username, role=role, domain=user_domain)
+        tok_prefix = jwt_token[:16] + "..."
+        tok_hash = hashlib.sha256(jwt_token.encode("utf-8")).hexdigest()
+        now_dt = datetime.now(timezone.utc)
+        created_iso = now_dt.isoformat()
+        expires_iso = (now_dt + timedelta(seconds=86400)).isoformat()
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO jwt_tokens (user_email, token_prefix, token_hash, full_token, created_at, expires_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'active')
+        """, (username, tok_prefix, tok_hash, jwt_token, created_iso, expires_iso))
+        conn.commit()
+        conn.close()
+
         return jsonify({
             "status": "success",
             "token": jwt_token,
@@ -326,9 +380,25 @@ def validate_token_route():
     token = extract_jwt_from_request(request)
     if not token:
         return jsonify({"valid": False, "error": "Missing JWT token"}), 401
-    payload = decode_jwt_token(token)
+
+    clean_token = token.strip()
+    if clean_token.lower().startswith("bearer "):
+        clean_token = clean_token[7:].strip()
+
+    payload = decode_jwt_token(clean_token)
     if not payload:
         return jsonify({"valid": False, "error": "Invalid or expired JWT token"}), 403
+
+    # Check if token exists in jwt_tokens and is not revoked/deleted
+    tok_hash = hashlib.sha256(clean_token.encode("utf-8")).hexdigest()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM jwt_tokens WHERE token_hash = ?", (tok_hash,))
+    tok_row = cursor.fetchone()
+    conn.close()
+    if tok_row and tok_row["status"] != "active":
+        return jsonify({"valid": False, "error": f"Token is {tok_row['status']}"}), 401
+
     return jsonify({
         "valid": True,
         "email": payload.get("email"),
@@ -569,6 +639,90 @@ def get_user_activity_logs():
     logs = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify({"activity_logs": logs})
+
+# JWT Token Management APIs
+@app.route("/api/jwt/tokens", methods=["GET"])
+def list_jwt_tokens():
+    domain = request.args.get("domain")
+    role = request.args.get("role", "User")
+    user = request.args.get("user")
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if role == "Admin" and not domain:
+        cursor.execute("SELECT id, user_email, token_prefix, full_token, created_at, expires_at, status FROM jwt_tokens WHERE status != 'delete' ORDER BY id DESC")
+    elif role == "Admin" and domain:
+        cursor.execute("""
+            SELECT id, user_email, token_prefix, full_token, created_at, expires_at, status 
+            FROM jwt_tokens 
+            WHERE status != 'delete' 
+              AND (user_email LIKE ? OR user_email LIKE ?) 
+            ORDER BY id DESC
+        """, (f"%@{domain}", f"%@{domain.lower()}"))
+    else:
+        cursor.execute("""
+            SELECT id, user_email, token_prefix, full_token, created_at, expires_at, status 
+            FROM jwt_tokens 
+            WHERE status != 'delete' AND user_email = ? 
+            ORDER BY id DESC
+        """, (user or "",))
+
+    rows = cursor.fetchall()
+    tokens = []
+    now = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        st = r["status"]
+        if r["expires_at"] < now and st == "active":
+            st = "expired"
+        full_tok = r["full_token"] or ""
+        token_suffix = f"...{full_tok[-10:]}" if len(full_tok) >= 10 else (f"...{full_tok}" if full_tok else "...")
+        tokens.append({
+            "id": r["id"],
+            "user_email": r["user_email"],
+            "token_prefix": r["token_prefix"],
+            "token_suffix": token_suffix,
+            "full_token": r["full_token"],
+            "created_at": r["created_at"],
+            "expires_at": r["expires_at"],
+            "status": st
+        })
+    conn.close()
+    return jsonify({"status": "success", "tokens": tokens})
+
+@app.route("/api/jwt/tokens/bulk_delete", methods=["POST"])
+def bulk_delete_jwt_tokens():
+    data = request.get_json(silent=True) or {}
+    token_ids = data.get("token_ids", [])
+    if not token_ids:
+        return jsonify({"status": "failed", "error": "No token IDs provided"}), 400
+
+    placeholders = ",".join("?" for _ in token_ids)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(f"DELETE FROM jwt_tokens WHERE id IN ({placeholders})", token_ids)
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    log_to_logging_container(
+        invoker="admin",
+        recipient="auth_service",
+        event_type="jwt_token_deleted",
+        short_desc=f"Bulk deleted {deleted_count} JWT tokens",
+        payload={"deleted_ids": token_ids, "count": deleted_count}
+    )
+    return jsonify({"status": "success", "deleted_count": deleted_count})
+
+@app.route("/api/jwt/tokens/<int:token_id>", methods=["DELETE"])
+def delete_single_jwt_token(token_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM jwt_tokens WHERE id = ?", (token_id,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success", "deleted": deleted > 0})
 
 # API Keys Management
 @app.route("/api/keys", methods=["GET"])

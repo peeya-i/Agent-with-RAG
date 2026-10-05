@@ -24,6 +24,8 @@ services:
       - "8001:8001"
     volumes:
       - ./auth_service/secrets:/app/secrets
+      - ./auth_service/server.py:/app/server.py
+      - ./auth_service/jwt_auth.py:/app/jwt_auth.py
     environment:
       - PORT=8001
       - RUNNING_IN_DOCKER=true
@@ -52,6 +54,7 @@ services:
     volumes:
       - ./doc_RAG/chroma:/app/chroma
       - ./doc_RAG/secrets:/app/secrets
+      - ./doc_RAG/server.py:/app/server.py
     environment:
       - PORT=8003
       - RUNNING_IN_DOCKER=true
@@ -75,6 +78,7 @@ services:
     volumes:
       - ./tools/data:/app/data
       - ./tools/secrets:/app/secrets
+      - ./tools/server.py:/app/server.py
     environment:
       - PORT=8005
       - RUNNING_IN_DOCKER=true
@@ -96,6 +100,9 @@ services:
     volumes:
       - ./agents/secrets:/app/secrets
       - ./agents/skills:/app/skills:ro
+      - ./agents/server.py:/app/server.py
+      - ./agents/skills_loader.py:/app/skills_loader.py
+      - ./agents/custom_agent:/app/custom_agent
     environment:
       - PORT=8002
       - RUNNING_IN_DOCKER=true

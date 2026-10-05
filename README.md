@@ -184,21 +184,27 @@ Access the Web Console at: **`http://localhost:8000`**
 * **Global Controls:** Use `Restart All` or `Shutdown All` for bulk orchestration.
 
 ### 🔑 Page 6: Password Mgnt & JWT
-* **Current Account Info:** View your active email, assigned role, and SQLite storage backend path.
+* **Global Refresh Control:** Click the **Refresh** button (`#btnRefreshAuth`) in the header to update all tables across both sub-tabs simultaneously.
 * **Passwords Sub-Tab (Admin Only):**
   * **User Account Directory Access Control:** Administrators can manage User accounts (changing roles, toggling Active/Locked status, resetting passwords, creating new users, and deleting users). Domain Admins manage users in their domain; Global Admin manages all users.
   * **Create New User:** Clicking **Create New User** opens a popup window prompting for email/username and password with **Cancel** and **Create** buttons.
   * **User Selection & Bulk Deletion:** Each username has an individual checkbox, with a "Select All" checkbox in the column header. A **Delete Users** button next to **Create New User** is enabled only when one or more user checkboxes are checked.
   * **User Access Activity Table:** Tracks all login attempts, logouts, registration events, and password resets.
-* **JWT Activities Sub-Tab:**
+* **JWT (JSON Web Token) Sub-Tab:**
   * **Active Multi-Tenant Session & JWT Token:**
     * Displays active login email, tenant domain, permitted RAG documents, and permitted Tools CSV files.
     * Features a **Refresh** button to scan and display the active session and keys.
     * Displays the full encoded JWT token with a **Copy Token** button.
+  * **JWT List (Active Tokens):**
+    * Replaces the legacy services matrix. Displays all active tokens with columns: Checkbox (`[ ]`), User Name, Token Suffix, Generated Date/Time, Expiry Date/Time, and Status.
+    * Includes a **Select All** checkbox in the table header.
+    * **Delete Selected JWT:** Enabled when 1+ tokens are checked. Displays a confirmation popup modal before deleting/revoking tokens from the list and database.
+    * **Interactive Row Filtering:** Clicking any row highlights it and filters the "JWT Activities:" table below strictly for that token/user. Clicking the row again deselects it and restores the view to all tokens.
   * **JWT Activities: Initial User Requests:**
     * Lists the usage of the JWT from the user, displaying only the initial requests initiated by the user (chat queries, document ingest/delete, logins, logouts, page views).
     * Sub-calls between internal containers are excluded to keep focus strictly on the user's primary requests.
     * Domain-scoped for Domain Admins and user-scoped for standard Users. Global Admin can view all initial user requests across tenants.
+    * Fully linked with the centralized Logging Service so raw events and activities show up immediately in both the Log Viewer and JWT Activities.
 
 ---
 

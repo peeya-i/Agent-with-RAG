@@ -300,6 +300,42 @@ def proxy_user_activity():
     r = requests.get(f"{url}/api/users/activity_logs", params=params, timeout=5)
     return jsonify(r.json()), r.status_code
 
+# JWT Tokens Management Proxy
+@app.route("/api/jwt/tokens", methods=["GET"])
+def proxy_jwt_tokens():
+    url = resolve_url(AUTH_URL, "auth_service", 8001)
+    user = session.get("user") or {}
+    params = dict(request.args)
+    if user.get("email") and "user" not in params:
+        params["user"] = user.get("email")
+    if user.get("domain") and "domain" not in params:
+        params["domain"] = user.get("domain")
+    if user.get("role") and "role" not in params:
+        params["role"] = user.get("role")
+    try:
+        r = requests.get(f"{url}/api/jwt/tokens", params=params, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "failed", "tokens": [], "error": str(e)}), 502
+
+@app.route("/api/jwt/tokens/bulk_delete", methods=["POST"])
+def proxy_bulk_delete_jwt():
+    url = resolve_url(AUTH_URL, "auth_service", 8001)
+    try:
+        r = requests.post(f"{url}/api/jwt/tokens/bulk_delete", json=request.get_json(silent=True) or {}, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 502
+
+@app.route("/api/jwt/tokens/<int:token_id>", methods=["DELETE"])
+def proxy_delete_jwt(token_id):
+    url = resolve_url(AUTH_URL, "auth_service", 8001)
+    try:
+        r = requests.delete(f"{url}/api/jwt/tokens/{token_id}", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 502
+
 @app.route("/api/jwt/activities", methods=["GET"])
 def get_jwt_activities():
     user = session.get("user") or {}
@@ -307,24 +343,28 @@ def get_jwt_activities():
     role = (user.get("role") or "User").lower()
     email = user.get("email")
 
+    filter_user = request.args.get("user_email") or request.args.get("user")
+    filter_token = request.args.get("token_prefix")
+
     url = resolve_url(LOGGING_URL, "logging", 8006)
     try:
-        r = requests.get(f"{url}/api/logs", timeout=5)
-        logs = r.json() if r.status_code == 200 else []
-        if isinstance(logs, dict) and "logs" in logs:
-            logs = logs["logs"]
+        r = requests.get(f"{url}/api/logs/query", timeout=5)
+        res_json = r.json() if r.status_code == 200 else {}
+        logs = res_json.get("logs", [])
     except Exception:
         logs = []
 
     # Filter to ONLY initial requests from the user
-    # Primary user-initiated events:
-    # 'send_chat_request', 'user_session_login', 'user_session_logout', 'page_view', 'vectordb_ingest', 'vectordb_delete', 'user_registration'
     PRIMARY_TYPES = {
         "send_chat_request": "Chat Query (Agent)",
+        "chat_interaction": "Chat Query (Agent)",
         "user_session_login": "Session Login",
+        "user_login": "Session Login",
         "user_session_logout": "Session Logout",
+        "user_logout": "Session Logout",
         "vectordb_ingest": "Vector DB Document Ingest",
         "vectordb_delete": "Vector DB Document Delete",
+        "document_delete": "Vector DB Document Delete",
         "user_registration": "User Registration",
         "page_view": "Navigation Page View"
     }
@@ -336,10 +376,10 @@ def get_jwt_activities():
         if etype not in PRIMARY_TYPES and invoker not in ["web ui", "web_ui", "client", "user"]:
             continue
 
-        log_user = l.get("user") or l.get("payload", {}).get("user_name") or l.get("payload", {}).get("username") or ""
+        log_user = l.get("user") or l.get("payload", {}).get("user_name") or l.get("payload", {}).get("username") or l.get("payload", {}).get("email") or ""
         log_domain = l.get("domain") or ""
-        if not log_domain and "@" in log_user:
-            log_domain = log_user.split("@", 1)[1]
+        if not log_domain and "@" in str(log_user):
+            log_domain = str(log_user).split("@", 1)[1]
 
         # Multi-tenant domain scoping:
         if role != "admin" or domain:
@@ -351,6 +391,10 @@ def get_jwt_activities():
             if role == "user":
                 if email and log_user and log_user != email:
                     continue
+
+        # Filter by selected token's user if specified
+        if filter_user and str(log_user).strip().lower() != filter_user.strip().lower():
+            continue
 
         recip = l.get("recipient") or "agents"
         desc = l.get("short_description") or ""
@@ -364,7 +408,7 @@ def get_jwt_activities():
             "domain": log_domain or domain or "Global",
             "recipient": recip,
             "request_type": PRIMARY_TYPES.get(etype, etype.replace("_", " ").title()),
-            "status": l.get("status") or "Success",
+            "status": (l.get("status") or "Success").capitalize(),
             "details": desc
         })
 

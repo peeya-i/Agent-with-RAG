@@ -297,8 +297,9 @@ The Documents and Skills container accesses:
   - Logging container to log the agent container's activity
 
 ### 🔑 Sixth page: “Password Mgnt & JWT”
-- If the user has editor or user access, only display the card showing the current user email address, role, and the storage backend
-- If the user has admin access, display two sub-tabs: Passwords and JWT Activities
+- At the top right of the page header, includes a **Refresh** button (`#btnRefreshAuth`) that refreshes and updates all tables on the page (User Accounts, User Access Activity, Active Session, JWT List, and JWT Activities).
+- Accessible to administrators to manage credentials, users, and tokens. Non-admin users are notified that Admin access is required.
+- Admin access displays two sub-tabs: Passwords and JWT (JSON Web Token)
   - Passwords tab displays:
     - User Account Directory table:
       - Only allow users with Admin access to make any changes to User accounts (changing roles, locking/unlocking accounts, resetting passwords, creating new users, and deleting users).
@@ -325,20 +326,39 @@ The Documents and Skills container accesses:
       - Only show 5 rows in the table
       - There should be a scroll bar on the right side to allow the user to scroll through all the items
 
-  - JWT Activities sub-tab displays:
+  - JWT (JSON Web Token) sub-tab displays:
     - Active Multi-Tenant Session & JWT Token panel:
       - Displays the logged-in user's identity, email address, assigned role (`Admin`, `Editor`, or `User`), and active tenant domain.
       - Displays the tenant's permitted resource boundaries:
         - Permitted RAG documents: Domain-scoped (e.g. `example-a.com` documents, `sample-b.com` documents, or ALL documents for Admin).
         - Permitted Tools CSV: `tools/data/employee_database.csv` (for `example-a.com`), `tools/data/customer_database.csv` (for `sample-b.com`), or both (for Admin).
-      - Add a "Refresh" button to scan and display the active session and keys.
+      - Contains a "Refresh" button to scan and display the active session and keys.
       - Displays the full encoded JWT token with a "Copy Token" button.
       - System authentication relies strictly on JWT tokens. Container-level API keys have been removed; external calls (e.g., to Google AI Studio) use `GEMINI_API_KEY`.
     
+    - "JWT List" table:
+      - Displays all active JWT tokens issued across tenant users.
+      - Columns:
+        - Selection Checkbox: Each row has an individual selection checkbox, and the column header has a "Select All" checkbox.
+        - User Name: The email/username of the user who owns the token.
+        - Token Suffix: Displays the last several characters of the token (e.g. `...abqgxahreI`).
+        - Generated Date/Time: Localized timestamp when the token was created.
+        - Expiry Date/Time: Localized timestamp when the token expires.
+        - Status: Token lifecycle status badge (`Active` or `Revoked`).
+      - "Delete Selected JWT" button:
+        - Located in the card header.
+        - Enabled only when one or more row checkboxes are selected; otherwise disabled.
+        - When clicked, displays a confirmation modal/popup asking for confirmation before deleting.
+        - When confirmed by the admin, sends a bulk deletion request to remove the selected tokens from the list and database.
+      - Row Selection Filtering:
+        - Clicking anywhere on a row in "JWT List" highlights that row and filters the "JWT Activities:" table below strictly for that token/user.
+        - Clicking the selected row again deselects it, restoring the "JWT Activities:" view to show activities for all tokens.
+
     - "JWT Activities:" table:
-      - Add a "Refresh" button to refresh the JWT activities log.
+      - Header indicates whether activities are filtered for a specific token/user or "All Tokens".
+      - Contains a "Refresh" button to refresh the JWT activities log.
       - Lists the usage of the JWT from the user, listing ONLY the initial request from the user.
-      - Sub-calls between internal containers (e.g. internal LLM invocations, agent tool calls, embedding queries) are filtered out so that only the primary user-initiated requests are displayed.
+      - Sub-calls between internal containers (e.g. internal LLM invocations, agent tool calls, embedding queries) are filtered out so that only primary user-initiated requests are displayed.
       - The table contains the following columns:
         - Local Date / Time
         - User / Sender
@@ -348,6 +368,7 @@ The Documents and Skills container accesses:
         - Status
         - Initial Request Details
       - Scoped by tenant domain for Domain Admins, scoped to own requests for Users, and global view for Global Admin.
+      - Linked to Log Viewer so all raw logs and initial request activities show up reliably.
 
 ## Container Requirements
 - The project should be run using Docker.

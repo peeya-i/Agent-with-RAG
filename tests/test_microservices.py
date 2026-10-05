@@ -344,6 +344,13 @@ def test_web_ui_routes():
     assert b"loginModal" in res.data
     assert b"btnRefreshSessionJwt" in res.data
     assert b"btnRefreshJwtActivities" in res.data
+    assert b"btnRefreshAuth" in res.data
+    assert b"JWT (JSON Web Token)" in res.data
+    assert b"jwtListTable" in res.data
+    assert b"Token Suffix" in res.data
+    assert b"Current User Account Information" not in res.data
+    assert b"btnDeleteSelectedJwt" in res.data
+    assert b"deleteJwtModal" in res.data
 
 # 7. Test Person Information Skill & Employee Search Modularity
 def test_person_information_skill_modular():
@@ -532,6 +539,19 @@ def test_rbac_and_multitenancy_extensions():
     jwt_acts_res = web_client_jwt.get("/api/jwt/activities")
     assert jwt_acts_res.status_code == 200
     assert "activities" in jwt_acts_res.get_json()
+
+    # Test JWT List tokens endpoint in Web UI
+    jwt_tokens_res = web_client_jwt.get("/api/jwt/tokens")
+    assert jwt_tokens_res.status_code == 200
+    assert "tokens" in jwt_tokens_res.get_json()
+    tokens_list = jwt_tokens_res.get_json()["tokens"]
+    assert len(tokens_list) > 0
+
+    # Test JWT Activities filtering with user_email parameter
+    filtered_acts = web_client_jwt.get("/api/jwt/activities?user_email=user@example-a.com")
+    assert filtered_acts.status_code == 200
+    for act in filtered_acts.get_json().get("activities", []):
+        assert act["user_email"].lower() == "user@example-a.com"
 
     # Test Web UI role restriction on VectorDB ingestion
     web_app = load_service("test_web_ui_module_2", "web_ui/app.py")

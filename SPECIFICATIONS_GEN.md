@@ -361,7 +361,8 @@ Direct container health inspection and inter-container key configuration via Doc
 ---
 
 ### 2.9 Tab 6: "Password Mgnt & JWT"
-Security administration interface with two sub-tabs:
+Security administration interface with two sub-tabs and a global refresh control:
+- **Global Header Refresh**: Includes a **Refresh** button (`#btnRefreshAuth`) in the sub-header to update and re-sync all tables on the page (User Accounts, User Activity Log, Active Session, JWT List, and JWT Activities).
 
 #### 2.9.1 Sub-Tab A: "User Accounts"
 - **Access Control**: Only users with `Admin` access can make any changes to User accounts (role updates, lock/unlock status toggles, password resets, user creation, and user deletion).
@@ -381,7 +382,7 @@ Security administration interface with two sub-tabs:
     - `Actions`: Contains "Reset Pass" button. The individual Delete button in the Actions column is removed.
 - **User Activity Log Table**: Historical audit log of logins, logouts, password resets, and account updates.
 
-#### 2.9.2 Sub-Tab B: "JWT Activities"
+#### 2.9.2 Sub-Tab B: "JWT (JSON Web Token)"
 - **Active Multi-Tenant Session & JWT Token Inspector**:
   - Displays the active session's authentication state:
     - **Current User**: Email address of the logged-in user (or `admin`).
@@ -392,8 +393,28 @@ Security administration interface with two sub-tabs:
   - Contains a **Refresh** button (`#btnRefreshSessionJwt`) to scan and refresh active session attributes and JWT token details.
   - Displays the full encoded JWT token with a **Copy Token** button.
   - Container-level inter-service API keys are completely removed; all internal microservice calls authenticate purely via JWT tokens. External APIs (such as Google AI Studio) use environment keys (`GEMINI_API_KEY`).
+
+- **Table: JWT List (Active Tokens)**:
+  - Displays all active JWT tokens issued across tenant users.
+  - Replaces the legacy "Multi-Tenant API Keys & Services Matrix".
+  - Columns:
+    - `[ ]` (Row checkbox, with a "Select All" checkbox `#selectAllJwt` in the table header)
+    - `User Name` (Email/username owning the token)
+    - `Token Suffix` (Last several characters of the token, e.g. `...abqgxahreI`)
+    - `Generated Date/Time` (Formatted localized timestamp)
+    - `Expiry Date/Time` (Formatted localized timestamp)
+    - `Status` (Active / Revoked badge)
+  - **Delete Selected JWT Button** (`#btnDeleteSelectedJwt`):
+    - Enabled only when one or more row checkboxes are selected; otherwise disabled.
+    - Clicking the button displays a confirmation popup/modal (`#deleteJwtModal`).
+    - On confirmation, executes bulk deletion (`POST /api/jwt/tokens/bulk_delete`), revokes/removes the selected JWTs from the database, and refreshes the table.
+  - **Row Selection Filtering**:
+    - Clicking anywhere on a token row selects that row (`.selected-row`) and filters the "JWT Activities:" table below strictly for that token/user (`Token: <prefix> (<user>)`).
+    - Clicking the row again deselects it, restoring the "JWT Activities:" table to show activities for all tokens (`All Tokens`).
+
 - **Table: JWT Activities (Initial User Requests)**:
-  - Displayed directly below the Active Multi-Tenant Session card.
+  - Displayed directly below the JWT List card.
+  - Header displays active filter (`All Tokens` or selected token identifier).
   - Contains a **Refresh** button (`#btnRefreshJwtActivities`) to fetch and update latest JWT activities.
   - Lists the usage of the JWT from the user, listing **only the initial request from the user** (`send_chat_request`, `user_session_login`, `user_session_logout`, `vectordb_ingest`, `vectordb_delete`, `user_registration`, `page_view`).
   - Container-to-container intermediate calls (such as internal LLM synthesis, agent tool invocations, and vector queries) are excluded.
@@ -406,6 +427,7 @@ Security administration interface with two sub-tabs:
     - `Status`
     - `Initial Request Details`
   - Multi-tenant scoping: Domain Admins view initial requests for all users in their tenant domain, Users/Editors view only their own initial requests, and the Global Admin views system-wide requests across all tenants.
+  - Fully integrated with the centralized Logging Service so raw event queries and initial requests reliably populate both the Log Viewer and JWT Activities.
 
 ---
 
@@ -416,9 +438,9 @@ Security administration interface with two sub-tabs:
 #### 3.1.1 Database Schema (SQLite: `auth.db`)
 - `users`: `id INTEGER PRIMARY KEY`, `email TEXT UNIQUE`, `password_hash TEXT`, `role TEXT DEFAULT 'User'`, `status TEXT DEFAULT 'Active'`, `domain TEXT`, `created_at TEXT`.
   - The `domain` column stores the extracted organization domain from the user's email address (e.g. `example-a.com` or `sample-b.com`). For the global administrator (`admin`), `domain` is `NULL`.
-- `api_keys`: `id INTEGER PRIMARY KEY`, `key_name TEXT`, `key_hash TEXT UNIQUE`, `key_prefix TEXT`, `creator_email TEXT`, `containers TEXT` (JSON array), `access_levels TEXT` (JSON array), `status TEXT DEFAULT 'active'`, `created_at TEXT`, `expires_at TEXT`.
+- `jwt_tokens`: `id INTEGER PRIMARY KEY`, `user_email TEXT`, `token_prefix TEXT`, `token_hash TEXT UNIQUE`, `full_token TEXT`, `created_at TEXT`, `expires_at TEXT`, `status TEXT DEFAULT 'active'`.
+  - Stores all active JWT sessions. Queried by `GET /api/jwt/tokens` and pruned via `POST /api/jwt/tokens/bulk_delete` or `DELETE /api/jwt/tokens/<id>`.
 - `user_activity_logs`: `id INTEGER PRIMARY KEY`, `user_email TEXT`, `request_type TEXT`, `status TEXT`, `ip_address TEXT`, `created_at TEXT`.
-- `api_key_activity_logs`: `id INTEGER PRIMARY KEY`, `key_id INTEGER`, `key_name TEXT`, `key_prefix TEXT`, `container_name TEXT`, `access_level TEXT`, `action_type TEXT`, `status TEXT`, `details TEXT`, `ip_address TEXT`, `created_at TEXT`.
 
 #### 3.1.2 Multi-Tenant Identity & JWT Authentication Model
 - The system operates under a **Multi-Tenant Architecture**:

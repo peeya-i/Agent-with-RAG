@@ -172,6 +172,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (targetId === 'page-auth') {
         if (typeof loadUsers === 'function') loadUsers();
         if (typeof loadUserActivity === 'function') loadUserActivity();
+        if (typeof refreshActiveSessionJwt === 'function') refreshActiveSessionJwt();
+        if (typeof loadJwtTokens === 'function') loadJwtTokens();
         if (typeof loadJwtActivities === 'function') loadJwtActivities();
       }
     });
@@ -1559,6 +1561,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (adminAuthSection) {
       adminAuthSection.style.display = (role === 'admin') ? '' : 'none';
     }
+    const nonAdminNotice = document.getElementById('nonAdminNotice');
+    if (nonAdminNotice) {
+      nonAdminNotice.style.display = (role === 'admin') ? 'none' : '';
+    }
 
     // VectorDB Ingestion permissions:
     // Role "User" cannot load documents (read-only view of global & org data).
@@ -1968,11 +1974,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const subtabPasswords = document.getElementById('subtab-passwords');
   const subtabApiKeys = document.getElementById('subtab-apikeys');
 
+  const btnRefreshAuth = document.getElementById('btnRefreshAuth');
+  if (btnRefreshAuth) {
+    btnRefreshAuth.addEventListener('click', async () => {
+      await Promise.all([
+        typeof loadUsers === 'function' ? loadUsers() : Promise.resolve(),
+        typeof loadUserActivity === 'function' ? loadUserActivity() : Promise.resolve(),
+        typeof refreshActiveSessionJwt === 'function' ? refreshActiveSessionJwt() : Promise.resolve(),
+        typeof loadJwtTokens === 'function' ? loadJwtTokens() : Promise.resolve(),
+        typeof loadJwtActivities === 'function' ? loadJwtActivities() : Promise.resolve()
+      ]);
+    });
+  }
+
   tabBtnPasswords.onclick = () => {
     tabBtnPasswords.classList.add('active');
     tabBtnApiKeys.classList.remove('active');
     subtabPasswords.classList.add('active');
     subtabApiKeys.classList.remove('active');
+    if (typeof loadUsers === 'function') loadUsers();
+    if (typeof loadUserActivity === 'function') loadUserActivity();
   };
 
   tabBtnApiKeys.onclick = () => {
@@ -1980,7 +2001,9 @@ document.addEventListener('DOMContentLoaded', () => {
     tabBtnPasswords.classList.remove('active');
     subtabApiKeys.classList.add('active');
     subtabPasswords.classList.remove('active');
-    loadJwtActivities();
+    if (typeof refreshActiveSessionJwt === 'function') refreshActiveSessionJwt();
+    if (typeof loadJwtTokens === 'function') loadJwtTokens();
+    if (typeof loadJwtActivities === 'function') loadJwtActivities();
   };
 
   // Users Table & Management
@@ -2294,11 +2317,182 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------------------------------------------------------------------------
-  // JWT Activities & Multi-Tenant Session
+  // JWT List, Token Management & JWT Activities
   // ---------------------------------------------------------------------------
+  const jwtListTbody = document.getElementById('jwtListTbody');
+  const selectAllJwt = document.getElementById('selectAllJwt');
+  const btnDeleteSelectedJwt = document.getElementById('btnDeleteSelectedJwt');
+  const deleteJwtModal = document.getElementById('deleteJwtModal');
+  const btnCloseDeleteJwtModalX = document.getElementById('btnCloseDeleteJwtModalX');
+  const btnCancelDeleteJwt = document.getElementById('btnCancelDeleteJwt');
+  const btnConfirmDeleteJwt = document.getElementById('btnConfirmDeleteJwt');
+  const deleteJwtConfirmMsg = document.getElementById('deleteJwtConfirmMsg');
+  const selectedApiKeyNameText = document.getElementById('selectedApiKeyNameText');
   const apiKeyActivitiesTbody = document.getElementById('apiKeyActivitiesTbody');
   const btnRefreshSessionJwt = document.getElementById('btnRefreshSessionJwt');
   const btnRefreshJwtActivities = document.getElementById('btnRefreshJwtActivities');
+
+  let currentJwtTokensCache = [];
+  let selectedJwtToken = null; // { id, user_email, token_prefix }
+
+  function updateDeleteJwtButtonState() {
+    if (!btnDeleteSelectedJwt) return;
+    const checked = jwtListTbody ? jwtListTbody.querySelectorAll('.jwt-select-chk:checked') : [];
+    btnDeleteSelectedJwt.disabled = checked.length === 0;
+  }
+
+  async function loadJwtTokens() {
+    if (!jwtListTbody) return;
+    try {
+      const resp = await fetch('/api/jwt/tokens');
+      const data = await resp.json();
+      currentJwtTokensCache = data.tokens || [];
+      jwtListTbody.innerHTML = '';
+
+      if (currentJwtTokensCache.length === 0) {
+        jwtListTbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No active JWT tokens found.</td></tr>';
+        if (selectAllJwt) selectAllJwt.checked = false;
+        updateDeleteJwtButtonState();
+        return;
+      }
+
+      currentJwtTokensCache.forEach(t => {
+        const tr = document.createElement('tr');
+        const isSelected = selectedJwtToken && selectedJwtToken.id === t.id;
+        tr.className = 'jwt-token-row' + (isSelected ? ' selected-row' : '');
+        tr.setAttribute('data-id', t.id);
+        tr.setAttribute('data-user', t.user_email);
+        tr.setAttribute('data-prefix', t.token_prefix);
+
+        const fullToken = t.full_token || '';
+        const tokenSuffix = t.token_suffix || (fullToken && fullToken.length >= 10 ? '...' + fullToken.slice(-10) : (fullToken ? '...' + fullToken : (t.token_prefix ? '...' + t.token_prefix.slice(-8) : '...')));
+        tr.setAttribute('data-suffix', tokenSuffix);
+        tr.style.cursor = 'pointer';
+
+        const rawCreated = t.created_at || '';
+        const rawExpiry = t.expires_at || '';
+        const statusBadgeClass = t.status === 'active' ? 'badge-user' : 'badge-admin';
+
+        tr.innerHTML = `
+          <td style="text-align: center;" class="chk-cell">
+            <input type="checkbox" class="jwt-select-chk" data-id="${t.id}">
+          </td>
+          <td><strong>${escapeHtml(t.user_email)}</strong></td>
+          <td><code style="color: #93c5fd; font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(tokenSuffix)}</code></td>
+          <td>${formatToLocalTime(rawCreated)}</td>
+          <td>${formatToLocalTime(rawExpiry)}</td>
+          <td><span class="badge ${statusBadgeClass}">${escapeHtml(t.status)}</span></td>
+        `;
+
+        // Checkbox click stops row selection event
+        const chk = tr.querySelector('.jwt-select-chk');
+        if (chk) {
+          chk.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            updateDeleteJwtButtonState();
+          });
+        }
+
+        // Row click -> toggle filter on JWT Activities
+        tr.addEventListener('click', (ev) => {
+          if (ev.target && ev.target.tagName === 'INPUT') return;
+          if (selectedJwtToken && selectedJwtToken.id === t.id) {
+            // Deselect
+            selectedJwtToken = null;
+            jwtListTbody.querySelectorAll('.jwt-token-row').forEach(r => r.classList.remove('selected-row'));
+            if (selectedApiKeyNameText) selectedApiKeyNameText.textContent = 'All Tokens';
+            loadJwtActivities();
+          } else {
+            // Select this token
+            selectedJwtToken = t;
+            jwtListTbody.querySelectorAll('.jwt-token-row').forEach(r => r.classList.remove('selected-row'));
+            tr.classList.add('selected-row');
+            if (selectedApiKeyNameText) {
+              selectedApiKeyNameText.textContent = `Token: ${tokenSuffix} (${t.user_email})`;
+            }
+            loadJwtActivities(t.user_email, t.token_prefix);
+          }
+        });
+
+        jwtListTbody.appendChild(tr);
+      });
+
+      if (selectAllJwt) selectAllJwt.checked = false;
+      updateDeleteJwtButtonState();
+
+    } catch (e) {
+      console.warn('Error loading JWT tokens:', e);
+      jwtListTbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Error loading JWT tokens.</td></tr>';
+    }
+  }
+
+  if (selectAllJwt) {
+    selectAllJwt.addEventListener('change', () => {
+      const chks = jwtListTbody ? jwtListTbody.querySelectorAll('.jwt-select-chk') : [];
+      chks.forEach(chk => { chk.checked = selectAllJwt.checked; });
+      updateDeleteJwtButtonState();
+    });
+  }
+
+  // Delete Selected JWT Modal Handlers
+  if (btnDeleteSelectedJwt) {
+    btnDeleteSelectedJwt.addEventListener('click', () => {
+      const checked = jwtListTbody ? jwtListTbody.querySelectorAll('.jwt-select-chk:checked') : [];
+      const ids = Array.from(checked).map(c => parseInt(c.getAttribute('data-id'))).filter(Boolean);
+      if (ids.length === 0) return;
+
+      if (deleteJwtConfirmMsg) {
+        deleteJwtConfirmMsg.textContent = `Are you sure you want to delete the ${ids.length} selected JWT token(s)?`;
+      }
+      if (deleteJwtModal) deleteJwtModal.classList.remove('hidden');
+    });
+  }
+
+  if (btnCloseDeleteJwtModalX) {
+    btnCloseDeleteJwtModalX.addEventListener('click', () => {
+      if (deleteJwtModal) deleteJwtModal.classList.add('hidden');
+    });
+  }
+
+  if (btnCancelDeleteJwt) {
+    btnCancelDeleteJwt.addEventListener('click', () => {
+      if (deleteJwtModal) deleteJwtModal.classList.add('hidden');
+    });
+  }
+
+  if (btnConfirmDeleteJwt) {
+    btnConfirmDeleteJwt.addEventListener('click', async () => {
+      const checked = jwtListTbody ? jwtListTbody.querySelectorAll('.jwt-select-chk:checked') : [];
+      const ids = Array.from(checked).map(c => parseInt(c.getAttribute('data-id'))).filter(Boolean);
+      if (ids.length === 0) return;
+
+      try {
+        btnConfirmDeleteJwt.disabled = true;
+        btnConfirmDeleteJwt.textContent = 'Deleting...';
+        const resp = await fetch('/api/jwt/tokens/bulk_delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token_ids: ids })
+        });
+        if (resp.ok) {
+          if (deleteJwtModal) deleteJwtModal.classList.add('hidden');
+          if (selectedJwtToken && ids.includes(selectedJwtToken.id)) {
+            selectedJwtToken = null;
+            if (selectedApiKeyNameText) selectedApiKeyNameText.textContent = 'All Tokens';
+          }
+          await loadJwtTokens();
+          await loadJwtActivities();
+        } else {
+          alert('Failed to delete JWT tokens.');
+        }
+      } catch (e) {
+        alert('Error deleting JWT tokens: ' + e.message);
+      } finally {
+        btnConfirmDeleteJwt.disabled = false;
+        btnConfirmDeleteJwt.textContent = 'Confirm Delete';
+      }
+    });
+  }
 
   async function refreshActiveSessionJwt() {
     try {
@@ -2322,6 +2516,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnRefreshSessionJwt) {
     btnRefreshSessionJwt.addEventListener('click', async () => {
       await refreshActiveSessionJwt();
+      await loadJwtTokens();
       await loadJwtActivities();
     });
   }
@@ -2332,11 +2527,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  async function loadJwtActivities() {
+  async function loadJwtActivities(filterUser, filterPrefix) {
     if (!apiKeyActivitiesTbody) return;
     apiKeyActivitiesTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Loading JWT activities...</td></tr>';
     try {
-      const resp = await fetch('/api/jwt/activities');
+      const targetUser = filterUser !== undefined ? filterUser : (selectedJwtToken ? selectedJwtToken.user_email : null);
+      const targetPrefix = filterPrefix !== undefined ? filterPrefix : (selectedJwtToken ? selectedJwtToken.token_prefix : null);
+
+      const params = new URLSearchParams();
+      if (targetUser) params.set('user_email', targetUser);
+      if (targetPrefix) params.set('token_prefix', targetPrefix);
+
+      const url = params.toString() ? `/api/jwt/activities?${params.toString()}` : '/api/jwt/activities';
+      const resp = await fetch(url);
       const data = await resp.json();
       const activities = data.activities || [];
       apiKeyActivitiesTbody.innerHTML = '';
@@ -2350,12 +2553,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const isDenied = (act.status || '').toLowerCase().includes('denied') || (act.status || '').toLowerCase().includes('expired') || (act.status || '').toLowerCase().includes('failure') || (act.status || '').toLowerCase().includes('error');
         const badgeClass = isSuccess ? 'badge-user' : (isDenied ? 'badge-admin' : 'badge-editor');
 
+        const rawTime = act.created_at || '';
+        const localTime = formatToLocalTime(rawTime);
+
         tr.innerHTML = `
-          <td>${act.created_at ? new Date(act.created_at).toLocaleString() : '-'}</td>
+          <td>${escapeHtml(localTime)}</td>
           <td><strong>${escapeHtml(act.user_email || 'User')}</strong></td>
           <td><span style="color:#38bdf8;">${escapeHtml(act.domain || '-')}</span></td>
           <td><code>${escapeHtml(act.recipient || 'agents')}</code></td>
-          <td><span class="badge badge-editor">${escapeHtml(act.request_type || 'User Request')}</span></td>
+          <td><span class="badge badge-editor">${escapeHtml(act.request_type || act.action || 'User Request')}</span></td>
           <td><span class="badge ${badgeClass}">${escapeHtml(act.status || 'success')}</span></td>
           <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(act.details || '-')}">${escapeHtml(act.details || '-')}</td>
         `;

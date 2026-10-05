@@ -760,31 +760,18 @@
         <div class="page-title-area">
           <h2 class="page-heading"><span class="heading-icon">🔑</span> Password Mgnt & JWT</h2>
         </div>
+        <div class="page-controls-area">
+          <button id="btnRefreshAuth" class="btn-secondary" title="Refresh all tables on page">
+            <span class="icon">🔄</span> Refresh
+          </button>
+        </div>
       </div>
 
-      <!-- Current User Profile Card (Visible to all users) -->
-      <div class="glass-card full-width-card mb-4" id="cardUserProfile">
-        <div class="card-header">
-          <div class="card-title">
-            <span class="card-icon">👤</span> Current User Account Information
-          </div>
-        </div>
-        <div class="card-body">
-          <div class="profile-info-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
-            <div>
-              <label class="text-muted" style="font-size: 0.8rem; display: block;">USER EMAIL</label>
-              <strong id="profileEmail" style="font-size: 1.1rem; color: #ffffff;">admin</strong>
-            </div>
-            <div>
-              <label class="text-muted" style="font-size: 0.8rem; display: block;">ASSIGNED ROLE</label>
-              <span class="user-profile-badge badge-admin" id="profileRole">Admin</span>
-            </div>
-            <div>
-              <label class="text-muted" style="font-size: 0.8rem; display: block;">STORAGE BACKEND</label>
-              <span id="profileStorage" style="color: #38bdf8; font-family: var(--font-mono); font-size: 0.9rem;">SQLite (auth_service/secrets/auth.db)</span>
-            </div>
-          </div>
-        </div>
+      <!-- Non-admin fallback notice -->
+      <div id="nonAdminNotice" class="glass-card full-width-card mb-4" style="display: none; padding: 2rem; text-align: center; color: #94a3b8;">
+        <span style="font-size: 2rem; display: block; margin-bottom: 0.5rem;">🔒</span>
+        <h3 style="color: #f1f5f9; margin-bottom: 0.5rem;">Admin Access Required</h3>
+        <p>Password management and JWT token inspection are restricted to Administrators.</p>
       </div>
 
       <!-- Admin Tabs Container (Visible only to Admin) -->
@@ -795,7 +782,7 @@
             <span>🛡️</span> Passwords
           </button>
           <button class="subtab-btn" data-subtab="subtab-apikeys" id="tabBtnApiKeys">
-            <span>🗝️</span> JWT Activities
+            <span>🗝️</span> JWT (JSON Web Token)
           </button>
         </div>
 
@@ -912,11 +899,46 @@
             </div>
           </div>
 
+          <!-- Table 1: JWT List -->
+          <div class="glass-card full-width-card mb-4" id="cardJwtList">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+              <div class="card-title">
+                <span class="card-icon">🗝️</span> JWT List
+              </div>
+              <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <button id="btnDeleteSelectedJwt" class="btn-danger" style="padding: 0.4rem 1rem; font-size: 0.85rem;" disabled>
+                  <span class="icon">🗑️</span> Delete Selected JWT
+                </button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="table-scroll-container" style="max-height: 240px; overflow-y: auto;">
+                <table class="data-table selectable-table" id="jwtListTable">
+                  <thead>
+                    <tr>
+                      <th style="width: 40px; text-align: center;">
+                        <input type="checkbox" id="selectAllJwt" title="Select All">
+                      </th>
+                      <th>User Name</th>
+                      <th>Token Suffix</th>
+                      <th>Generated Date/Time</th>
+                      <th>Expiry Date/Time</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="jwtListTbody">
+                    <!-- Populated dynamically with active JWT tokens -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
           <!-- Table 2: JWT Activities (Initial User Requests) -->
           <div class="glass-card full-width-card" id="cardApiKeyActivities">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
               <div class="card-title">
-                <span class="card-icon">📜</span> JWT Activities: <span id="selectedApiKeyNameText" style="color: #38bdf8; font-weight: normal; margin-left: 6px;">Initial User Requests</span>
+                <span class="card-icon">📜</span> JWT Activities: <span id="selectedApiKeyNameText" style="color: #38bdf8; font-weight: normal; margin-left: 6px;">All Tokens</span>
               </div>
               <div>
                 <button id="btnRefreshJwtActivities" class="btn-secondary" style="padding: 0.35rem 0.85rem; font-size: 0.82rem;" title="Refresh JWT Activities">
@@ -1157,6 +1179,28 @@
       <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
         <button id="btnCancelCreateUser" class="btn-secondary">Cancel</button>
         <button id="btnConfirmCreateUser" class="btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Delete Selected JWT Confirmation Dialog -->
+  <div class="modal-overlay hidden" id="deleteJwtModal" style="z-index: 1001;">
+    <div class="modal-box" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3><span class="modal-icon text-danger">⚠️</span> Delete Selected JWT</h3>
+        <button id="btnCloseDeleteJwtModalX" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.5rem;" id="deleteJwtConfirmMsg">
+          Are you sure you want to delete the selected JWT token(s)?
+        </p>
+        <p style="color: #94a3b8; font-size: 0.82rem; margin: 0;">
+          Deleted tokens will be permanently revoked from active sessions.
+        </p>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <button id="btnCancelDeleteJwt" class="btn-secondary">Cancel</button>
+        <button id="btnConfirmDeleteJwt" class="btn-danger">Confirm Delete</button>
       </div>
     </div>
   </div>
