@@ -92,10 +92,18 @@ Agent-with-RAG/
 │   ├── secrets/                  # Session keys & inter-container keys
 │   ├── Dockerfile
 │   └── app.py
-├── sample_docs/                  # Seed markdown documents (~3000 words each)
-│   ├── agentic_rag_overview.md
-│   ├── enterprise_marketing_strategy_2026.md
-│   └── annual_financial_report_fy2025.md
+├── sample_docs/                  # Knowledge documents & reference PDFs
+│   ├── agent_and_rag.md          # Agent & RAG architecture overview (~3000 words)
+│   ├── company_marketing_strategy.md # Marketing strategy & enterprise expansion (~3000 words)
+│   ├── financial_report.md       # Annual financial report & balance sheets (~3000 words)
+│   ├── nexus_enterprise_solutions_company_profile.pdf # Extended company profile (>=4000 words)
+│   ├── vanguard_global_logistics_company_profile.pdf # Extended company profile (>=4000 words)
+│   └── product_catalog_100_offerings.pdf # 100 enterprise products with volume discount pricing
+├── scripts/                      # PDF generation & replication scripts
+│   ├── build_all_sample_pdfs.py  # Master generator compiling all sample PDFs
+│   ├── nexus_profile_data.py     # Nexus Enterprise profile data generator
+│   ├── vanguard_profile_data.py  # Vanguard Logistics profile data generator
+│   └── product_catalog_data.py   # 100 product offerings catalog data generator
 ├── tests/                        # Microservice test suite
 │   └── test_microservices.py
 ├── docker-compose.yml            # Multi-service composition
@@ -215,23 +223,26 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
 
 ### 2.5 Tab 2: "VectorDB Mgnt"
 Management console for the ChromaDB vector database and embedding engine.
+The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the **Populate Vector Database** card occupies **40% of the width** (`4fr`), while the **Vector Storage Status** card occupies **60% of the width** (`6fr`). On mobile/narrow screens (`<= 1024px`), they collapse to 100% stacked width.
 
-#### 2.5.1 Left Card: "Populate Vector Database" (50% Width)
+#### 2.5.1 Left Card: "Populate Vector Database" (40% Width)
 - Ingest input field accepting either a public web URL (e.g., `https://...`) or local directory/file path (e.g., `sample_docs/agentic_rag_overview.md`).
 - 5 Quick Sample Document buttons for instant ingestion.
 - Collapsible **Advanced Chunking Parameters** sub-card:
   - `Chunk Size`: Character count per chunk (Default: `800`, Min: `100`, Max: `5000`).
   - `Chunk Overlap`: Character overlap between adjacent chunks (Default: `100`, Min: `0`, Max: `1000`).
 - **Populate Vector Database** submit button: Dispatches ingestion job to `/api/vectordb/ingest`. Shows progress spinner and chunk creation summary upon completion.
+- Card width: Exactly 40% of the horizontal grid container width (`4fr` column in `.vectordb-split-grid`).
 
-#### 2.5.2 Right Card: "Vector Storage Status" (50% Width)
+#### 2.5.2 Right Card: "Vector Storage Status" (60% Width)
 - Header includes **Reset DB** button (clears all document vectors after confirmation).
 - Ingestion status banner indicating whether indexing is active or idle.
 - Ingested Documents Table:
-  - Columns: Document Name, Chunks Count, Total Characters, Ingestion Date, Actions (`Delete` button).
+  - Columns: `Type` (Badge: Document or Skill), `Document / Skill Name`, `Tenant Domain` (Badge indicating the domain name of the organization that stored and has access to the document, e.g. `example-a.com`, `sample-b.com`, or `All Tenants (Admin)`), `Chunks`, `Characters`, and `Actions` (`Delete` button).
   - Deleting a document removes all associated chunk vectors from ChromaDB via `/api/vectordb/document`.
 - Loaded Skills Section:
-  - Lists all domain skills registered in the vector store with status badges.
+  - Lists all domain skills registered in the vector store with status badges and `Global (All)` tenant scope.
+- Card width: Exactly 60% of the horizontal grid container width (`6fr` column in `.vectordb-split-grid`).
 
 #### 2.5.3 Bottom Card: "Available Embedding Models" (Full Width)
 - Displays catalog table of embedding models supported by Ollama:
@@ -314,10 +325,9 @@ Direct container health inspection and inter-container key configuration via Doc
 - Columns: `Container Name`, `Image`, `Status` (with color-coded badge: green `running`, red `exited`), `CPU %`, `Memory Usage / Limit`, `Actions`.
 - Action buttons per container: `Start`, `Stop`, `Restart`, and `Configure Keys`.
 
-#### 2.8.2 Inter-Container Key Configuration Modal
-- Clicking **Configure Keys** reads `<container>/secrets/keys` for the selected container.
-- Displays key mappings (`<target_container>=<api_key>`).
-- Allows editing and saving keys. Saving writes directly to the container's mounted `secrets/keys` volume file on the host.
+#### 2.8.2 Container Authentication & Service Details Modal
+- Clicking **Container Details / Configure** inspects the container runtime status and API endpoints.
+- Note: Token creation for individual containers (`<container>/secrets/keys`) has been decommissioned in favor of unified JWT authentication issued at login. All inter-service calls authenticate using the caller's login JWT token.
 
 ---
 
@@ -342,8 +352,17 @@ Security administration interface with two sub-tabs:
     - `Actions`: Contains "Reset Pass" button. The individual Delete button in the Actions column is removed.
 - **User Activity Log Table**: Historical audit log of logins, logouts, password resets, and account updates.
 
-#### 2.9.2 Sub-Tab B: "API Keys"
-- **Table 1: Configured Container API Keys**:
+#### 2.9.2 Sub-Tab B: "API Keys & Multi-Tenant JWT Tokens"
+- **Active Multi-Tenant Session & JWT Token Inspector**:
+  - Displays the active session's authentication state:
+    - **Current User**: Email address of the logged-in user (or `admin`).
+    - **Tenant Domain**: Extracted tenant domain (`example-a.com`, `sample-b.com`, or `None (Global Admin)`).
+    - **Assigned Role**: `Admin` or `User`.
+    - **Permitted RAG Documents**: Domain-scoped boundary (e.g. `example-a.com` documents, `sample-b.com` documents, or ALL documents for Admin).
+    - **Permitted Tools CSV Database**: `tools/data/employee_database.csv` (for `example-a.com`), `tools/data/customer_database.csv` (for `sample-b.com`), or BOTH CSV files (for Admin).
+  - Displays the full encoded JWT token with a **Copy Token** button.
+  - Highlights system notice: Container-specific key creation is deprecated; the login JWT token acts as the primary system-wide authentication credential.
+- **Table 1: Configured Container API Keys (Legacy / Service Access)**:
   - Header Controls:
     - **Select All Checkbox**: Selects or deselects all visible API key rows.
     - **Delete Selected API Keys Button**: Active when one or more keys are checked. Opens confirmation modal.
@@ -364,23 +383,42 @@ Security administration interface with two sub-tabs:
 ### 3.1 Authentication & Authorization Service (`auth_service`, Port 8001)
 
 #### 3.1.1 Database Schema (SQLite: `auth.db`)
-- `users`: `id INTEGER PRIMARY KEY`, `email TEXT UNIQUE`, `password_hash TEXT`, `role TEXT DEFAULT 'User'`, `status TEXT DEFAULT 'Active'`, `created_at TEXT`.
+- `users`: `id INTEGER PRIMARY KEY`, `email TEXT UNIQUE`, `password_hash TEXT`, `role TEXT DEFAULT 'User'`, `status TEXT DEFAULT 'Active'`, `domain TEXT`, `created_at TEXT`.
+  - The `domain` column stores the extracted organization domain from the user's email address (e.g. `example-a.com` or `sample-b.com`). For the global administrator (`admin`), `domain` is `NULL`.
 - `api_keys`: `id INTEGER PRIMARY KEY`, `key_name TEXT`, `key_hash TEXT UNIQUE`, `key_prefix TEXT`, `creator_email TEXT`, `containers TEXT` (JSON array), `access_levels TEXT` (JSON array), `status TEXT DEFAULT 'active'`, `created_at TEXT`, `expires_at TEXT`.
 - `user_activity_logs`: `id INTEGER PRIMARY KEY`, `user_email TEXT`, `request_type TEXT`, `status TEXT`, `ip_address TEXT`, `created_at TEXT`.
 - `api_key_activity_logs`: `id INTEGER PRIMARY KEY`, `key_id INTEGER`, `key_name TEXT`, `key_prefix TEXT`, `container_name TEXT`, `access_level TEXT`, `action_type TEXT`, `status TEXT`, `details TEXT`, `ip_address TEXT`, `created_at TEXT`.
 
-#### 3.1.2 Endpoints Contract
+#### 3.1.2 Multi-Tenant Identity & JWT Authentication Model
+- The system operates under a **Multi-Tenant Architecture**:
+  - The login credential is an email address. The domain name of the email address defines the tenant scope.
+  - Test domains:
+    - `example-a.com`: Test tenant accessing `example-a.com` RAG documents and `tools/data/employee_database.csv`.
+    - `sample-b.com`: Test tenant accessing `sample-b.com` RAG documents and `tools/data/customer_database.csv`.
+    - `admin` (no domain): Global administrator accessing ALL RAG documents and BOTH CSV databases.
+  - Default seed accounts:
+    - `admin` / `admin123` (Admin, domain: `None` -> full access to all documents and tools databases).
+    - `user@example-a.com` / `password123` (User, domain: `example-a.com` -> access restricted to `example-a.com` documents and employee CSV).
+    - `user@sample-b.com` / `password123` (User, domain: `sample-b.com` -> access restricted to `sample-b.com` documents and customer CSV).
+  - **JSON Web Token (JWT) as Main Authentication**:
+    - Upon successful login, the auth service issues a cryptographically signed HMAC-SHA256 JWT token.
+    - JWT claims include `sub`, `email`, `role`, `domain`, `iat`, and `exp` (default 24h validity).
+    - Individual container token creation (`container_secrets/<container>/keys`) has been removed; all services authenticate incoming calls using the signed JWT token.
+    - The token is forwarded in the `Authorization: Bearer <jwt_token>` header or request payload to all microservices (`agents`, `doc_rag`, `tools`).
+
+#### 3.1.3 Endpoints Contract
 - `GET /health` -> `{"status": "ok", "service": "auth_service", "port": 8001}`
 - `POST /api/auth/login`
   - Body: `{"username": "<email>", "password": "<password>", "ip_address": "<ip>"}`
-  - Returns `200` with user object, or `401` (`Invalid username or password`), or `403` (`Account is Locked. Please contact the administrator.`).
+  - Returns `200` with `status: "success"`, user object (including `domain`), and signed `jwt_token`. Returns `401` on invalid credentials or `403` if account status is `Locked`.
 - `POST /api/auth/register`
   - Body: `{"username": "<email>", "password": "<password>", "ip_address": "<ip>"}`
-  - Returns `201` creating user with status `Locked`.
+  - Parses email domain and persists new user with status `Locked`. Returns `201`.
+- `POST /api/auth/validate_token`
+  - Body: `{"token": "<jwt_token>"}` (or `Authorization: Bearer <jwt_token>`)
+  - Validates signature and expiration; returns `200` with `valid: true`, decoded `email`, `role`, `domain`, and `claims`.
 - `POST /api/auth/validate_key`
-  - Validates inter-container API key.
-  - Body: `{"api_key": "<key>", "container": "<target_container>", "access_level": "<read|write|admin>", "invoker": "<source_container>"}`
-  - Returns `200`: `{"valid": true|false, "key_name": "...", "access_level": "...", "containers": [...]}`
+  - Accepts both legacy API keys and JWT tokens. Returns `200`: `{"valid": true|false, ...}`.
 - `GET /api/users` -> Lists all users. Admin only.
 - `POST /api/users` -> Body: `{"username": "<email>", "password": "<password>", "role": "User", "status": "Active"}`. Creates user account. Admin only.
 - `POST /api/users/bulk_delete` -> Body: `{"user_ids": [1, 2, ...]}`. Bulk deletes user accounts. Admin only.
@@ -389,10 +427,10 @@ Security administration interface with two sub-tabs:
 - `POST /api/users/<id>/reset_password` -> Body: `{"password": "<new_pass>"}`. Admin only.
 - `DELETE /api/users/<id>` -> Deletes user. Admin only.
 - `GET /api/keys` -> Lists all API keys.
-- `POST /api/keys` -> Creates new API key (`key-<hex>`). Returns `201`.
+- `POST /api/keys` -> Creates new API key.
 - `DELETE /api/keys/<id>` -> Deletes single key.
 - `POST /api/keys/bulk_delete` -> Body: `{"key_ids": [1, 2, ...]}`. Bulk deletes specified keys.
-- `GET /api/keys/<id>/activities` -> Returns historical activity events strictly for the specified key ID (supports optional `key_prefix` query parameter to enforce strict key isolation).
+- `GET /api/keys/<id>/activities` -> Returns historical activity events strictly for the specified key ID.
 - `GET /api/keys/activities` -> Returns activity events for all keys.
 
 ---
@@ -459,13 +497,27 @@ Executes multi-turn autonomous reasoning, tool selection, skill matching, and sy
 ### 3.3 Vector Store Service (`doc_RAG`, Port 8003)
 
 #### 3.3.1 Responsibilities
-Manages persistent ChromaDB vector store collections for `documents` and `skills`, performs text chunking, orchestrates vector generation via `ollama`, and executes similarity queries.
+Manages persistent ChromaDB vector store collections for `documents` and `skills`, performs text chunking, orchestrates vector generation via `ollama`, and executes similarity queries with tenant domain isolation.
 
-#### 3.3.2 Endpoints Contract
+#### 3.3.2 Multi-Tenant RAG Domain Isolation
+- **Domain Identification**: Authentication is verified via the caller's JWT token (passed in `Authorization: Bearer <token>` or request body).
+- **Tenant Scope**:
+  - `example-a.com`: Queries and document listings are filtered strictly to documents tagged with domain `example-a.com`.
+  - `sample-b.com`: Queries and document listings are filtered strictly to documents tagged with domain `sample-b.com`.
+  - `Admin` (domain `None` or role `Admin`): Has unrestricted access to all RAG documents across all tenant domains.
+- **Document Ingestion (`POST /api/rag/add`)**:
+  - Automatically tags document chunks with `domain` metadata based on the caller's tenant domain or explicit `domain` parameter in the request payload.
+- **Document Querying (`POST /api/rag/query`)**:
+  - ChromaDB `where` metadata filtering or post-query domain filtering strictly limits retrieved document chunks to the caller's domain.
+- **Document Listing & Stats (`GET /api/rag/list` / `/api/rag/stats`)**:
+  - Document lists and counts reflect only the documents accessible to the authenticated tenant.
+
+#### 3.3.3 Endpoints Contract
 - `GET /health` -> `{"status": "ok", "service": "doc_rag", "port": 8003}`
 - `GET /api/rag/list` (or `/api/rag/stats`)
-  - Returns document and skill counts, chunk totals, and storage size in megabytes:
-    `{"status": "success", "count_documents": 3, "count_skills": 4, "chunks_count": 42, "db_size_mb": 1.25}`
+  - Accepts JWT token via `Authorization: Bearer <token>` header or query parameter `jwt_token`.
+  - Returns tenant-scoped document and skill counts, chunk totals, and storage size:
+    `{"status": "success", "count_documents": 3, "count_skills": 4, "chunks_count": 42, "db_size_mb": 1.25, "tenant_domain": "example-a.com"}`
 - `POST /api/rag/add`
   - Ingests text into ChromaDB.
   - Body:
@@ -477,24 +529,25 @@ Manages persistent ChromaDB vector store collections for `documents` and `skills
       "text": "Full text content...",
       "chunk_size": 800,
       "overlap": 100,
+      "domain": "example-a.com",
       "vector_text": "Text used for embedding calculation",
-      "api_key": "<key>"
+      "jwt_token": "<token>"
     }
     ```
-  - If `type == "document"`: Splits text using sliding character window (`chunk_size`, `overlap`), embeds each chunk via Ollama, and stores with metadata (`name`, `chunk_index`, `date_time`).
+  - If `type == "document"`: Splits text using sliding character window (`chunk_size`, `overlap`), embeds each chunk via Ollama, and stores with metadata (`name`, `chunk_index`, `date_time`, `domain`).
   - If `type == "skill"`: Embeds `vector_text` and stores skill definition.
 - `POST /api/rag/query`
-  - Semantic vector similarity search.
+  - Semantic vector similarity search with tenant domain enforcement.
   - Body:
     ```json
     {
-      "user_id": "admin",
+      "user_id": "user@example-a.com",
       "conversation_id": "conv_1790000000",
       "type": "document" | "skill",
       "query": "What is Agentic RAG?",
       "k": 5,
       "threshold": 0.3,
-      "api_key": "<key>"
+      "jwt_token": "<token>"
     }
     ```
   - Response:
@@ -503,12 +556,13 @@ Manages persistent ChromaDB vector store collections for `documents` and `skills
       "status": "success",
       "type": "document",
       "count": 2,
+      "tenant_domain": "example-a.com",
       "results": [
         {
           "name": "agentic_rag_overview.md",
           "similarity_score": 0.82,
           "chunk_text": "Agentic RAG combines autonomous reasoning...",
-          "metadata": { "chunk_index": 0, "date_time": "..." }
+          "metadata": { "chunk_index": 0, "date_time": "...", "domain": "example-a.com" }
         }
       ]
     }
@@ -559,41 +613,87 @@ Jorge Morales,Bogota,Colombia,Customer Success Architect
 Emma Watson,Vancouver,Canada,Director of Engineering
 ```
 
-#### 3.4.3 Endpoints Contract
+#### 3.4.3 Seed Data: Customer Registry (`tools/data/customer_database.csv`)
+The customer search tool relies on a seed CSV with exact schema `name,address,country,products_purchased` containing 20 diverse customer records across global locations with 3 to 5 products purchased:
+```csv
+name,address,country,products_purchased
+Alexander Wright,742 Evergreen Terrace Springfield,United States,"Laptop, Wireless Mouse, Mechanical Keyboard, USB-C Hub"
+Beatrice Moreau,15 Rue de Rivoli Paris,France,"Noise-Cancelling Headphones, Smartwatch, Tablet Stand"
+Carlos Santana,Avenida Paulista 1200 Sao Paulo,Brazil,"4K Monitor, HDMI Cable, Ergonomic Chair, Web Camera"
+Diana Prince,45 Baker Street London,United Kingdom,"E-Reader, Bluetooth Speaker, Portable Power Bank"
+Emi Takahashi,3-5-1 Ginza Chuo-ku Tokyo,Japan,"Gaming Console, Extra Controller, VR Headset, Gaming Headset"
+Farhan Qasim,Al Khaleej Road Dubai,United Arab Emirates,"Smartphone, Wireless Earbuds, Phone Gimbal, Smart Band"
+Greta Lindholm,Kungsgatan 44 Stockholm,Sweden,"Fitness Tracker, Smart Scale, Running Watch"
+Heinrich Bauer,Kurfuerstendamm 89 Berlin,Germany,"External SSD 2TB, Mechanical Keyboard, Desk Mat, USB Microphone"
+Isabella Rossi,Via Montenapoleone 18 Milan,Italy,"Espresso Machine, Coffee Grinder, Ceramic Mugs"
+Javier Ortiz,Paseo de la Castellana 95 Madrid,Spain,"Graphics Card, Power Supply 850W, Liquid Cooler, Computer Case"
+Kavita Iyer,MG Road Bengaluru,India,"Ultrabook, Laptop Backpack, Wireless Charger, Stylus Pen"
+Liam O'Sullivan,O'Connell Street Dublin,Ireland,"Smart Doorbell, Security Camera, Smart Light Bulb, Wi-Fi Router"
+Miao Zhang,Nanjing Road West Shanghai,China,"Digital Camera, Prime Lens 50mm, Camera Tripod, Memory Card 128GB, Camera Bag"
+Natasha Romanova,Nevsky Prospect 32 Saint Petersburg,Russia,"Microphone Arm, Audio Interface, Studio Monitors, Soundproofing Foam"
+Oscar van der Meer,Keizersgracht 241 Amsterdam,Netherlands,"Electric Scooter, Helmet, Bike Lock, Phone Mount"
+Priya Nair,Marina Beach Road Chennai,India,"Tablet 11-inch, Smart Cover, Stylus Pen, Screen Protector"
+Quentin Dupont,Avenue Louise 143 Brussels,Belgium,"Robot Vacuum, HEPA Filter Pack, Mop Replacement Pads"
+Rosa Delgado,Calle Florida 550 Buenos Aires,Argentina,"Smart Television 55-inch, Soundbar, Wall Mount, Streaming Stick"
+Siddharth Sen,Park Street Kolkata,India,"Mechanical Keyboard, Keycap Set, Coiled Cable, Switch Puller, Wrist Rest"
+Tariq Mansoor,King Fahd Road Riyadh,Saudi Arabia,"Smart Air Purifier, Extra Carbon Filter, Air Quality Monitor"
+```
+
+#### 3.4.4 Multi-Tenant CSV Access Rules
+- Access is enforced based on the caller's JWT token:
+  - **`example-a.com`**: Access is permitted strictly to `tools/data/employee_database.csv`. Attempting to access customer data or invoking `customer_search.query_customer_registry` returns HTTP `403 Forbidden`.
+  - **`sample-b.com`**: Access is permitted strictly to `tools/data/customer_database.csv`. Attempting to access employee data or invoking `person_search.query_person_registry` returns HTTP `403 Forbidden`.
+  - **`Admin`** (domain `None` or role `Admin`): Has unrestricted access to BOTH `employee_database.csv` and `customer_database.csv`.
+
+#### 3.4.5 Endpoints Contract
 - `GET /health` -> `{"status": "ok", "service": "tools", "port": 8005}`
 - `GET /api/tools/list`
   - Returns metadata and parameter schemas for available tools:
-    1. `person_search.query_person_registry`: Searches `tools/data/employee_database.csv` across fields (`name`, `city`, `country`, `job_title`) using a list of search texts (`keywords`, or single text `keyword`). Searches for all queried items and returns combined, deduplicated matching entries.
-    2. `stock_search.query_stocks`: Evaluates mock market feed and returns top `gainers` or `losers` limited by `limit`.
+    1. `person_search.query_person_registry`: Searches `tools/data/employee_database.csv` across fields (`name`, `city`, `country`, `job_title`) using a list of search texts (`keywords`, or single text `keyword`). Restricted to `example-a.com` and Admin.
+    2. `customer_search.query_customer_registry`: Searches `tools/data/customer_database.csv` across fields (`name`, `address`, `country`, `products_purchased`) using search text(s). Restricted to `sample-b.com` and Admin.
+    3. `stock_search.query_stocks`: Evaluates mock market feed and returns top `gainers` or `losers` limited by `limit`.
 - `POST /api/tools/call`
-  - Dispatches tool invocation.
+  - Dispatches tool invocation with JWT authorization enforcement.
   - Body:
     ```json
     {
-      "tool": "person_search.query_person_registry",
-      "arguments": { "keywords": ["Lucas Dubois", "Berlin"], "field": "all" },
+      "tool": "customer_search.query_customer_registry",
+      "arguments": { "keywords": ["Alexander Wright", "Tokyo"], "field": "all" },
       "conversation_id": "conv_1790000000",
-      "api_key": "<key>"
+      "jwt_token": "<token>"
     }
     ```
   - Response:
     ```json
     {
       "status": "success",
-      "tool": "person_search.query_person_registry",
+      "tool": "customer_search.query_customer_registry",
       "duration_ms": 15,
       "result": {
         "count": 2,
         "total_matches": 2,
-        "query": ["Lucas Dubois", "Berlin"],
+        "query": ["Alexander Wright", "Tokyo"],
         "field": "all",
         "results": [
-          { "name": "Lucas Dubois", "city": "Paris", "country": "France", "job_title": "Senior AI Engineer" },
-          { "name": "Elena Rostova", "city": "Berlin", "country": "Germany", "job_title": "Data Scientist" }
+          {
+            "name": "Alexander Wright",
+            "address": "742 Evergreen Terrace Springfield",
+            "country": "United States",
+            "products_purchased": "Laptop, Wireless Mouse, Mechanical Keyboard, USB-C Hub"
+          },
+          {
+            "name": "Emi Takahashi",
+            "address": "3-5-1 Ginza Chuo-ku Tokyo",
+            "country": "Japan",
+            "products_purchased": "Gaming Console, Extra Controller, VR Headset, Gaming Headset"
+          }
         ]
       }
     }
     ```
+- `GET /api/tools/data/<csv_name>`
+  - Returns raw or parsed CSV records for `<csv_name>` (`employee_database.csv` or `customer_database.csv`).
+  - Requires JWT token via `Authorization: Bearer <token>` or `?jwt_token=<token>`. Returns `403 Forbidden` if tenant domain does not match.
 
 ---
 
@@ -651,6 +751,59 @@ Runs official `ollama/ollama:latest` container providing high-dimensional vector
 - `POST /api/embeddings` -> Body: `{"model": "bge-large:latest", "prompt": "<text>"}`. Returns vector array.
 - `GET /api/tags` -> Lists installed local models.
 - `POST /api/pull` -> Downloads model from library.
+
+---
+
+### 3.7 Knowledge Documents, Seed Corpus & Sample PDF Specifications
+
+#### 3.7.1 Directory Layout (`sample_docs/`)
+The `sample_docs/` directory houses the baseline reference documents utilized for RAG ingestion, tenant domain isolation testing, and system evaluation. The corpus comprises 3 markdown knowledge articles and 3 professionally formatted PDF documents:
+
+1. `agent_and_rag.md`: Foundational overview of autonomous agents, multi-turn tool calling, and RAG architectures (~3,000 words). Partitioned to tenant domain `example-a.com`.
+2. `company_marketing_strategy.md`: Global enterprise go-to-market strategy, demand generation, and brand expansion (~3,000 words). Partitioned to tenant domain `example-a.com`.
+3. `financial_report.md`: Corporate annual financial disclosures, income statements, and balance sheets (~3,000 words). Partitioned to tenant domain `sample-b.com`.
+4. `nexus_enterprise_solutions_company_profile.pdf`: Extended corporate profile of **Nexus Enterprise Technologies Inc.** in PDF format, containing **4,000 words or more** (audited ~4,600 words across 8 pages). Covers 12 structured chapters:
+   - Executive Summary & Corporate Purpose
+   - 2012–2026 Historical Evolution & Founding Milestones
+   - Board of Directors & Executive Governance
+   - Core Technology Architecture & Agentic RAG Platform
+   - Multi-Tenant Domain Isolation & Cryptographic Partitioning
+   - Enterprise Product Suites & Unit Economics
+   - Global Customer Implementations & Case Studies
+   - Audited Multi-Year Financial Performance (FY2021–FY2025)
+   - Zero Trust Information Security & Global Compliance (SOC 2, ISO 27001, HIPAA, FedRAMP)
+   - Environmental Sustainability & ESG Commitments
+   - Global Office Campuses & Sovereign Data Center Coordinates
+   - Technical Architecture Glossary & Standardized AI Lexicon
+   - Partitioned to tenant domain `example-a.com` (and Admin).
+5. `vanguard_global_logistics_company_profile.pdf`: Extended corporate profile of **Vanguard Global Logistics & Supply Corporation** in PDF format, containing **4,000 words or more** (audited ~4,300 words across 8 pages). Covers 12 structured chapters:
+   - Executive Summary & Global Supply Mission
+   - 1998–2026 History of Intermodal & Maritime Expansion
+   - Board of Directors & Corporate Governance
+   - Multimodal Transportation Infrastructure (Ocean, Air, Rail, and Road Networks)
+   - Autonomous Warehouse Robotics & High-Density ASRS Facilities
+   - Predictive Horizon AI Supply Chain Engine
+   - Specialized Life Sciences, Cold-Chain & Dangerous Goods Logistics
+   - Audited Multi-Year Financial Performance (FY2021–FY2025)
+   - Fleet Decarbonization & Green Fuels (SBTi Net-Zero 2040 Roadmap)
+   - Global Risk Management & Geopolitical Contingency Logistics
+   - Worldwide Logistics Hub Directory & Strategic Marine Port Coordinates
+   - Authoritative Supply Chain & Logistics Glossary
+   - Partitioned to tenant domain `sample-b.com` (and Admin).
+6. `product_catalog_100_offerings.pdf`: Commercial catalog in PDF format containing exactly **100 enterprise product offerings** (Item IDs `PRD-001` through `PRD-100`) across cloud compute, AI accelerators, networking switches, NVMe storage arrays, security HSMs, software licenses, IoT sensors, cooling systems, and warehouse robotics. Formatted as an 8-column repeating header table with:
+   - `Item ID`: Distinct SKU (`PRD-001` to `PRD-100`).
+   - `Product Name`: Professional trade name.
+   - `Product Description`: Detailed technical specification.
+   - `Qty 1 Price`: Base Unit Price.
+   - `Qty 10+ Price`: Automatically calculated 10% volume discount (`Base Price * 0.90`).
+   - `Qty 100+ Price`: Automatically calculated 30% volume discount (`Base Price * 0.70`).
+
+#### 3.7.2 Deterministic PDF Build Pipeline (`scripts/`)
+To guarantee that any independent developer or automated IDE agent can replicate this environment from scratch:
+- `scripts/build_all_sample_pdfs.py`: Master compilation script that invokes ReportLab with a two-pass `NumberedCanvas` ('Page X of Y' headers and footers), builds all 3 PDFs, and asserts that word counts and pricing discount formulas conform to specifications.
+- `scripts/nexus_profile_data.py`: Generates the complete structured text and metadata for the Nexus profile.
+- `scripts/vanguard_profile_data.py`: Generates the complete structured text and metadata for the Vanguard profile.
+- `scripts/product_catalog_data.py`: Generates the 100 enterprise product records and applies the 10% and 30% volume pricing rules.
 
 ---
 
@@ -828,6 +981,7 @@ All unit and integration assertions must pass, covering:
 When recreating this project from this specification, verify that:
 - [x] All 7 containers build, start, and communicate without manual IP configuration.
 - [x] On Chat & Knowledge Mgnt, Left Card and Right Card each take exactly 50% of the window width with full-width layout (`max-width: 100%`).
+- [x] On VectorDB Mgnt, Populate Vector Database card occupies 40% width and Vector Storage Status card occupies 60% width (`.vectordb-split-grid`).
 - [x] Max RAG Chunks (2, 3, 5, 7, 10), Skill Selector, and Skill Threshold are located in the Right Card.
 - [x] Max Tokens defaults to 2048 and Temperature defaults to 0.7 in the page header.
 - [x] Response detail boxes contain expandable "Show Logs" toggle with component bubbles and elapsed times.
@@ -837,6 +991,10 @@ When recreating this project from this specification, verify that:
 - [x] All timestamps in Telemetry and Log View are converted and displayed in the user's **local time**.
 - [x] Sensitive tokens (`api_key`, `secret`, `password`) are masked as `****` in `log.json`.
 - [x] Shutdown button triggers confirmation modal requiring "Shutdown the services" text.
+- [x] Multi-tenant logins (`example-a.com`, `sample-b.com`, `admin`) strictly isolate RAG documents and tools CSV databases (`employee_database.csv` vs `customer_database.csv`).
+- [x] Extended company profile PDFs (`nexus_enterprise_solutions_company_profile.pdf`, `vanguard_global_logistics_company_profile.pdf`) each contain 4,000 words or more with two-pass 'Page X of Y' headers/footers.
+- [x] Product catalog PDF (`product_catalog_100_offerings.pdf`) contains 100 enterprise offerings with 10% discount for Qty 10+ and 30% discount for Qty 100+.
+- [x] Automated compilation script `scripts/build_all_sample_pdfs.py` deterministically regenerates all sample PDFs.
 
 ---
 
@@ -852,7 +1010,7 @@ When recreating this project from this specification, verify that:
 2. **Explicit Data Models & Schemas**:
    - The SQLite database schema for authentication (`auth.db`), the JSON schema for central logs (`log.json`), the ChromaDB collections (`documents`, `skills`), and the seed data for tools (`tools/data/employee_database.csv`) are documented in full.
 3. **Exact GUI Layout & Component Behavior**:
-   - Every UI tab, card split ratio (50%/50% grid width), default control value (Max Tokens 2048, Temperature 0.7, Max Turns 5, Chunk Size 800, Overlap 100), and interactive modal flow (Registration in locked state, bulk key deletion confirmation, shutdown confirmation) has exact specifications.
+   - Every UI tab, card split ratios (50%/50% grid width on Page 1 Chat, 40%/60% grid width on Page 2 VectorDB), default control value (Max Tokens 2048, Temperature 0.7, Max Turns 5, Chunk Size 800, Overlap 100), and interactive modal flow (Registration in locked state, bulk key deletion confirmation, shutdown confirmation) has exact specifications.
 4. **Autonomous Agent Planning Loop**:
    - The planning and reasoning workflow (`custom_agent.py`) is specified step-by-step, including skill discovery, similarity matching, tool calling format (`{"tool": "...", "arguments": {...}}`), loop termination criteria (`max_turns`), and conditional document vector searching.
 5. **Security & Inter-Service Authentication**:

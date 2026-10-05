@@ -34,7 +34,18 @@ Agent-with-RAG/
 │   ├── templates/           # Flask Jinja2 HTML templates
 │   ├── Dockerfile
 │   └── app.py
-├── sample_docs/             # Sample markdown knowledge documents
+├── sample_docs/             # Sample knowledge documents (Markdown & PDF)
+│   ├── agent_and_rag.md     # Agent and RAG architecture overview (~3000 words)
+│   ├── company_marketing_strategy.md # Enterprise marketing strategy (~3000 words)
+│   ├── financial_report.md  # Multi-year financial performance report (~3000 words)
+│   ├── nexus_enterprise_solutions_company_profile.pdf # Extended company profile (>=4000 words)
+│   ├── vanguard_global_logistics_company_profile.pdf # Extended company profile (>=4000 words)
+│   └── product_catalog_100_offerings.pdf # 100 products with tiered volume pricing (1, 10, 100)
+├── scripts/                 # Automation & PDF generation scripts
+│   ├── build_all_sample_pdfs.py # Master generator for sample PDF documents
+│   ├── nexus_profile_data.py    # Nexus Enterprise profile data generator
+│   ├── vanguard_profile_data.py # Vanguard Logistics profile data generator
+│   └── product_catalog_data.py  # 100 product offerings catalog data generator
 ├── tests/                   # Pytest microservices test suite
 ├── docker-compose.yml       # 7-container deployment configuration
 ├── requirements.txt         # Root Python dependencies
@@ -42,19 +53,31 @@ Agent-with-RAG/
 ```
 
 ## GUI
-- Start with the login popup window. Prompt the user to enter the username and password
-  - Display two text boxes for entering the username and password
-  - Display three buttons:"Create New Account", “Cancel”, and "Ok"
-  - If the user clicks “Create New Account”, open a popup window to create a new account
-    - The popup window should display two text boxes for entering the username and password
-    - Display two buttons: "Cancel" and "Add"
-    - If the user clicks “Add”, sends the user name and password to the secrets_manager service to add to the user account storage.
-    - If the user clicks “Cancel” button, close the login window and exit the app
-  - If the user clicks “Ok” button, sends the user name and password to the secrets_manager service to validate
-    - If the user name or password is invalid, display an error message "Invalid username or password." and prompt the user to enter the username and password again
-    - If the user has status "Locked", display an error message "Account is Locked. Please contact the administrator." and prompt the user to enter the username and password again
-    - If the login succeeds, close the login window and go to the main application window
-  - If the user clicks “Cancel” button, display a message “Thank you for using the app”. Then close the login window and exit the app
+- Start with the login popup window. Prompt the user to enter their email address and password for Multi-Tenant Access.
+  - The login username must be an email address (or `admin` for global administrator).
+  - The domain name of the email address is used to determine which RAG documents and tools container CSV databases can be accessed during that login session:
+    - `example-a.com`: Test tenant domain authorized to access `example-a.com` RAG documents and `tools/data/employee_database.csv`.
+    - `sample-b.com`: Test tenant domain authorized to access `sample-b.com` RAG documents and `tools/data/customer_database.csv`.
+    - `admin` (no domain): Global administrator authorized to access ALL RAG documents and BOTH CSV databases.
+  - When the user logs in, the authentication service generates and signs a domain-scoped JSON Web Token (JWT) that is used for subsequent authentication across all microservices.
+  - Token creation for individual containers (`container_secrets/<container>/keys`) is removed in favor of this login JWT token as the main system-wide authentication.
+  - Display two text boxes for entering the email address/username and password.
+    - Default test accounts:
+      - `admin` / `admin123` (Admin, no domain -> full access to all RAG documents and both CSV files).
+      - `user@example-a.com` / `password123` (User, domain `example-a.com` -> access to `example-a.com` documents and `employee_database.csv`).
+      - `user@sample-b.com` / `password123` (User, domain `sample-b.com` -> access to `sample-b.com` documents and `customer_database.csv`).
+  - Display three buttons: "Create New Account", “Cancel”, and "Ok".
+  - If the user clicks “Create New Account”, open a popup window to create a new account:
+    - Display two text boxes for entering the email address and password.
+    - Display two buttons: "Cancel" and "Add".
+    - If the user clicks “Add”, sends the email address and password to the auth service. Accounts are initially created in "Locked" status.
+    - If the user clicks “Cancel” button, close the registration window and return to login.
+  - If the user clicks “Ok” button, sends the email/username and password to the auth service to validate:
+    - If valid, returns signed JWT token with user domain, role, and email claims.
+    - If invalid, display an error message "Invalid username or password."
+    - If the user has status "Locked", display an error message "Account is Locked. Please contact the administrator."
+    - If login succeeds, store the JWT token in the session and proceed to the main console.
+  - If the user clicks “Cancel” button, display a message “Thank you for using the app”, close the login window, and exit the app.
 
 The Main App window should have:
   - If the static/images folder have a file called tab-icon.gif, use it as the icon for the tab
@@ -149,15 +172,15 @@ The Main App window should have:
   - Add a sub card called “Advanced Chunking Parameters” to allow the user to select the Chunk size and Overlap in the number of characters. The sub card should be collapsed by default.
   - Add the button at the bottom to populate vector database
   - When loading the database, make sure there is no duplicated chunk
-  - The card should be half of the page width
+  - The card should be 40% of the page width
 
 #### Right Card: “Vector Storage Status”.
 - At the right side of the box put a button to allow the user to Reset the DB.
 - The card should show if the ingestion is in progress
-- It should also list the name of the document ingested and the number of chunks created and the total number of characters
+- It should also list the name of the document ingested, the tenant domain name of the organization that stored and has access to the document (e.g., `example-a.com`, `sample-b.com`, or `All Tenants (Admin)`), the number of chunks created, and the total number of characters
 - Allow the user to scroll through the list of ingested documents
 - Allow the user to delete any document from the DB by using the Delete button on the right side of the document row
-- The card should be half of the page width
+- The card should be 60% of the page width
 
 #### Bottom: "Available Embedding Models".
 - Display the list of available Embedding Models for the embedding service. Briefly list the characteristics including the dimensions, context window, size, brief description, and status (Installed, Active, Available to Pull).
@@ -280,25 +303,18 @@ The Documents and Skills container accesses:
       - Only show 5 rows in the table
       - There should be a scroll bar on the right side to allow the user to scroll through all the items
 
-  - API Keys tab displays:
-    - Add a checkbox "Select All" at the top of the table. When clicked, select all the rows in the table.
-    - Add a button "Delete Selected API Keys" to allow the user to delete all the selected API keys. When clicked, bring a popup asking for confirmation from the user to delete the API keys.
-      - In the popup, display the list of all the selected API keys.
-      - Add a "Delete" button at the bottom right corner to allow the user to delete the API keys.
-      - Add a "Cancel" button at the bottom left corner to allow the user to cancel the operation.
-    - Add a button to generate a new API key
-      - When clicked, a popup window open and display:
-        - A text box to enter the Key name for the API key
-        - A dropdown box with the list of all the containers 
-        - To the right of the container dropdown box is another dropdown box with the list of access levels for the API key.
-          - The list includes: Read, Write, and Admin.
-        - To the right of the access level dropdown box is the "Add" button. When clicked, the selected container and access level are added to the list of containers and access levels for the API key.
-        - Below the container and access level dropdown boxes, display a list of all the configured containers and access levels for the API key.
-        - A field to enter the expiry date/time of the API key. Default to 1 year from the date/time of generation.
-        - A button "Proceed" to create the API key.
-        - When the user clicks on the proceed button, generate the API key and display it in a popup window. The key should be displayed in a way that the user can copy it.
-        - Notify the user that the API key will not be displayed again and they should save it in a safe place.
-        - Show a button "Close" to allow the user to close the popup window. This will close the popup window and return to the previous screen.
+  - API Keys / Multi-Tenant JWT Authentication tab displays:
+    - Active Multi-Tenant Session & JWT Token panel:
+      - Displays the logged-in user's identity, email address, assigned role (`Admin` or `User`), and active tenant domain.
+      - Displays the tenant's permitted resource boundaries:
+        - Permitted RAG documents: Domain-scoped (e.g. `example-a.com` documents, `sample-b.com` documents, or ALL documents for Admin).
+        - Permitted Tools CSV: `tools/data/employee_database.csv` (for `example-a.com`), `tools/data/customer_database.csv` (for `sample-b.com`), or both (for Admin).
+      - Displays the full encoded JWT token with a "Copy Token" button.
+      - Notice indicating that container-specific token creation has been removed in favor of the unified login JWT token.
+    - Legacy / Configured API Keys and Services table:
+      - Add a checkbox "Select All" at the top of the table. When clicked, select all the rows in the table.
+      - Add a button "Delete Selected API Keys" to allow the user to delete selected API keys.
+      - Container-specific token creation has been decommissioned in favor of login JWT tokens.
 
     - A table listing the API keys ("Configured Container API Keys"):
       - The table should contain the following columns:
@@ -556,11 +572,15 @@ The Custom Agent should operate as follow:
 ### Tools
 - Create a tools container in the tools/ folder.
   - Use FastMCP with async HTTP transport to serve all the access to the tools in the container. 
-  - Use the API key sent in the request to check with the Authorization Service whether the service has the authority to access the tools
-  - The secrets/ folder in the container should map to the tools/secrets/ folder on the host. Use volume to persist the secrets/ on the host
-  - Store all the container names and API keys configured in the secrets/keys file in the tools container for the tools container to access the other containers
-  - All the calls must include Conversation ID to allow the logging service to track the calls
-  - The container should have a volume data/ mounted to ./tools/data/ on the host hard drive to persist any data
+  - Inter-service requests use the JWT token from the user's login as the main authentication:
+    - The domain claims inside the JWT token enforce which CSV database can be accessed:
+      - `example-a.com` is authorized to access `tools/data/employee_database.csv`.
+      - `sample-b.com` is authorized to access `tools/data/customer_database.csv`.
+      - Admin login with no domain (or role `Admin`) is authorized to access BOTH CSV files.
+    - If a tenant attempts to access an unauthorized CSV file or invoke an unauthorized tool, the service returns HTTP 403 Forbidden.
+  - Token creation for individual containers (`container_secrets/<container>/keys`) has been removed; the login JWT token governs system-wide authorization.
+  - All the calls must include Conversation ID to allow the logging service to track the calls.
+  - The container should have a volume data/ mounted to ./tools/data/ on the host hard drive to persist any data.
 
   - Create logs of all the calls to the tools service. Include: 
     - Conversation ID
@@ -571,9 +591,12 @@ The Custom Agent should operate as follow:
     - complete request and response payload.
 
   - Create seeding scripts to populate the tools service with data:
-    - The first tool script "employee_search" provides the information about the employee from the csv file. The tool can search the employee by name, city, country, or job title.
-      - Create 30 random employee records with name, city, country, and job title in a csv file. Store the data in the data/employee_database.csv file.
-    - The second tool script "stock_analysis" gets the list of stocks with the highest percentage increase or lowest percentage decrease based on criteria from the arguments in the function call.
+    - The first tool script "employee_search" (`person_search.query_person_registry`) provides information about employees from `tools/data/employee_database.csv` (accessible to `example-a.com` and Admin).
+      - Populated with 30 employee records with name, city, country, and job title.
+    - The second tool script "customer_search" (`customer_search.query_customer_registry`) provides customer records from `tools/data/customer_database.csv` (accessible to `sample-b.com` and Admin).
+      - Populated with 20 random customer records containing name, address (with city and country info), and a list of 3 to 5 products purchased.
+    - The third tool script "stock_analysis" gets the list of stocks with the highest percentage increase or lowest percentage decrease based on criteria from the arguments in the function call.
+    - The fourth tool script "time_weather" queries live time and weather for any city worldwide.
 
 ### Logging & Telemetry System
 - Create a central logging service container in the `logging/` directory to capture, persist, and aggregate logs from all entities across the microservice mesh.
@@ -962,10 +985,17 @@ All container-to-container communications must record the complete, untruncated 
   - Downloads / pulls a specified embedding model.
 
 ## Sample Documents
-- Create 3 sample documents in the sample_docs/ folder
-  - One document should be about Agent and RAG technology, around 3000 words.
-  - The second document should be a sample of a company marketing strategy. It should be around 3000 words.
-  - The third document should be a sample of the financial report for the company. It should be around 3000 words.
+- Create the sample knowledge documents in the `sample_docs/` folder:
+  1. `agent_and_rag.md`: Overview of autonomous agents and RAG technology (~3000 words). Tagged to domain `example-a.com`.
+  2. `company_marketing_strategy.md`: Enterprise marketing strategy and expansion framework (~3000 words). Tagged to domain `example-a.com`.
+  3. `financial_report.md`: Corporate annual financial report and audited balance sheets (~3000 words). Tagged to domain `sample-b.com`.
+  4. `nexus_enterprise_solutions_company_profile.pdf`: Extended corporate profile of **Nexus Enterprise Technologies Inc.** in PDF format, containing **4,000 words or more** (audited ~4,600 words). Covers executive summary, 2012-2026 corporate history, board governance, autonomous agent RAG architecture, multi-tenant domain isolation, product suites, unit economics, audited financials (FY2021-FY2025), zero-trust security & SOC 2 / ISO compliance, ESG initiatives, global office directory, and technical lexicon. Domain-tagged to `example-a.com` (and Admin).
+  5. `vanguard_global_logistics_company_profile.pdf`: Extended corporate profile of **Vanguard Global Logistics & Supply Corporation** in PDF format, containing **4,000 words or more** (audited ~4,300 words). Covers corporate charter, multimodal freight infrastructure (ocean, air, rail, highway), autonomous warehouse robotics, predictive Horizon supply chain AI engine, cold-chain biopharma & dangerous goods handling, audited financials (FY2021-FY2025), fleet decarbonization (SBTi net-zero 2040), crisis contingency logistics, global port coordinates, and technical logistics standards. Domain-tagged to `sample-b.com` (and Admin).
+  6. `product_catalog_100_offerings.pdf`: Commercial catalog in PDF format containing exactly **100 enterprise product offerings** (Item IDs `PRD-001` through `PRD-100`) across cloud AI compute, switches, optical transceivers, NVMe storage, firewalls/HSMs, software licenses, IoT sensors, cooling/power, and autonomous warehouse robotics. Includes Item ID, Product Name, Description, and Tiered Volume Pricing:
+     - **Quantity 1**: Base Unit Price.
+     - **Quantity 10 or more**: 10% price drop (`Base Price * 0.90`).
+     - **Quantity 100 or more**: 30% price drop (`Base Price * 0.70`).
+- Provide an automated build script (`scripts/build_all_sample_pdfs.py`) using ReportLab to regenerate all PDF documents deterministically to guarantee environment replicability.
 
 ## Misc
 - Create a README.md with a brief description about:

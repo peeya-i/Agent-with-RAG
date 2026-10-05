@@ -25,13 +25,19 @@ if current_dir not in sys.path:
 
 try:
     from scripts.employee_search import seed_employee_data, search_employees
+    from scripts.customer_search import seed_customer_data, search_customers
     from scripts.stock_analysis import analyze_stocks
+    from jwt_auth import decode_jwt_token, extract_jwt_from_request
 except ImportError:
     from tools.scripts.employee_search import seed_employee_data, search_employees
+    from tools.scripts.customer_search import seed_customer_data, search_customers
     from tools.scripts.stock_analysis import analyze_stocks
+    from tools.jwt_auth import decode_jwt_token, extract_jwt_from_request
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 CSV_PATH = os.path.join(DATA_DIR, "employee_database.csv")
+EMPLOYEE_CSV_PATH = CSV_PATH
+CUSTOMER_CSV_PATH = os.path.join(DATA_DIR, "customer_database.csv")
 AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth_service:8001/api/auth/validate_key")
 LOGGING_SERVICE_URL = os.environ.get("LOGGING_SERVICE_URL", "http://logging:8006/api/logs")
 SECRETS_DIR = os.environ.get("SECRETS_DIR", os.path.join(os.path.dirname(__file__), "secrets"))
@@ -54,11 +60,12 @@ def load_tools_keys():
             print(f"[Tools] Error reading keys file: {e}")
     return keys
 
-# Seed employee database on startup if needed
+# Seed employee database and customer database on startup if needed
 try:
-    seed_employee_data(CSV_PATH)
+    seed_employee_data(EMPLOYEE_CSV_PATH)
+    seed_customer_data(CUSTOMER_CSV_PATH)
 except Exception as e:
-    print(f"[Tools] Employee database seeding note: {e}")
+    print(f"[Tools] Database seeding note: {e}")
 
 
 # Curated equities basket for stock search
@@ -80,9 +87,71 @@ TRACKED_TICKERS = [
     {"symbol": "ARM", "name": "Arm Holdings plc", "base_price": 138.70, "change_pct": 5.12},
 ]
 
+def get_user_auth_context(req):
+    """Extract and decode JWT token to determine user identity and tenant domain."""
+    token = extract_jwt_from_request(req)
+    if not token:
+        # Check Authorization header directly as fallback
+        auth_hdr = req.headers.get("Authorization", "")
+        if auth_hdr.lower().startswith("bearer "):
+            token = auth_hdr[7:].strip()
+
+    if not token:
+        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False}
+
+    payload = decode_jwt_token(token)
+    if not payload:
+        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False}
+
+    role = payload.get("role", "User")
+    domain = payload.get("domain")
+    is_admin = (role == "Admin" or domain is None)
+
+    return {
+        "authenticated": True,
+        "email": payload.get("email"),
+        "domain": domain,
+        "role": role,
+        "is_admin": is_admin
+    }
+
+def can_access_csv(csv_name: str, auth_ctx: dict) -> tuple:
+    """Check if tenant domain or admin is authorized to access the given CSV.
+    - Admin (no domain): access to BOTH employee_database.csv and customer_database.csv.
+    - example-a.com: access to employee_database.csv.
+    - sample-b.com: access to customer_database.csv.
+    """
+    clean_name = os.path.basename(csv_name).lower()
+    if not auth_ctx.get("authenticated"):
+        # Default allow if no token sent in unauthenticated legacy mode, but if domain is present check it
+        return True, "No auth context"
+
+    if auth_ctx.get("is_admin") or auth_ctx.get("role") == "Admin" or auth_ctx.get("domain") is None:
+        return True, "Admin access granted to all databases"
+
+    domain = (auth_ctx.get("domain") or "").lower()
+
+    if "employee" in clean_name:
+        if domain == "example-a.com":
+            return True, "Domain example-a.com authorized for employee_database.csv"
+        return False, f"Access denied: Domain '{domain}' cannot access employee_database.csv (requires 'example-a.com' or Admin)"
+
+    if "customer" in clean_name:
+        if domain == "sample-b.com":
+            return True, "Domain sample-b.com authorized for customer_database.csv"
+        return False, f"Access denied: Domain '{domain}' cannot access customer_database.csv (requires 'sample-b.com' or Admin)"
+
+    return False, f"Access denied to database {clean_name}"
+
 def check_auth(api_key, invoker="agent"):
     if not api_key:
         return True, "Allowed (internal default)"
+
+    # If incoming key is a JWT token, decode and validate it
+    jwt_payload = decode_jwt_token(api_key)
+    if jwt_payload:
+        return True, "Valid JWT"
+
     try:
         url = AUTH_SERVICE_URL
         if "auth_service:8001" in url and not os.environ.get("RUNNING_IN_DOCKER"):
@@ -124,16 +193,34 @@ def log_tool_event(conv_id, invoker, tool_name, args, req_payload, resp_payload,
     except Exception:
         pass
 
-# TOOL 1: Employee search
+# TOOL 1: Employee search (Accessible to example-a.com and Admin)
 def run_employee_search(keywords=None, field="", keyword=None):
     query_val = keywords if keywords is not None else keyword
-    results = search_employees(keywords=query_val, field=field, csv_path=CSV_PATH)
+    results = search_employees(keywords=query_val, field=field, csv_path=EMPLOYEE_CSV_PATH)
     return {
+        "status": "success",
         "count": len(results),
         "total_matches": len(results),
         "results": results,
         "query": query_val,
-        "field": field or "all"
+        "field": field or "all",
+        "database": "employee_database.csv",
+        "authorized_domain": "example-a.com"
+    }
+
+# TOOL 1B: Customer search (Accessible to sample-b.com and Admin)
+def run_customer_search(keywords=None, field="", keyword=None):
+    query_val = keywords if keywords is not None else keyword
+    results = search_customers(keywords=query_val, field=field, csv_path=CUSTOMER_CSV_PATH)
+    return {
+        "status": "success",
+        "count": len(results),
+        "total_matches": len(results),
+        "results": results,
+        "query": query_val,
+        "field": field or "all",
+        "database": "customer_database.csv",
+        "authorized_domain": "sample-b.com"
     }
 
 # TOOL 2: Stock search
@@ -225,15 +312,29 @@ def health():
 
 @app.route("/api/tools/list", methods=["GET"])
 def list_tools():
+    auth_ctx = get_user_auth_context(request)
     return jsonify({
         "tools": [
             {
                 "name": "person_search.query_person_registry",
                 "aliases": ["employee_search", "query_person_registry", "person_search"],
-                "description": "Searches for employees and staff in the CSV registry by a list of search texts (or single search text) across name, city, country, or job title.",
+                "description": "Searches for employees and staff in employee_database.csv by search terms across name, city, country, or job title. Accessible to domain 'example-a.com' and Admin.",
+                "database": "employee_database.csv",
+                "authorized_domain": "example-a.com",
                 "parameters": {
-                    "keywords": "array of strings (or single string: search terms across name, city, country, or role to search for)",
-                    "field": "string (optional: 'name', 'city', 'country', 'job_title')"
+                    "keywords": "array of strings (or single string: search terms across name, city, country, or role)",
+                    "field": "string (optional: 'name', 'city', 'country', 'job_title', 'all')"
+                }
+            },
+            {
+                "name": "customer_search.query_customer_registry",
+                "aliases": ["customer_search", "query_customer_registry", "customer_registry"],
+                "description": "Searches for customer records in customer_database.csv by search terms across name, address, city, country, or products purchased. Accessible to domain 'sample-b.com' and Admin.",
+                "database": "customer_database.csv",
+                "authorized_domain": "sample-b.com",
+                "parameters": {
+                    "keywords": "array of strings (or single string: search terms across name, address, city, country, or products)",
+                    "field": "string (optional: 'name', 'address', 'city', 'country', 'products_purchased', 'all')"
                 }
             },
             {
@@ -254,7 +355,9 @@ def list_tools():
                     "city": "string (name of the city e.g. 'Tokyo', 'Paris', 'New York')"
                 }
             }
-        ]
+        ],
+        "user_domain": auth_ctx.get("domain"),
+        "role": auth_ctx.get("role")
     })
 
 @app.route("/api/tools/call", methods=["POST"])
@@ -267,17 +370,35 @@ def call_tool():
     api_key = data.get("api_key") or request.headers.get("X-API-Key")
     invoker = data.get("invoker", "agent")
 
-    # Validate auth
-    is_valid, msg = check_auth(api_key, invoker=invoker)
-    if not is_valid:
-        return jsonify({"status": "error", "error": f"Authorization failed: {msg}"}), 403
+    # Extract auth context for domain-specific CSV access control
+    auth_ctx = get_user_auth_context(request)
+    if not auth_ctx.get("authenticated") and api_key:
+        jwt_p = decode_jwt_token(api_key)
+        if jwt_p:
+            auth_ctx = {
+                "authenticated": True,
+                "email": jwt_p.get("email"),
+                "domain": jwt_p.get("domain"),
+                "role": jwt_p.get("role", "User"),
+                "is_admin": (jwt_p.get("role") == "Admin" or jwt_p.get("domain") is None)
+            }
 
     resp_data = None
     status = "success"
 
     # Match tool by name or alias
     clean_tool = tool_name.lower().replace("-", "_")
-    if any(k in clean_tool for k in ["person", "employee", "registry"]):
+    if any(k in clean_tool for k in ["customer"]):
+        allowed, reason = can_access_csv("customer_database.csv", auth_ctx)
+        if not allowed:
+            return jsonify({"status": "error", "error": f"Authorization failed: {reason}", "database": "customer_database.csv"}), 403
+        kw = arguments.get("keywords") if "keywords" in arguments else (arguments.get("keyword") or arguments.get("texts") or arguments.get("name") or arguments.get("query") or "")
+        field = arguments.get("field") or ""
+        resp_data = run_customer_search(keywords=kw, field=field)
+    elif any(k in clean_tool for k in ["person", "employee", "registry"]):
+        allowed, reason = can_access_csv("employee_database.csv", auth_ctx)
+        if not allowed:
+            return jsonify({"status": "error", "error": f"Authorization failed: {reason}", "database": "employee_database.csv"}), 403
         kw = arguments.get("keywords") if "keywords" in arguments else (arguments.get("keyword") or arguments.get("texts") or arguments.get("name") or arguments.get("query") or "")
         field = arguments.get("field") or ""
         resp_data = run_employee_search(keywords=kw, field=field)
@@ -352,9 +473,37 @@ def mcp_messages():
 
     return jsonify({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
+@app.route("/api/tools/data/<path:csv_name>", methods=["GET"])
+def get_csv_data(csv_name):
+    """Retrieve raw CSV records strictly enforcing multi-tenant domain authorization."""
+    auth_ctx = get_user_auth_context(request)
+    allowed, reason = can_access_csv(csv_name, auth_ctx)
+    if not allowed:
+        return jsonify({"status": "error", "error": reason}), 403
+
+    target_path = os.path.join(DATA_DIR, os.path.basename(csv_name))
+    if not os.path.exists(target_path):
+        return jsonify({"status": "error", "error": f"File {csv_name} not found"}), 404
+
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        return jsonify({
+            "status": "success",
+            "file": os.path.basename(csv_name),
+            "count": len(rows),
+            "rows": rows
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 def call_tool_direct(tool_name, args):
     clean = tool_name.lower()
-    if "person" in clean or "employee" in clean:
+    if "customer" in clean:
+        kw = args.get("keywords") if "keywords" in args else args.get("keyword", "")
+        return run_customer_search(keywords=kw, field=args.get("field", ""))
+    elif "person" in clean or "employee" in clean:
         kw = args.get("keywords") if "keywords" in args else args.get("keyword", "")
         return run_employee_search(keywords=kw, field=args.get("field", ""))
     elif "stock" in clean:

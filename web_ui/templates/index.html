@@ -241,8 +241,8 @@
         </div>
       </div>
 
-      <!-- Top Two Half-Width Cards -->
-      <div class="split-cards-grid half-width-grid">
+      <!-- Top Two Split Cards: Populate Vector Database (40%) and Vector Storage Status (60%) -->
+      <div class="split-cards-grid vectordb-split-grid">
         <!-- Left Card: Populate Vector Database -->
         <div class="glass-card">
           <div class="card-header">
@@ -324,13 +324,14 @@
                   <tr>
                     <th>Type</th>
                     <th>Document / Skill Name</th>
+                    <th>Tenant Domain</th>
                     <th>Chunks</th>
                     <th>Characters</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="ingestedDocsTbody">
-                  <tr><td colspan="5" class="text-center text-muted">No documents or skills ingested.</td></tr>
+                  <tr><td colspan="6" class="text-center text-muted">No documents or skills ingested.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -852,18 +853,62 @@
           </div>
         </div>
 
-        <!-- Sub-tab 2: API Keys -->
+        <!-- Sub-tab 2: Multi-Tenant JWT Authentication & Access -->
         <div class="subtab-content" id="subtab-apikeys">
+          <!-- Active Session JWT Card -->
+          <div class="glass-card full-width-card" style="margin-bottom: 1.5rem;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+              <div class="card-title">
+                <span class="card-icon">🔐</span> Active Multi-Tenant Session & JWT Token
+              </div>
+              <div>
+                <span class="badge" id="jwtStatusBadge" style="background:#0284c7; color:#f0f9ff; font-weight:600;">JWT Authenticated</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                  <div>
+                    <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block;">Active Login / User</span>
+                    <strong id="jwtUserEmail" style="color: #f8fafc; font-size: 0.95rem;">-</strong>
+                  </div>
+                  <div>
+                    <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block;">Tenant Domain</span>
+                    <strong id="jwtUserDomain" style="color: #38bdf8; font-size: 0.95rem;">-</strong>
+                  </div>
+                  <div>
+                    <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block;">Permitted RAG Documents</span>
+                    <strong id="jwtRagAccess" style="color: #4ade80; font-size: 0.95rem;">-</strong>
+                  </div>
+                  <div>
+                    <span style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block;">Permitted Tools CSV</span>
+                    <strong id="jwtCsvAccess" style="color: #facc15; font-size: 0.95rem;">-</strong>
+                  </div>
+                </div>
+                <div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                    <span style="font-size: 0.75rem; color: #94a3b8; font-weight: 700;">Encoded JWT Token</span>
+                    <button type="button" id="btnCopySessionJwt" class="btn-copy" style="font-size: 0.75rem; padding: 2px 8px;">📋 Copy Token</button>
+                  </div>
+                  <pre id="jwtTokenDisplay" style="background: #090d16; border: 1px solid #1e293b; padding: 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 0.75rem; color: #93c5fd; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 0; max-height: 80px;">No token</pre>
+                </div>
+              </div>
+              <div style="display: flex; gap: 0.75rem; align-items: center; font-size: 0.82rem; color: #94a3b8;">
+                <span>ℹ️</span> <span>Container-specific token creation has been removed in favor of the login JWT token as the primary authentication across all microservices.</span>
+              </div>
+            </div>
+          </div>
+
           <div class="glass-card full-width-card">
             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
               <div class="card-title">
-                <span class="card-icon">🗝️</span> Configured Container API Keys
+                <span class="card-icon">🗝️</span> Multi-Tenant API Keys & Services Matrix
               </div>
               <div style="display: flex; gap: 0.5rem; align-items: center;">
                 <button id="btnDeleteSelectedKeys" class="btn-danger" style="padding: 0.4rem 1rem; font-size: 0.85rem;" disabled>
                   <span class="icon">🗑️</span> Delete Selected API Keys
                 </button>
-                <button id="btnOpenAddKeyModal" class="btn-primary" style="padding: 0.4rem 1rem; font-size: 0.85rem;">
+                <button id="btnOpenAddKeyModal" class="btn-primary" style="padding: 0.4rem 1rem; font-size: 0.85rem; display: none;">
                   <span class="icon">➕</span> Generate New API Key
                 </button>
               </div>
@@ -1043,19 +1088,22 @@
 
   <!-- Modal 5: Login Popup Modal (Mandatory on load) -->
   <div class="modal-overlay" id="loginModal" style="display: flex;">
-    <div class="modal-box" style="max-width: 440px;">
+    <div class="modal-box" style="max-width: 460px;">
       <div class="modal-header">
-        <h3><span class="modal-icon">🔐</span> Sign In</h3>
+        <h3><span class="modal-icon">🔐</span> Sign In (Multi-Tenant)</h3>
       </div>
       <div class="modal-body">
-        <p class="text-muted" style="font-size: 0.88rem; margin-bottom: 1rem;">
-          Enter your username and password to log in. Default seed: <code>admin</code> / <code>admin123</code>
+        <p class="text-muted" style="font-size: 0.86rem; margin-bottom: 0.85rem; line-height: 1.4;">
+          Login with an email address to access tenant-scoped RAG documents & tools data. Admin with no domain can access all resources.<br>
+          <span style="font-size:0.8rem; color:#38bdf8;">
+            Test accounts: <code>admin</code> / <code>admin123</code> &bull; <code>user@example-a.com</code> / <code>password123</code> &bull; <code>user@sample-b.com</code> / <code>password123</code>
+          </span>
         </p>
         <div id="loginErrorMsg" class="modal-alert-text hidden" style="color: #ef4444; margin-bottom: 0.75rem; font-size: 0.88rem;"></div>
         <div style="display: flex; flex-direction: column; gap: 0.85rem;">
           <div>
-            <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Username</label>
-            <input type="text" id="loginUsername" class="input-text" style="width: 100%;" placeholder="Enter username" value="admin">
+            <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Email Address / Username</label>
+            <input type="text" id="loginUsername" class="input-text" style="width: 100%;" placeholder="e.g. user@example-a.com, user@sample-b.com, or admin" value="admin">
           </div>
           <div>
             <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Password</label>
@@ -1075,16 +1123,19 @@
 
   <!-- Modal 5B: Create New Account Popup Window -->
   <div class="modal-overlay hidden" id="registerModal" style="z-index: 1001;">
-    <div class="modal-box" style="max-width: 420px;">
+    <div class="modal-box" style="max-width: 440px;">
       <div class="modal-header">
-        <h3><span class="modal-icon">👤</span> Create New Account</h3>
+        <h3><span class="modal-icon">👤</span> Create Tenant Account</h3>
       </div>
       <div class="modal-body">
+        <p class="text-muted" style="font-size: 0.82rem; margin-bottom: 0.75rem;">
+          Sign up with your organization email (e.g., <code>alex@example-a.com</code>). The email domain defines tenant boundaries.
+        </p>
         <div id="registerAlertMsg" class="modal-alert-text hidden" style="margin-bottom: 0.75rem; font-size: 0.88rem;"></div>
         <div style="display: flex; flex-direction: column; gap: 0.85rem;">
           <div>
-            <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Username</label>
-            <input type="text" id="regUsername" class="input-text" style="width: 100%;" placeholder="Enter username">
+            <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Email Address</label>
+            <input type="text" id="regUsername" class="input-text" style="width: 100%;" placeholder="e.g. user@example-a.com">
           </div>
           <div>
             <label style="display: block; font-size: 0.82rem; font-weight: 700; color: #cbd5e1; margin-bottom: 4px;">Password</label>
@@ -1189,12 +1240,12 @@
           <div><strong>Port:</strong> <span id="modalContainerPort" style="font-family: var(--font-mono); color: #38bdf8;">8000</span></div>
         </div>
 
-        <div id="modalContainerKeyNotice" style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; padding: 8px 12px; margin-bottom: 1rem; font-size: 0.85rem; color: #fbbf24; display: flex; align-items: center; gap: 8px;">
-          <span>ℹ️</span> <strong>API Keys can be set when the container is inactive.</strong>
+        <div style="background: rgba(14, 165, 233, 0.15); border: 1px solid rgba(14, 165, 233, 0.4); border-radius: 6px; padding: 8px 12px; margin-bottom: 1rem; font-size: 0.85rem; color: #38bdf8; display: flex; align-items: center; gap: 8px;">
+          <span>🛡️</span> <strong>Unified Multi-Tenant JWT Auth:</strong> Inter-container communication is authenticated via domain-scoped JWT tokens. Container-specific token creation has been removed.
         </div>
 
         <div style="margin-bottom: 1rem;">
-          <h4 style="font-size: 0.9rem; margin-bottom: 0.5rem; color: #cbd5e1;">Containers Accessed by this Service:</h4>
+          <h4 style="font-size: 0.9rem; margin-bottom: 0.5rem; color: #cbd5e1;">Connected Microservices:</h4>
           <div id="modalContainerDepsList" style="display: flex; flex-direction: column; gap: 0.5rem;">
             <!-- Injected dynamically -->
           </div>
@@ -1203,7 +1254,6 @@
       <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
         <button id="btnCloseContainerModal" class="btn-secondary">Close</button>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <button id="btnSaveContainerKeys" class="btn-primary" style="display: none; font-size: 0.85rem; padding: 6px 14px;">Save Keys</button>
           <div id="modalContainerActionBtnContainer">
             <!-- Start / Stop Button injected here -->
           </div>

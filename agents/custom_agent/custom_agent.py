@@ -197,9 +197,12 @@ class CustomAgent:
 
     def run(self, message, conversation_id, model="gemma-4-26b-a4b-it", temperature=0.7, max_tokens=2048,
             max_turns=5, skill_selector="Vector Store Selects", skill_threshold=0.2, doc_threshold=0.3,
-            max_chunks=5, custom_endpoint=None, api_key=None, configured_keys=None, **kwargs):
+            max_chunks=5, custom_endpoint=None, api_key=None, jwt_token=None, configured_keys=None, **kwargs):
         
         configured_keys = configured_keys or {}
+        jwt_token = jwt_token or kwargs.get("jwt_token")
+        if not jwt_token and api_key and ("." in api_key or api_key.startswith("eyJ")):
+            jwt_token = api_key
         agent_start = time.time()
         steps = []
         max_turns = max(1, min(int(max_turns or 5), 10))
@@ -243,7 +246,7 @@ class CustomAgent:
             # Query doc_RAG skill vector store
             try:
                 rag_url = self._resolve(self.doc_rag_url, "doc_rag", 8003)
-                rag_key = configured_keys.get("doc_rag") or api_key
+                rag_key = jwt_token or configured_keys.get("doc_rag") or api_key
                 skill_req = {
                     "db_type": "skill",
                     "query": message,
@@ -251,6 +254,7 @@ class CustomAgent:
                     "limit": 2,
                     "conversation_id": conversation_id,
                     "api_key": rag_key,
+                    "jwt_token": jwt_token,
                     "invoker": "Custom Agent"
                 }
                 self.log(
@@ -264,6 +268,8 @@ class CustomAgent:
                 headers = {"Content-Type": "application/json"}
                 if rag_key:
                     headers["X-API-Key"] = rag_key
+                if jwt_token:
+                    headers["Authorization"] = f"Bearer {jwt_token}"
                 resp = requests.post(f"{rag_url}/api/rag/query", json=skill_req, headers=headers, timeout=5)
                 if resp.status_code == 200:
                     matched_skills = resp.json().get("results", [])
@@ -361,6 +367,7 @@ class CustomAgent:
                 "}\n"
                 "Available tools: \n"
                 "- person_search.query_person_registry (arguments: keywords [list of texts or search string], field)\n"
+                "- customer_search.query_customer_registry (arguments: keywords [list of texts or search string], field)\n"
                 "- stock_search.query_stocks (arguments: action ['gainers', 'losers', 'quote'], limit, ticker)\n"
                 "- time_weather.get_current_weather (arguments: city)\n"
                 "- doc_search.query_documents (arguments: query, limit)\n\n"
@@ -407,7 +414,7 @@ class CustomAgent:
                     # Query doc_RAG
                     try:
                         rag_url = self._resolve(self.doc_rag_url, "doc_rag", 8003)
-                        rag_key = configured_keys.get("doc_rag") or api_key
+                        rag_key = jwt_token or configured_keys.get("doc_rag") or api_key
                         doc_req = {
                             "db_type": "document",
                             "query": t_args.get("query", message),
@@ -415,6 +422,7 @@ class CustomAgent:
                             "limit": max_chunks,
                             "conversation_id": conversation_id,
                             "api_key": rag_key,
+                            "jwt_token": jwt_token,
                             "invoker": "Custom Agent"
                         }
                         self.log(
@@ -428,6 +436,8 @@ class CustomAgent:
                         headers = {"Content-Type": "application/json"}
                         if rag_key:
                             headers["X-API-Key"] = rag_key
+                        if jwt_token:
+                            headers["Authorization"] = f"Bearer {jwt_token}"
                         r = requests.post(f"{rag_url}/api/rag/query", json=doc_req, headers=headers, timeout=5)
                         tool_result = r.json()
                         if tool_result and isinstance(tool_result, dict):
@@ -470,12 +480,13 @@ class CustomAgent:
                     # Query Tools container
                     try:
                         tools_url = self._resolve(self.tools_url, "tools", 8005)
-                        tool_key = configured_keys.get("tools") or api_key
+                        tool_key = jwt_token or configured_keys.get("tools") or api_key
                         tool_req = {
                             "tool": t_name,
                             "arguments": t_args,
                             "conversation_id": conversation_id,
                             "api_key": tool_key,
+                            "jwt_token": jwt_token,
                             "invoker": "Custom Agent"
                         }
                         self.log(
@@ -489,6 +500,8 @@ class CustomAgent:
                         headers = {"Content-Type": "application/json"}
                         if tool_key:
                             headers["X-API-Key"] = tool_key
+                        if jwt_token:
+                            headers["Authorization"] = f"Bearer {jwt_token}"
                         r = requests.post(f"{tools_url}/api/tools/call", json=tool_req, headers=headers, timeout=8)
                         tool_result = r.json().get("result", {})
                         self.log(

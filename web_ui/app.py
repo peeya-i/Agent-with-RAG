@@ -149,6 +149,7 @@ def auth_login():
         res_data = resp.json()
         if resp.status_code == 200 and res_data.get("status") == "success":
             session["user"] = res_data.get("user")
+            session["jwt_token"] = res_data.get("jwt_token") or res_data.get("token")
             # Log user login to Logging container
             log_event(
                 invoker="web_ui",
@@ -166,6 +167,14 @@ def auth_login():
         return jsonify(res_data), resp.status_code
     except Exception as e:
         return jsonify({"status": "failed", "error": f"Auth service unreachable: {e}"}), 502
+
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me():
+    user = session.get("user")
+    jwt_token = session.get("jwt_token")
+    if not user:
+        return jsonify({"authenticated": False}), 401
+    return jsonify({"authenticated": True, "user": user, "jwt_token": jwt_token})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -380,14 +389,19 @@ def proxy_chat():
         conv_id=conv_id
     )
 
-    # Attach configured API key for agents if available
+    # Attach configured API key for agents and active JWT token
     agent_key = data.get("api_key") or get_web_ui_key("agents")
+    jwt_token = data.get("jwt_token") or session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     if agent_key:
         data["api_key"] = agent_key
+    if jwt_token:
+        data["jwt_token"] = jwt_token
 
     headers = {"Content-Type": "application/json"}
     if agent_key:
         headers["X-API-Key"] = agent_key
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
 
     try:
         r = requests.post(f"{url}/api/agent/chat", json=data, headers=headers, timeout=60)
@@ -595,8 +609,12 @@ EMBEDDING_CATALOG = [
 @app.route("/api/rag/stats", methods=["GET"])
 def proxy_vectordb_stats():
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    headers = {}
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
     try:
-        r = requests.get(f"{url}/api/rag/stats", timeout=5)
+        r = requests.get(f"{url}/api/rag/stats", headers=headers, timeout=5)
         data = r.json()
         doc_count = data.get("total_documents", data.get("count_documents", 0))
         chunk_count = data.get("total_chunks", data.get("chunks_count", 0))
@@ -627,8 +645,12 @@ def proxy_vectordb_stats():
 @app.route("/api/rag/documents", methods=["GET"])
 def proxy_vectordb_documents():
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    headers = {}
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
     try:
-        r = requests.get(f"{url}/api/rag/documents", timeout=5)
+        r = requests.get(f"{url}/api/rag/documents", headers=headers, timeout=5)
         data = r.json()
         return jsonify({
             "status": "success",
@@ -752,15 +774,33 @@ def populate_vectordb():
         if resolved_path and os.path.exists(resolved_path):
             try:
                 if os.path.isfile(resolved_path):
-                    with open(resolved_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                    doc_name = os.path.basename(resolved_path).replace(".md", "").replace(".txt", "")
+                    if resolved_path.lower().endswith(".pdf"):
+                        try:
+                            from pypdf import PdfReader
+                            reader = PdfReader(resolved_path)
+                            content = "\n\n".join([page.extract_text() or "" for page in reader.pages])
+                        except Exception as pe:
+                            return jsonify({"error": f"Failed to extract PDF text: {pe}"}), 400
+                    else:
+                        with open(resolved_path, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read()
+                    doc_name = os.path.basename(resolved_path).replace(".md", "").replace(".txt", "").replace(".pdf", "")
                 elif os.path.isdir(resolved_path):
                     texts = []
                     for root, dirs, files in os.walk(resolved_path):
                         for file in files:
-                            if file.endswith((".txt", ".md", ".csv")):
-                                p = os.path.join(root, file)
+                            fl = file.lower()
+                            p = os.path.join(root, file)
+                            if fl.endswith(".pdf"):
+                                try:
+                                    from pypdf import PdfReader
+                                    reader = PdfReader(p)
+                                    pdf_txt = "\n".join([page.extract_text() or "" for page in reader.pages])
+                                    if pdf_txt.strip():
+                                        texts.append(f"--- Document: {file} ---\n" + pdf_txt)
+                                except Exception:
+                                    pass
+                            elif fl.endswith((".txt", ".md", ".csv")):
                                 with open(p, "r", encoding="utf-8", errors="ignore") as f:
                                     texts.append(f"--- Document: {file} ---\n" + f.read())
                     content = "\n\n".join(texts)
@@ -775,17 +815,28 @@ def populate_vectordb():
 
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
     doc_rag_key = get_web_ui_key("doc_rag")
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    user = session.get("user") or {}
+    domain = user.get("domain")
+
     req_body = {
         "name": doc_name,
         "complete_text": content,
         "chunk_size": chunk_size,
         "overlap": overlap
     }
+    if domain:
+        req_body["domain"] = domain
     if doc_rag_key:
         req_body["api_key"] = doc_rag_key
+    if jwt_token:
+        req_body["jwt_token"] = jwt_token
+
     headers = {"Content-Type": "application/json"}
     if doc_rag_key:
         headers["X-API-Key"] = doc_rag_key
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
 
     try:
         r = requests.post(f"{url}/api/rag/documents/add", json=req_body, headers=headers, timeout=30)
@@ -812,9 +863,12 @@ def proxy_delete_doc(doc_name=None):
     name = urllib.parse.unquote(raw_name)
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
     doc_rag_key = get_web_ui_key("doc_rag")
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     headers = {}
     if doc_rag_key:
         headers["X-API-Key"] = doc_rag_key
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
     try:
         r = requests.delete(f"{url}/api/rag/documents/{urllib.parse.quote(name)}", headers=headers, timeout=5)
         return jsonify(r.json()), r.status_code

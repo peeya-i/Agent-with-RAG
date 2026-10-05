@@ -499,6 +499,17 @@ select option:checked {
   margin-bottom: 1.25rem;
 }
 
+.vectordb-split-grid {
+  grid-template-columns: 4fr 6fr;
+  margin-bottom: 1.25rem;
+}
+
+@media (max-width: 1024px) {
+  .vectordb-split-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .full-width-card {
   width: 100%;
 }

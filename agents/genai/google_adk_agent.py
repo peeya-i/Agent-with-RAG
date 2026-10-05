@@ -25,7 +25,7 @@ class GoogleADKAgent:
 
     def run(self, message, conversation_id, model="gemma-4-26b-a4b-it", temperature=0.7, max_tokens=2048,
             max_turns=5, skill_selector="Vector Store Selects", skill_threshold=0.2, doc_threshold=0.3,
-            max_chunks=5, custom_endpoint=None, api_key=None):
+            max_chunks=5, custom_endpoint=None, api_key=None, jwt_token=None, configured_keys=None, **kwargs):
         
         # Run with agent_type Google ADK Agent
         result = self.custom_runner.run(
@@ -40,7 +40,10 @@ class GoogleADKAgent:
             doc_threshold=doc_threshold,
             max_chunks=max_chunks,
             custom_endpoint=custom_endpoint,
-            api_key=api_key
+            api_key=api_key,
+            jwt_token=jwt_token,
+            configured_keys=configured_keys,
+            **kwargs
         )
         result["agent_type"] = "Google ADK Agent"
         if result.get("steps") and len(result["steps"]) > 0:

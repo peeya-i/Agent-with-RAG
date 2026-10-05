@@ -383,9 +383,16 @@ document.addEventListener('DOMContentLoaded', () => {
         custom_endpoint: isCustomModel ? customEndpoint.value.trim() : null,
       };
 
+      const jwtToken = sessionStorage.getItem('jwtToken') || '';
+      const chatHeaders = { 'Content-Type': 'application/json' };
+      if (jwtToken) {
+        chatHeaders['Authorization'] = `Bearer ${jwtToken}`;
+        payload.jwt_token = jwtToken;
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: chatHeaders,
         body: JSON.stringify(payload),
       });
 
@@ -603,8 +610,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   async function loadIngestionData() {
     try {
+      const jwtToken = sessionStorage.getItem('jwtToken') || '';
+      const vHeaders = jwtToken ? { 'Authorization': `Bearer ${jwtToken}` } : {};
+
       // 1. Stats
-      const sRes = await fetch('/api/vectordb/stats');
+      const sRes = await fetch('/api/vectordb/stats', { headers: vHeaders });
       if (sRes.ok) {
         const sData = await sRes.json();
         statChunksCount.textContent = (sData.total_chunks !== undefined ? sData.total_chunks : (sData.chunks_count || 0));
@@ -614,25 +624,34 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // 2. Ingested Docs
-      const dRes = await fetch('/api/vectordb/documents');
+      const dRes = await fetch('/api/vectordb/documents', { headers: vHeaders });
       if (dRes.ok) {
         const dData = await dRes.json();
         const docs = dData.documents || [];
         if (docs.length === 0) {
-          ingestedDocsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No documents or skills ingested.</td></tr>`;
+          ingestedDocsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No documents or skills ingested.</td></tr>`;
         } else {
           ingestedDocsTbody.innerHTML = docs.map(d => {
             const name = typeof d === 'string' ? d : (d.doc_name || d.name || 'Unknown');
             const type = (typeof d === 'object' && d.type) ? d.type : (name.endsWith('-skill') ? 'Skill' : 'Document');
             const chunks = (typeof d === 'object' && d.chunk_count !== undefined) ? d.chunk_count : 1;
             const chars = (typeof d === 'object' && d.total_chars !== undefined) ? Number(d.total_chars) : 0;
+            const domain = (typeof d === 'object' && d.domain)
+              ? d.domain
+              : (type === 'Skill' ? 'Global (All)' : 'All Tenants (Admin)');
             const typeBadge = type === 'Skill'
               ? '<span class="badge" style="background:#065f46;color:#6ee7b7;font-size:0.75rem;">Skill</span>'
               : '<span class="badge" style="background:#1e3a8a;color:#93c5fd;font-size:0.75rem;">Document</span>';
+            const domainBadge = domain === 'example-a.com'
+              ? `<span class="badge" style="background:#0f172a;border:1px solid #38bdf8;color:#38bdf8;font-size:0.75rem;padding:2px 8px;border-radius:4px;font-family:monospace;">${escapeHtml(domain)}</span>`
+              : (domain === 'sample-b.com'
+                ? `<span class="badge" style="background:#0f172a;border:1px solid #a855f7;color:#c084fc;font-size:0.75rem;padding:2px 8px;border-radius:4px;font-family:monospace;">${escapeHtml(domain)}</span>`
+                : `<span class="badge" style="background:#0f172a;border:1px solid #10b981;color:#34d399;font-size:0.75rem;padding:2px 8px;border-radius:4px;font-family:monospace;">${escapeHtml(domain)}</span>`);
             return `
             <tr>
               <td>${typeBadge}</td>
               <td><strong>${escapeHtml(name)}</strong></td>
+              <td>${domainBadge}</td>
               <td>${chunks}</td>
               <td>${chars.toLocaleString()}</td>
               <td>
@@ -1447,6 +1466,62 @@ document.addEventListener('DOMContentLoaded', () => {
   const profileRole = document.getElementById('profileRole');
 
   let currentUser = JSON.parse(sessionStorage.getItem('currentUser') || 'null');
+  let currentJwt = sessionStorage.getItem('jwtToken') || '';
+
+  function updateJwtDisplay(user, jwtToken) {
+    const emailEl = document.getElementById('jwtUserEmail');
+    const domainEl = document.getElementById('jwtUserDomain');
+    const ragAccessEl = document.getElementById('jwtRagAccess');
+    const csvAccessEl = document.getElementById('jwtCsvAccess');
+    const tokenDisplayEl = document.getElementById('jwtTokenDisplay');
+    const statusBadge = document.getElementById('jwtStatusBadge');
+
+    if (!user) {
+      if (tokenDisplayEl) tokenDisplayEl.textContent = 'No active JWT token';
+      return;
+    }
+
+    const email = user.email || 'admin';
+    const domain = user.domain || (email.includes('@') ? email.split('@')[1] : null);
+    const isAdmin = (user.role === 'Admin') || (!domain && email === 'admin');
+
+    if (emailEl) emailEl.textContent = email;
+    if (domainEl) {
+      domainEl.textContent = domain ? `@${domain}` : 'None (Global Admin)';
+      domainEl.style.color = domain ? '#38bdf8' : '#fbbf24';
+    }
+    if (ragAccessEl) {
+      ragAccessEl.textContent = isAdmin ? 'All RAG Documents (Global Access)' : `${domain} Domain Documents Only`;
+    }
+    if (csvAccessEl) {
+      if (isAdmin) {
+        csvAccessEl.textContent = 'Both (employee_database.csv & customer_database.csv)';
+      } else if (domain === 'example-a.com') {
+        csvAccessEl.textContent = 'tools/data/employee_database.csv';
+      } else if (domain === 'sample-b.com') {
+        csvAccessEl.textContent = 'tools/data/customer_database.csv';
+      } else {
+        csvAccessEl.textContent = 'No CSV assigned';
+      }
+    }
+    if (tokenDisplayEl) {
+      tokenDisplayEl.textContent = jwtToken || 'JWT Token generated at login';
+    }
+    if (statusBadge) {
+      statusBadge.textContent = domain ? `Tenant: ${domain}` : 'Admin (All Tenants)';
+    }
+
+    const btnCopy = document.getElementById('btnCopySessionJwt');
+    if (btnCopy) {
+      btnCopy.onclick = () => {
+        if (jwtToken) {
+          navigator.clipboard.writeText(jwtToken);
+          btnCopy.textContent = '✓ Copied!';
+          setTimeout(() => { btnCopy.textContent = '📋 Copy Token'; }, 2000);
+        }
+      };
+    }
+  }
 
   function applyRolePermissions(user) {
     if (!user) return;
@@ -1476,13 +1551,18 @@ document.addEventListener('DOMContentLoaded', () => {
       tabAuth.style.display = '';
       adminAuthSection.style.display = 'none';
     } else {
-      // Regular user
-      tabVector.style.display = 'none';
+      // Regular user (tenant)
+      tabVector.style.display = '';
       tabAudit.style.display = 'none';
       tabContainers.style.display = 'none';
       tabAuth.style.display = '';
       adminAuthSection.style.display = 'none';
     }
+  }
+
+  if (currentUser) {
+    applyRolePermissions(currentUser);
+    updateJwtDisplay(currentUser, currentJwt);
   }
 
   async function handleLogin() {
@@ -1507,10 +1587,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (resp.ok && data.status === 'success') {
         currentUser = data.user;
+        currentJwt = data.jwt_token || data.token || '';
         sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
+        sessionStorage.setItem('jwtToken', currentJwt);
         loginModal.style.display = 'none';
         applyRolePermissions(currentUser);
+        updateJwtDisplay(currentUser, currentJwt);
         logPageView('Chat & Knowledge Mgnt');
+        loadIngestionData();
       } else {
         if (resp.status === 403 || data.is_locked || (data.error && data.error.includes('Locked'))) {
           loginErrorMsg.textContent = 'Account is Locked. Please contact the administrator.';
@@ -1710,18 +1794,6 @@ document.addEventListener('DOMContentLoaded', () => {
       notice.style.display = isRunning ? 'none' : 'flex';
     }
 
-    // Load saved API keys for this container from secrets/keys
-    let savedKeys = {};
-    try {
-      const resp = await fetch(`/api/containers/${c.name}/keys`);
-      if (resp.ok) {
-        const kdata = await resp.json();
-        savedKeys = kdata.keys || {};
-      }
-    } catch (e) {
-      console.warn("Failed to fetch keys for container:", e);
-    }
-
     modalContainerDepsList.innerHTML = '';
     const accesses = c.accesses || [];
     if (accesses.length === 0) {
@@ -1730,28 +1802,14 @@ document.addEventListener('DOMContentLoaded', () => {
       accesses.forEach(dep => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#182234; padding:8px 12px; border-radius:4px; gap:8px;';
-        const keyVal = savedKeys[dep] || '';
-        if (!isRunning) {
-          row.innerHTML = `<span style="font-weight: 500;">🔗 ${dep}</span> 
-            <input type="text" class="input-text container-key-input" data-dep="${dep}" value="${keyVal}" style="padding:4px 8px; font-size:0.8rem; width:220px;" placeholder="Add API key for ${dep}...">`;
-        } else {
-          const keyBadge = keyVal ? `<span class="badge badge-user" title="${keyVal}">Key: ${keyVal.slice(0, 8)}...</span>` : `<span class="text-muted" style="font-size:0.8rem;">No key set</span>`;
-          row.innerHTML = `<span style="font-weight: 500;">🔗 ${dep}</span> 
-            <div style="display:flex; align-items:center; gap:6px;">
-              ${keyBadge}
-              <span class="text-muted" style="font-size:0.75rem;">(Read only)</span>
-            </div>`;
-        }
+        row.innerHTML = `<span style="font-weight: 500;">🔗 ${dep}</span> 
+          <span class="badge" style="background:#0369a1; color:#bae6fd; font-size:0.75rem;">JWT Authenticated</span>`;
         modalContainerDepsList.appendChild(row);
       });
     }
 
     if (btnSaveContainerKeys) {
-      btnSaveContainerKeys.style.display = isRunning ? 'none' : 'inline-block';
-      btnSaveContainerKeys.textContent = 'Save Keys';
-      btnSaveContainerKeys.onclick = async () => {
-        await saveContainerKeysFromModal(c.name);
-      };
+      btnSaveContainerKeys.style.display = 'none';
     }
 
     modalContainerActionBtnContainer.innerHTML = '';

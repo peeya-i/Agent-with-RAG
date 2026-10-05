@@ -9,6 +9,11 @@ import requests
 from flask import Flask, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
+try:
+    from jwt_auth import generate_jwt_token, decode_jwt_token, get_domain_from_email, extract_jwt_from_request
+except ImportError:
+    from auth_service.jwt_auth import generate_jwt_token, decode_jwt_token, get_domain_from_email, extract_jwt_from_request
+
 app = Flask(__name__)
 try:
     from flask_cors import CORS
@@ -64,15 +69,18 @@ def init_db():
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'User',
         status TEXT NOT NULL DEFAULT 'Active',
+        domain TEXT,
         created_at TEXT NOT NULL
     );
     """)
 
-    # Ensure status column exists if migrated
+    # Ensure status and domain columns exist if migrated
     cursor.execute("PRAGMA table_info(users)")
     cols = [r["name"] for r in cursor.fetchall()]
     if "status" not in cols:
         cursor.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'Active'")
+    if "domain" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN domain TEXT")
 
     # User access/requests logs table
     cursor.execute("""
@@ -137,16 +145,47 @@ def init_db():
             ))
     conn.commit()
 
-    # Seed default Admin account if not present
+    # Seed default Admin account if not present (Admin has no domain)
     cursor.execute("SELECT id FROM users WHERE email = 'admin'")
+    hashed_admin = generate_password_hash("admin123")
     if not cursor.fetchone():
-        hashed = generate_password_hash("admin123")
         cursor.execute(
-            "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            ("admin", hashed, "Admin", datetime.now(timezone.utc).isoformat())
+            "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("admin", hashed_admin, "Admin", "Active", None, datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
         print("Initialized default admin account: admin / admin123")
+    else:
+        cursor.execute("UPDATE users SET password_hash = ?, role = 'Admin', status = 'Active', domain = NULL WHERE email = 'admin'", (hashed_admin,))
+        conn.commit()
+
+    # Seed test domain 1: user@example-a.com
+    cursor.execute("SELECT id FROM users WHERE email = 'user@example-a.com'")
+    hashed_a = generate_password_hash("password123")
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("user@example-a.com", hashed_a, "User", "Active", "example-a.com", datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+        print("Initialized test domain 1 user: user@example-a.com / password123")
+    else:
+        cursor.execute("UPDATE users SET password_hash = ?, domain = 'example-a.com', status = 'Active' WHERE email = 'user@example-a.com'", (hashed_a,))
+        conn.commit()
+
+    # Seed test domain 2: user@sample-b.com
+    cursor.execute("SELECT id FROM users WHERE email = 'user@sample-b.com'")
+    hashed_b = generate_password_hash("password123")
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("user@sample-b.com", hashed_b, "User", "Active", "sample-b.com", datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+        print("Initialized test domain 2 user: user@sample-b.com / password123")
+    else:
+        cursor.execute("UPDATE users SET password_hash = ?, domain = 'sample-b.com', status = 'Active' WHERE email = 'user@sample-b.com'", (hashed_b,))
+        conn.commit()
 
     # Purge any deleted keys
     cursor.execute("DELETE FROM api_keys WHERE status = 'delete'")
@@ -195,10 +234,11 @@ def register():
 
     hashed = generate_password_hash(password)
     now_iso = datetime.now(timezone.utc).isoformat()
+    user_domain = get_domain_from_email(username)
     # When a new user account is created, it is initially set to "Locked" status.
     cursor.execute(
-        "INSERT INTO users (email, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (username, hashed, "User", "Locked", now_iso)
+        "INSERT INTO users (email, password_hash, role, status, domain, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (username, hashed, "User", "Locked", user_domain, now_iso)
     )
     cursor.execute(
         "INSERT INTO user_activity_logs (user_email, request_type, status, ip_address, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -265,13 +305,17 @@ def login():
     )
 
     if success:
-        # Create a simple session token
-        session_token = secrets.token_hex(24)
+        user_domain = dict(user).get("domain") or get_domain_from_email(username)
+        # Create multi-tenant JWT token
+        jwt_token = generate_jwt_token(email=username, role=role, domain=user_domain)
         return jsonify({
             "status": "success",
-            "session_token": session_token,
+            "token": jwt_token,
+            "jwt_token": jwt_token,
+            "session_token": jwt_token,
             "user": {
                 "email": username,
+                "domain": user_domain,
                 "role": role,
                 "status": user_status,
                 "storage_backend": "SQLite (auth_service/secrets/auth.db)"
@@ -281,6 +325,23 @@ def login():
         return jsonify({"status": "failed", "error": error_msg, "is_locked": True}), 403
     else:
         return jsonify({"status": "failed", "error": error_msg}), 401
+
+@app.route("/api/auth/validate_token", methods=["POST", "GET"])
+def validate_token_route():
+    token = extract_jwt_from_request(request)
+    if not token:
+        return jsonify({"valid": False, "error": "Missing JWT token"}), 401
+    payload = decode_jwt_token(token)
+    if not payload:
+        return jsonify({"valid": False, "error": "Invalid or expired JWT token"}), 403
+    return jsonify({
+        "valid": True,
+        "email": payload.get("email"),
+        "domain": payload.get("domain"),
+        "role": payload.get("role", "User"),
+        "claims": payload,
+        "user": payload
+    })
 
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
@@ -725,6 +786,22 @@ def validate_key():
     invoker_container = data.get("invoker", "unknown")
     req_type = data.get("request_type", "api_call")
     client_ip = request.remote_addr or data.get("ip_address", "127.0.0.1")
+
+    # Check if incoming key/token is a JWT
+    token_to_check = api_key or extract_jwt_from_request(request)
+    jwt_payload = decode_jwt_token(token_to_check) if token_to_check else None
+    if jwt_payload:
+        user_domain = jwt_payload.get("domain")
+        user_role = jwt_payload.get("role", "User")
+        return jsonify({
+            "valid": True,
+            "jwt": True,
+            "key_name": "JWT-" + (jwt_payload.get("email") or "user"),
+            "email": jwt_payload.get("email"),
+            "domain": user_domain,
+            "access_level": "Admin" if (user_role == "Admin" or user_domain is None) else "Read",
+            "containers": ["all"]
+        })
 
     # If development bypass or empty key handling
     if not api_key:

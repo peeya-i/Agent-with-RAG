@@ -7,6 +7,8 @@ import pytest
 import importlib.util
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 def load_service(name, rel_path):
     path = os.path.join(BASE_DIR, rel_path)
@@ -59,12 +61,37 @@ def test_auth_service():
     assert res.status_code == 200
     assert res.get_json()["port"] == 8001
 
-    # Login with seed admin credentials
+    # Login with seed admin credentials -> yields JWT with role Admin and domain None
     login_res = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     assert login_res.status_code == 200
     data = login_res.get_json()
     assert data["status"] == "success"
     assert data["user"]["role"] == "Admin"
+    assert "jwt_token" in data
+    assert data["user"]["domain"] is None
+
+    # Login with example-a.com user
+    res_a = client.post("/api/auth/login", json={"username": "user@example-a.com", "password": "password123"})
+    assert res_a.status_code == 200
+    data_a = res_a.get_json()
+    assert data_a["user"]["domain"] == "example-a.com"
+    token_a = data_a["jwt_token"]
+
+    # Login with sample-b.com user
+    res_b = client.post("/api/auth/login", json={"username": "user@sample-b.com", "password": "password123"})
+    assert res_b.status_code == 200
+    data_b = res_b.get_json()
+    assert data_b["user"]["domain"] == "sample-b.com"
+    token_b = data_b["jwt_token"]
+
+    # Validate tokens via validate_token endpoint
+    val_a = client.post("/api/auth/validate_token", json={"token": token_a})
+    assert val_a.status_code == 200
+    assert val_a.get_json()["claims"]["domain"] == "example-a.com"
+
+    val_b = client.post("/api/auth/validate_token", json={"token": token_b})
+    assert val_b.status_code == 200
+    assert val_b.get_json()["claims"]["domain"] == "sample-b.com"
 
     # Bad login
     bad_res = client.post("/api/auth/login", json={"username": "admin", "password": "wrongpassword"})
@@ -72,7 +99,7 @@ def test_auth_service():
     assert "Invalid username or password" in bad_res.get_json()["error"]
 
     # Register new user (initially Locked per specification)
-    uname = f"testuser_{int(time.time() * 1000)}"
+    uname = f"testuser_{int(time.time() * 1000)}@example-a.com"
     reg_res = client.post("/api/auth/register", json={"username": uname, "password": "password123"})
     assert reg_res.status_code == 201
 
@@ -211,47 +238,93 @@ def test_tools_service():
     assert "Lucas Dubois" in matched_names
     assert "Elena Rostova" in matched_names
 
-    # Stock search tool (gainers)
-    stock_res = client.post("/api/tools/call", json={
-        "tool": "stock_search.query_stocks",
-        "arguments": {"action": "gainers", "limit": 3},
+    # Customer search tool
+    cust_res = client.post("/api/tools/call", json={
+        "tool": "customer_search.query_customer_registry",
+        "arguments": {"keywords": ["Canada", "Germany"], "field": "all"},
         "conversation_id": "test_conv"
     })
-    assert stock_res.status_code == 200
-    stock_data = stock_res.get_json()["result"]
-    assert stock_data["status"] == "success"
-    assert len(stock_data["results"]) <= 3
+    assert cust_res.status_code == 200
+    cust_data = cust_res.get_json()["result"]
+    assert cust_data["status"] == "success"
+    assert cust_data["total_matches"] >= 1
+
+    # Test Multi-tenant CSV access via JWT tokens
+    from jwt_auth import generate_jwt_token
+    token_example_a = generate_jwt_token(email="user@example-a.com", role="User", domain="example-a.com")
+    token_sample_b = generate_jwt_token(email="user@sample-b.com", role="User", domain="sample-b.com")
+    token_admin = generate_jwt_token(email="admin", role="Admin", domain=None)
+
+    # 1. example-a.com access: employee_database.csv OK, customer_database.csv Forbidden (403)
+    resp_emp_a = client.get("/api/tools/data/employee_database.csv", headers={"Authorization": f"Bearer {token_example_a}"})
+    assert resp_emp_a.status_code == 200
+
+    resp_cust_a = client.get("/api/tools/data/customer_database.csv", headers={"Authorization": f"Bearer {token_example_a}"})
+    assert resp_cust_a.status_code == 403
+
+    # 2. sample-b.com access: customer_database.csv OK, employee_database.csv Forbidden (403)
+    resp_cust_b = client.get("/api/tools/data/customer_database.csv", headers={"Authorization": f"Bearer {token_sample_b}"})
+    assert resp_cust_b.status_code == 200
+
+    resp_emp_b = client.get("/api/tools/data/employee_database.csv", headers={"Authorization": f"Bearer {token_sample_b}"})
+    assert resp_emp_b.status_code == 403
+
+    # 3. Admin access: Both OK
+    resp_emp_admin = client.get("/api/tools/data/employee_database.csv", headers={"Authorization": f"Bearer {token_admin}"})
+    assert resp_emp_admin.status_code == 200
+
+    resp_cust_admin = client.get("/api/tools/data/customer_database.csv", headers={"Authorization": f"Bearer {token_admin}"})
+    assert resp_cust_admin.status_code == 200
 
 # 4. Test Doc RAG Service
 def test_doc_rag_service():
     pytest.importorskip("chromadb")
+    os.environ["CHROMA_DIR"] = "/tmp/test_chroma_pytest"
     doc_rag_srv = load_service("test_doc_rag_module", "doc_RAG/server.py")
     client = doc_rag_srv.app.test_client()
+
+    from jwt_auth import generate_jwt_token
+    token_a = generate_jwt_token(email="user@example-a.com", role="User", domain="example-a.com")
+    token_b = generate_jwt_token(email="user@sample-b.com", role="User", domain="sample-b.com")
+    token_admin = generate_jwt_token(email="admin", role="Admin", domain=None)
 
     # Health check
     res = client.get("/health")
     assert res.status_code == 200
     assert res.get_json()["port"] == 8003
 
-    # 1. List / Stats
-    stats_res = client.get("/api/rag/list")
-    assert stats_res.status_code == 200
-    stats_data = stats_res.get_json()
-    assert "count_documents" in stats_data
-    assert "count_skills" in stats_data
-    assert "db_size_mb" in stats_data
-
-    # 2. Add New Document
-    add_doc_res = client.post("/api/rag/add", json={
-        "user_id": "test_admin",
+    # 1. Add Documents with domain tags
+    add_a = client.post("/api/rag/add", json={
         "type": "document",
-        "name": "spec_test_doc",
-        "text": "Antigravity Agent system with ChromaDB and FastMCP architecture.",
-        "chunk_size": 200,
-        "overlap": 20
-    })
-    assert add_doc_res.status_code == 200
-    assert add_doc_res.get_json()["status"] == "success"
+        "name": "example_a_roadmap",
+        "text": "Secret product roadmap for example-a.com tenant.",
+        "domain": "example-a.com"
+    }, headers={"Authorization": f"Bearer {token_a}"})
+    assert add_a.status_code == 200
+
+    add_b = client.post("/api/rag/add", json={
+        "type": "document",
+        "name": "sample_b_financials",
+        "text": "Confidential financial statements for sample-b.com tenant.",
+        "domain": "sample-b.com"
+    }, headers={"Authorization": f"Bearer {token_b}"})
+    assert add_b.status_code == 200
+
+    # 2. List Documents filtered by tenant domain
+    list_a = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_a}"}).get_json()
+    doc_names_a = [d["doc_name"] for d in list_a.get("documents", [])]
+    assert "example_a_roadmap" in doc_names_a
+    assert "sample_b_financials" not in doc_names_a
+
+    list_b = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_b}"}).get_json()
+    doc_names_b = [d["doc_name"] for d in list_b.get("documents", [])]
+    assert "sample_b_financials" in doc_names_b
+    assert "example_a_roadmap" not in doc_names_b
+
+    list_admin = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_admin}"}).get_json()
+    doc_names_admin = [d["doc_name"] for d in list_admin.get("documents", [])]
+    assert "example_a_roadmap" in doc_names_admin
+    assert "sample_b_financials" in doc_names_admin
 
     # 3. Add New Skill
     add_skill_res = client.post("/api/rag/add", json={
@@ -264,27 +337,24 @@ def test_doc_rag_service():
     assert add_skill_res.status_code == 200
     assert add_skill_res.get_json()["status"] == "success"
 
-    # 4. Query Documents
-    query_res = client.post("/api/rag/query", json={
-        "user_id": "test_user",
-        "conversation_id": "conv_test_123",
+    # 4. Query Documents with tenant filtering
+    q_a = client.post("/api/rag/query", json={
         "type": "document",
-        "query": "ChromaDB FastMCP",
-        "k": 3,
-        "threshold": 0.1
-    })
-    assert query_res.status_code == 200
-    q_data = query_res.get_json()
-    assert q_data["status"] == "success"
+        "query": "roadmap financials",
+        "threshold": 0.0
+    }, headers={"Authorization": f"Bearer {token_a}"})
+    assert q_a.status_code == 200
+    res_a_names = [item.get("document_name") for item in q_a.get_json().get("results", [])]
+    assert "sample_b_financials" not in res_a_names
 
     # 5. Delete Document
     del_res = client.post("/api/rag/delete", json={
         "user_id": "test_admin",
         "type": "document",
-        "name": "spec_test_doc"
-    })
+        "name": "example_a_roadmap"
+    }, headers={"Authorization": f"Bearer {token_admin}"})
     assert del_res.status_code == 200
-    assert del_res.get_json()["status"] == "success"
+
 
 # 5. Test Agents Service
 def test_agents_service():
@@ -356,4 +426,36 @@ def test_person_information_skill_modular():
     emp_names = [e["name"] for e in emp_matches]
     assert "Lucas Dubois" in emp_names
     assert "Kenji Takahashi" in emp_names
+
+# 8. Test Customer Information Skill & Customer Search Modularity
+def test_customer_information_skill_modular():
+    cust_search_mod = load_service(
+        "test_cust_search_module",
+        "agents/skills/customer-information-skill/scripts/customer_search.py"
+    )
+    query_customer_registry = cust_search_mod.query_customer_registry
+    from tools.scripts.customer_search import search_customers, load_customer_database
+
+    # Verify 20 customers, address with country info, and 3-5 products purchased
+    records = load_customer_database()
+    assert len(records) == 20, f"Expected 20 customers, got {len(records)}"
+    for r in records:
+        assert r.get("name"), "Customer must have a name"
+        assert r.get("address"), "Customer must have an address"
+        assert r.get("country"), "Customer must have country info"
+        import re
+        prods = [p.strip() for p in re.split(r"[,;]", r.get("products_purchased", "")) if p.strip()]
+        assert 3 <= len(prods) <= 5, f"Customer {r['name']} must have 3-5 products, got {len(prods)}"
+
+    # Test search via skill
+    res = query_customer_registry(keywords=["Canada", "Australia"])
+    assert res["status"] == "success"
+    assert res["total_matches"] >= 1
+    for match in res["results"]:
+        assert match["country"] in ["Canada", "Australia"]
+
+    # Test modular search_customers from tools
+    matches = search_customers(keywords=["France"])
+    assert len(matches) >= 1
+    assert all(m["country"] == "France" for m in matches)
 

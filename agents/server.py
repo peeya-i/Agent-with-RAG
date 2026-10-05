@@ -51,10 +51,20 @@ DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it")
 custom_agent = CustomAgent(doc_rag_url=DOC_RAG_URL, tools_url=TOOLS_URL, logging_url=LOGGING_URL, gemini_api_key=GEMINI_API_KEY)
 adk_agent = GoogleADKAgent(doc_rag_url=DOC_RAG_URL, tools_url=TOOLS_URL, logging_url=LOGGING_URL, gemini_api_key=GEMINI_API_KEY)
 
-AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth_service:8001/api/auth/validate_key")
+try:
+    from jwt_auth import decode_jwt_token, extract_jwt_from_request
+except ImportError:
+    from agents.jwt_auth import decode_jwt_token, extract_jwt_from_request
+
 def validate_agent_request_auth(api_key, invoker="web_ui"):
     if not api_key:
         return True, "No key provided"
+
+    # Check if api_key is a valid JWT token
+    jwt_p = decode_jwt_token(api_key)
+    if jwt_p:
+        return True, "Valid JWT"
+
     try:
         url = AUTH_SERVICE_URL
         if not os.environ.get("RUNNING_IN_DOCKER") and "auth_service:8001" in url:
@@ -176,9 +186,17 @@ def process_chat():
     if not message.strip():
         return jsonify({"error": "Empty message"}), 400
 
-    # Validate API key if provided
-    if api_key:
-        is_valid, msg = validate_agent_request_auth(api_key, invoker="web_ui")
+    auth_header = request.headers.get("Authorization", "")
+    jwt_token = data.get("jwt_token")
+    if not jwt_token and auth_header.startswith("Bearer "):
+        jwt_token = auth_header.split(" ", 1)[1].strip()
+    if not jwt_token and api_key and (api_key.startswith("eyJ") or "." in api_key):
+        jwt_token = api_key
+
+    # Validate API key or JWT if provided
+    token_to_validate = jwt_token or api_key
+    if token_to_validate:
+        is_valid, msg = validate_agent_request_auth(token_to_validate, invoker="web_ui")
         if not is_valid:
             return jsonify({"status": "error", "error": f"Authorization failed: {msg}"}), 403
 
@@ -198,6 +216,7 @@ def process_chat():
         max_chunks=max_chunks,
         custom_endpoint=custom_endpoint,
         api_key=api_key,
+        jwt_token=jwt_token,
         configured_keys=configured_keys
     )
 
