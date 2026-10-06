@@ -119,6 +119,11 @@ The Main App window should have:
   - Include the option to select a Custom model. When the Custom model is selected, show a text box for the user to enter the API Endpoint of the model. The default text should be the last endpoint entered. If none exists, put “http://127.0.0.1:8010/v1/chat/completions”.
   - To the left of the model choice dropdown, add a box to allow the user to select the “Temperature” parameter to send to the model.
   - To the left of the temperature box, add a text box to allow the user to set the “Max Tokens” parameter to send to the model. Do not allow the user to set the number larger than the max tokens of the model selected.
+  - Add a "Reset Defaults" button (`#btnResetChatConfig`) in the controls sub-header to reset the user's chat configuration preferences stored in `mem0` back to system defaults.
+  - **mem0 User Chat Configuration Persistence**:
+    - The system integrates `mem0` (via Qdrant and Gemini) to store and manage the configurable chat selections made by each user (`user_id`).
+    - Stored parameters include: `model`, `temperature`, `max_tokens`, `custom_endpoint`, `agent`, `max_turns`, `rag_chunks`, `doc_threshold`, `skill_mode`, and `skill_threshold`.
+    - Chat preferences are automatically restored on login / page load, updated in real time as selections change or messages are sent, and isolated between different users.
   - The following left and right cards should be the same width
     
 #### Left Card: "Chat with the Agent"

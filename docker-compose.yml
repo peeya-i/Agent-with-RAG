@@ -102,6 +102,7 @@ services:
       - ./agents/skills:/app/skills:ro
       - ./agents/server.py:/app/server.py
       - ./agents/skills_loader.py:/app/skills_loader.py
+      - ./agents/mem0_config.py:/app/mem0_config.py
       - ./agents/custom_agent:/app/custom_agent
     environment:
       - PORT=8002
@@ -132,6 +133,7 @@ services:
       - ./web_ui/static:/app/static
       - ./web_ui/templates:/app/templates
       - ./web_ui/app.py:/app/app.py
+      - ./web_ui/mem0_config.py:/app/mem0_config.py
       - ./agents/secrets:/app/container_secrets/agents
       - ./doc_RAG/secrets:/app/container_secrets/doc_rag
       - ./tools/secrets:/app/container_secrets/tools
@@ -149,6 +151,7 @@ services:
       - TOOLS_URL=http://tools:8005
       - LOGGING_URL=http://logging:8006
       - OLLAMA_URL=http://ollama:11434
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - logging
       - auth_service

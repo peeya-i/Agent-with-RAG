@@ -171,12 +171,17 @@ The platform enforces strict role-based access control and multi-tenant isolatio
 ### 2.4 Tab 1: "Chat & Knowledge Mgnt"
 The primary conversational agent and retrieval exploration interface.
 
-#### 2.4.1 Page Sub-Header Controls
+#### 2.4.1 Page Sub-Header Controls & mem0 Configuration Persistence
 Positioned directly below the main navigation:
 1. **Max Tokens**: Numeric input (Default: `2048`, Min: `128`, Max: `65536`, Step: `128`).
 2. **Temperature**: Numeric input (Default: `0.7`, Min: `0.0`, Max: `2.0`, Step: `0.1`).
 3. **Model Selection**: Dropdown populated from Google AI Studio / Gemini API active text models. Default: `GEMINI_MODEL` environment variable (e.g. `gemma-4-26b-a4b-it`).
    - Includes `Custom Model` option. When selected, displays adjacent **Custom API Endpoint** text input (defaults to `http://127.0.0.1:8010/v1/chat/completions`).
+4. **Reset Defaults Button** (`#btnResetChatConfig`): Resets the user's chat preferences in `mem0` back to system defaults.
+5. **mem0 Per-User Chat Configuration Memory**:
+   - Stores and tracks all user chat selections: `model`, `temperature`, `max_tokens`, `custom_endpoint`, `agent`, `max_turns`, `rag_chunks`, `doc_threshold`, `skill_mode`, and `skill_threshold`.
+   - Backed by `mem0.Memory` (Qdrant vector store and Gemini models) with per-user isolation (`user_id = user_email`).
+   - Automatically reloads the user's custom settings on login / application startup, updates memory on parameter changes and chat queries, and supports resetting to defaults.
 
 #### 2.4.2 Two-Card Split Grid Layout
 The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; width: 100%;` ensuring **both Left and Right cards are each exactly 50% of the window width**.

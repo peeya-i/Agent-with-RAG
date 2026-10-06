@@ -142,6 +142,10 @@ Access the Web Console at: **`http://localhost:8000`**
 3. Click **Ok** to authenticate. A signed JWT token is issued and stored in session storage for all API interactions.
 
 ### 🗣️ Page 1: Chat & Knowledge Mgnt
+* **User Chat Configuration Memory (Mem0):** User-specific chat configurations (Model, Temperature, Max Tokens, Custom Endpoint, Agent Selector, Max Turns, RAG Chunks, Document Match Threshold, Skill Selector, and Skill Threshold) are isolated per user account and persistently remembered via **Mem0** (backed by Qdrant vector memory).
+  * Configurations are loaded on initial app load and automatically restored when switching users or logging in.
+  * Adjustments to any configuration control are automatically persisted (debounced), and updated upon sending chat queries.
+  * **Reset Defaults (`#btnResetChatConfig`):** Clicking the **↺ Reset Defaults** button clears the user's custom preferences in Mem0 and restores system default parameters.
 * **Model Selection:** Choose from active Google AI Studio models or select **Custom Model** to specify an OpenAI-compatible endpoint.
 * **Hyperparameters:** Tune `Temperature` (0.0–2.0), `Max Tokens` (default 2048), and `Max Turns` (default: 5, range 1–10).
 * **Agent Selector:** Toggle between **Custom Agent** and **Google ADK Agent**.

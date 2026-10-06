@@ -568,3 +568,60 @@ def test_rbac_and_multitenancy_extensions():
     assert ingest_user_res.status_code == 403
     assert "cannot" in ingest_user_res.get_json().get("error", "").lower() or "not permitted" in ingest_user_res.get_json().get("error", "").lower()
 
+# 10. Test Mem0 User Chat Configuration Storage
+def test_mem0_user_chat_config():
+    web_app = load_service("test_web_ui_mem0", "web_ui/app.py")
+    client = web_app.app.test_client()
+
+    user_a = "mem0_user_a@example-a.com"
+    user_b = "mem0_user_b@sample-b.com"
+
+    # 1. Default config for new user
+    res_default = client.get(f"/api/user/chat_config?user={user_a}")
+    assert res_default.status_code == 200
+    cfg_default = res_default.get_json()["config"]
+    assert cfg_default["temperature"] == 0.7
+    assert cfg_default["max_tokens"] == 2048
+
+    # 2. Save user A custom config via mem0
+    custom_cfg = {
+        "user": user_a,
+        "temperature": 0.42,
+        "max_tokens": 1536,
+        "model": "gemma-4-26b-a4b-it",
+        "agent": "Custom Agent",
+        "max_turns": 7,
+        "rag_chunks": 4,
+        "doc_threshold": 0.35,
+        "skill_mode": "LLM Selects",
+        "skill_threshold": 0.18
+    }
+    res_save = client.post("/api/user/chat_config", json=custom_cfg)
+    assert res_save.status_code == 200
+    assert res_save.get_json()["status"] == "success"
+
+    # 3. Retrieve user A config
+    res_get_a = client.get(f"/api/user/chat_config?user={user_a}")
+    assert res_get_a.status_code == 200
+    cfg_a = res_get_a.get_json()["config"]
+    assert cfg_a["temperature"] == 0.42
+    assert cfg_a["max_tokens"] == 1536
+    assert cfg_a["max_turns"] == 7
+    assert cfg_a["skill_mode"] == "LLM Selects"
+
+    # 4. Verify user B isolation (should get default settings)
+    res_get_b = client.get(f"/api/user/chat_config?user={user_b}")
+    assert res_get_b.status_code == 200
+    cfg_b = res_get_b.get_json()["config"]
+    assert cfg_b["temperature"] == 0.7
+    assert cfg_b["max_tokens"] == 2048
+    assert cfg_b["skill_mode"] == "Vector Store Selects"
+
+    # 5. Reset user A config
+    res_reset = client.post("/api/user/chat_config/reset", json={"user": user_a})
+    assert res_reset.status_code == 200
+    cfg_reset = res_reset.get_json()["config"]
+    assert cfg_reset["temperature"] == 0.7
+    assert cfg_reset["max_tokens"] == 2048
+
+

@@ -336,6 +336,131 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // mem0: Per-User Chat Configuration Persistence
+  // ---------------------------------------------------------------------------
+  const btnResetChatConfig = document.getElementById('btnResetChatConfig');
+
+  async function loadUserChatConfigFromMem0() {
+    try {
+      const resp = await fetch('/api/user/chat_config');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const cfg = data.config;
+      if (!cfg) return;
+
+      if (cfg.temperature !== undefined && chatTemperature) {
+        chatTemperature.value = cfg.temperature;
+      }
+      if (cfg.max_tokens !== undefined && chatMaxTokens) {
+        chatMaxTokens.value = cfg.max_tokens;
+      }
+      if (cfg.model && chatModel) {
+        let found = false;
+        for (let i = 0; i < chatModel.options.length; i++) {
+          if (chatModel.options[i].value === cfg.model) {
+            chatModel.options[i].selected = true;
+            found = true;
+            break;
+          }
+        }
+        if (!found && cfg.model) {
+          const opt = document.createElement('option');
+          opt.value = cfg.model;
+          opt.textContent = cfg.model;
+          opt.selected = true;
+          chatModel.appendChild(opt);
+        }
+        updateTokenConstraints();
+      }
+      if (cfg.custom_endpoint && customEndpoint) {
+        customEndpoint.value = cfg.custom_endpoint;
+      }
+      if (cfg.agent && agentChoice) {
+        agentChoice.value = cfg.agent;
+      }
+      if (cfg.max_turns !== undefined && chatMaxTurns) {
+        chatMaxTurns.value = cfg.max_turns;
+      }
+      if (cfg.rag_chunks !== undefined && chatRagChunks) {
+        chatRagChunks.value = cfg.rag_chunks;
+      }
+      if (cfg.doc_threshold !== undefined && docThresholdInput) {
+        docThresholdInput.value = cfg.doc_threshold;
+      }
+      if (cfg.skill_mode && chatSkills) {
+        chatSkills.value = cfg.skill_mode;
+        if (skillThresholdBox) {
+          skillThresholdBox.classList.toggle('hidden', !(cfg.skill_mode === 'Vector Store Selects' || cfg.skill_mode === 'Vector Store'));
+        }
+      }
+      if (cfg.skill_threshold !== undefined && chatSkillThreshold) {
+        chatSkillThreshold.value = cfg.skill_threshold;
+      }
+    } catch (err) {
+      console.warn('Failed to load chat configuration from mem0:', err);
+    }
+  }
+
+  let saveChatConfigTimer = null;
+  function saveUserChatConfigToMem0() {
+    if (saveChatConfigTimer) clearTimeout(saveChatConfigTimer);
+    saveChatConfigTimer = setTimeout(async () => {
+      try {
+        const isCustomModel = (chatModel ? chatModel.value : '').toLowerCase().includes('custom');
+        const payload = {
+          agent: agentChoice ? agentChoice.value : 'Custom Agent',
+          model: chatModel ? chatModel.value : 'gemma-4-26b-a4b-it',
+          temperature: chatTemperature ? parseFloat(chatTemperature.value) || 0.7 : 0.7,
+          max_tokens: chatMaxTokens ? parseInt(chatMaxTokens.value) || 2048 : 2048,
+          max_turns: chatMaxTurns ? parseInt(chatMaxTurns.value) || 5 : 5,
+          rag_chunks: chatRagChunks ? parseInt(chatRagChunks.value) || 5 : 5,
+          skill_mode: chatSkills ? chatSkills.value : 'Vector Store Selects',
+          skill_threshold: chatSkillThreshold ? parseFloat(chatSkillThreshold.value) || 0.2 : 0.2,
+          doc_threshold: docThresholdInput ? parseFloat(docThresholdInput.value) || 0.3 : 0.3,
+          custom_endpoint: isCustomModel && customEndpoint ? customEndpoint.value.trim() : null
+        };
+        await fetch('/api/user/chat_config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (err) {
+        console.warn('Failed to save chat configuration to mem0:', err);
+      }
+    }, 500);
+  }
+
+  // Bind change listeners to persist to mem0
+  if (chatTemperature) chatTemperature.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatMaxTokens) chatMaxTokens.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatModel) chatModel.addEventListener('change', saveUserChatConfigToMem0);
+  if (customEndpoint) customEndpoint.addEventListener('input', saveUserChatConfigToMem0);
+  if (agentChoice) agentChoice.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatMaxTurns) chatMaxTurns.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatRagChunks) chatRagChunks.addEventListener('change', saveUserChatConfigToMem0);
+  if (docThresholdInput) docThresholdInput.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatSkills) chatSkills.addEventListener('change', saveUserChatConfigToMem0);
+  if (chatSkillThreshold) chatSkillThreshold.addEventListener('change', saveUserChatConfigToMem0);
+
+  if (btnResetChatConfig) {
+    btnResetChatConfig.addEventListener('click', async () => {
+      try {
+        const resp = await fetch('/api/user/chat_config/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        if (resp.ok) {
+          await loadUserChatConfigFromMem0();
+          alert('Chat configuration reset to system defaults in mem0.');
+        }
+      } catch (err) {
+        console.warn('Error resetting chat config in mem0:', err);
+      }
+    });
+  }
+
   // Quick prompt chips
   document.querySelectorAll('.btn-chip').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1599,6 +1724,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnResetDb.style.cursor = (role !== 'admin') ? 'not-allowed' : '';
       }
     }
+    loadUserChatConfigFromMem0();
   }
 
   if (currentUser) {
@@ -2586,7 +2712,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Initial Data Load
-  loadModelsAndSkills();
+  loadModelsAndSkills().then(() => {
+    loadUserChatConfigFromMem0();
+  });
   loadContainers();
 
   // Auto-refresh active view every 15 seconds so data updates in real-time

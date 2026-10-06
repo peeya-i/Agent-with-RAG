@@ -39,6 +39,14 @@ TOOLS_URL = os.environ.get("TOOLS_URL", "http://tools:8005")
 LOGGING_URL = os.environ.get("LOGGING_URL", "http://logging:8006")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
+try:
+    from mem0_config import chat_config_store
+except ImportError:
+    try:
+        from web_ui.mem0_config import chat_config_store
+    except ImportError:
+        chat_config_store = None
+
 CONTAINER_PORTS = {
     "web_ui": 8000,
     "auth_service": 8001,
@@ -426,6 +434,35 @@ def get_models():
     except Exception as e:
         return jsonify({"models": [{"id": "gemma-4-26b-a4b-it", "display_name": "gemma-4-26b-a4b-it", "max_output_tokens": 32768, "max_input_tokens": 262144}], "default": "gemma-4-26b-a4b-it"})
 
+@app.route("/api/user/chat_config", methods=["GET", "POST"])
+def user_chat_config_endpoint():
+    """Retrieve or persist user-configured chat selections using mem0."""
+    user = session.get("user") or {}
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        username = data.get("user") or user.get("email") or "anonymous"
+        if chat_config_store:
+            saved = chat_config_store.save_config(username, data)
+            return jsonify({"status": "success", "user": username, "config": saved})
+        return jsonify({"status": "success", "user": username, "config": data})
+    else:
+        username = request.args.get("user") or user.get("email") or "anonymous"
+        if chat_config_store:
+            cfg = chat_config_store.get_config(username)
+            return jsonify({"status": "success", "user": username, "config": cfg})
+        return jsonify({"status": "success", "user": username, "config": {}})
+
+@app.route("/api/user/chat_config/reset", methods=["POST"])
+def reset_user_chat_config_endpoint():
+    """Reset user-configured chat selections in mem0 to defaults."""
+    data = request.get_json(silent=True) or {}
+    user = session.get("user") or {}
+    username = data.get("user") or user.get("email") or "anonymous"
+    if chat_config_store:
+        defaults = chat_config_store.reset_config(username)
+        return jsonify({"status": "success", "user": username, "config": defaults})
+    return jsonify({"status": "success", "user": username, "config": {}})
+
 @app.route("/api/chat", methods=["POST"])
 def proxy_chat():
     data = request.get_json(silent=True) or {}
@@ -439,6 +476,13 @@ def proxy_chat():
     data["user"] = username
     data["username"] = username
     data["domain"] = domain
+
+    # Store user chat configuration selections into mem0
+    if chat_config_store and username:
+        try:
+            chat_config_store.save_config(username, data)
+        except Exception as e:
+            app.logger.warning(f"Error persisting chat config to mem0: {e}")
 
     # Log outgoing chat request from Web UI to Agents
     log_event(
