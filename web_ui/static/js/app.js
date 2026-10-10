@@ -167,6 +167,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (targetId === 'page-ingest') {
         if (typeof loadIngestionData === 'function') loadIngestionData();
         if (typeof loadIngestionStats === 'function') loadIngestionStats();
+      } else if (targetId === 'page-agents') {
+        if (typeof loadAgentsData === 'function') loadAgentsData();
       } else if (targetId === 'page-containers') {
         if (typeof loadContainers === 'function') loadContainers();
       } else if (targetId === 'page-auth') {
@@ -344,6 +346,43 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Conversational session history and router metadata state
+  let chatSessionHistory = [];
+  let lastRouterMetadata = null;
+
+  // New Session button to clear context and start new chat
+  const btnNewChatSession = document.getElementById('btnNewChatSession');
+  if (btnNewChatSession) {
+    btnNewChatSession.addEventListener('click', () => {
+      chatSessionHistory = [];
+      lastRouterMetadata = null;
+      window.currentActiveConversationId = 'conv_' + Date.now();
+      selectedConversationId = window.currentActiveConversationId;
+      chatMessages.innerHTML = `
+        <div class="chat-welcome">
+          <div class="welcome-icon">💡</div>
+          <h3>AI Agent with RAG Ready</h3>
+          <p>Ask a question about the weather, personnel records, stock movements, or search our private knowledge documents.</p>
+          <div class="quick-prompts">
+            <button class="btn-chip" data-prompt="What is the current weather and local time in Tokyo?">🌤️ Weather in Tokyo</button>
+            <button class="btn-chip" data-prompt="Find Lucas Dubois in the person registry and show his job title.">👤 Lucas Dubois</button>
+            <button class="btn-chip" data-prompt="Which stocks have the highest percentage increase today?">📈 Top Gainers</button>
+            <button class="btn-chip" data-prompt="What is Agentic RAG and how does it compare to classic RAG?">📚 Agentic RAG</button>
+          </div>
+        </div>
+      `;
+      chatMessages.querySelectorAll('.btn-chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+          chatInput.value = btn.getAttribute('data-prompt');
+          sendMessage();
+        });
+      });
+      renderEvidence({}, null);
+      chatInput.value = '';
+      chatInput.focus();
+    });
+  }
+
   // Chat message sending
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -365,14 +404,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Append User Message Bubble
     appendUserMessage(text);
 
+    // Track user message in conversational session history
+    chatSessionHistory.push({ role: 'user', content: text });
+
     // 2. Append Pending Agent Bubble
     const pendingAgentBubble = appendPendingAgentBubble();
     btnSendMessage.disabled = true;
 
     try {
       const isCustomModel = (chatModel.value || '').toLowerCase().includes('custom');
+      const activeConvId = window.currentActiveConversationId || ('conv_' + Date.now());
+      window.currentActiveConversationId = activeConvId;
+
       const payload = {
         message: text,
+        conversation_id: activeConvId,
+        history: chatSessionHistory.slice(-10), // Pass multi-turn context to next prompt
         agent: agentChoice.value,
         model: chatModel.value,
         temperature: parseFloat(chatTemperature.value) || 0.7,
@@ -401,6 +448,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Server error processing message.');
 
+      // Track assistant response in session history
+      if (data.response) {
+        chatSessionHistory.push({ role: 'model', content: data.response });
+      }
+
       // Update pending bubble with full response and detail box
       updateAgentBubble(pendingAgentBubble, data);
 
@@ -409,13 +461,18 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedConversationId = data.conversation_id;
       }
 
-      // Render retrieved context evidence in Right Card
+      // Track router metadata if returned
+      if (data.router_metadata) {
+        lastRouterMetadata = data.router_metadata;
+      }
+
+      // Render retrieved context evidence in Right Card with selected Agent & similarity score
       if (data.retrieved_evidence && (data.retrieved_evidence.skills?.length || data.retrieved_evidence.documents?.length)) {
-        renderEvidence(data.retrieved_evidence);
+        renderEvidence(data.retrieved_evidence, data.router_metadata || lastRouterMetadata);
       } else if (data.conversation_id) {
-        await loadContextEvidence(data.conversation_id);
+        await loadContextEvidence(data.conversation_id, data.router_metadata || lastRouterMetadata);
       } else {
-        renderEvidence({});
+        renderEvidence({}, data.router_metadata || lastRouterMetadata);
       }
 
     } catch (err) {
@@ -451,6 +508,17 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateAgentBubble(row, data) {
     const bubble = row.querySelector('.message-bubble');
     bubble.innerHTML = formatMarkdownText(data.response || '(No response text)');
+
+    // Display Agents Router decision badge if router metadata present
+    if (data.router_metadata) {
+      const rm = data.router_metadata;
+      const routerBadge = document.createElement('div');
+      routerBadge.style.cssText = 'font-size:0.75rem; color:#94a3b8; margin-top:8px; padding-top:6px; border-top:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; flex-wrap:wrap; gap:6px;';
+      routerBadge.innerHTML = `<span style="color:#38bdf8;">🔀 Agents Router:</span> <strong>${escapeHtml(rm.routed_agent_name || rm.routed_agent_id)}</strong> ` +
+        (rm.similarity_score > 0 ? `<span class="badge" style="background:#1e293b; color:#34d399; font-size:0.7rem; font-weight:600;">${Math.round(rm.similarity_score * 100)}% Match</span>` : '') +
+        (rm.is_default_fallback ? `<span class="badge" style="background:#065f46; color:#a7f3d0; font-size:0.7rem;">Default Fallback (&le; 50%)</span>` : `<span class="badge" style="background:#581c87; color:#e9d5ff; font-size:0.7rem;">Specialized (&gt; 50%)</span>`);
+      bubble.appendChild(routerBadge);
+    }
 
     // Create Detail Box with anchored "Show Logs" button
     const detailBox = document.createElement('div');
@@ -508,7 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
-  function renderEvidence(evidence) {
+  function renderEvidence(evidence, routerMeta) {
     if (!evidence) evidence = {};
     if (evidence.retrieved_evidence) evidence = evidence.retrieved_evidence;
     let skills = evidence.skills || [];
@@ -536,7 +604,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    if (skills.length === 0 && docs.length === 0) {
+    if (!routerMeta && lastRouterMetadata) {
+      routerMeta = lastRouterMetadata;
+    }
+
+    if (skills.length === 0 && docs.length === 0 && !routerMeta) {
       evidenceContainer.innerHTML = `
         <div class="empty-placeholder">
           <span class="empty-icon">📂</span>
@@ -547,6 +619,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let html = '';
+
+    // Render Router Selection Evidence if routerMeta is available
+    if (routerMeta) {
+      const scorePct = routerMeta.similarity_score !== undefined && routerMeta.similarity_score !== null
+        ? `${(routerMeta.similarity_score * 100).toFixed(1)}%` 
+        : 'N/A';
+      const isDefault = Boolean(routerMeta.is_default_fallback);
+      const threshVal = typeof routerMeta.threshold === 'number' ? (routerMeta.threshold * 100).toFixed(0) : '50';
+      const statusLabel = isDefault 
+        ? `Default Fallback (≤ ${threshVal}%)` 
+        : `Specialized Match (> ${threshVal}%)`;
+      const badgeStyle = isDefault 
+        ? 'background:#065f46; color:#a7f3d0; border:1px solid #10b981;' 
+        : 'background:#581c87; color:#e9d5ff; border:1px solid #a855f7;';
+
+      html += `
+        <div class="evidence-doc-group" style="border: 1px solid rgba(56, 189, 248, 0.4); background: rgba(15, 23, 42, 0.75); margin-bottom: 14px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+          <div class="evidence-doc-header" style="background: rgba(56, 189, 248, 0.12); padding: 8px 12px; border-bottom: 1px solid rgba(56, 189, 248, 0.25);">
+            <div class="evidence-doc-title" style="display: flex; align-items: center; gap: 7px;">
+              <span style="font-size: 1.15rem;">🤖</span>
+              <strong style="color: #38bdf8; font-size: 0.88rem;">Routed Agent: ${escapeHtml(routerMeta.routed_agent_name || routerMeta.routed_agent_id || 'Agent')}</strong>
+            </div>
+            <span class="similarity-badge" style="background: #0284c7; color: #ffffff; font-weight: 700; padding: 2px 8px; font-size: 0.75rem;">
+              ${scorePct} Match
+            </span>
+          </div>
+          <div class="evidence-doc-body" style="padding: 10px 12px; font-size: 0.8rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="color: #94a3b8; font-size: 0.75rem;">Routing Match Status:</span>
+              <span class="badge" style="${badgeStyle} font-size: 0.72rem; font-weight: 600; padding: 2px 8px;">${statusLabel}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.75rem; color: #94a3b8;">
+              <span>Similarity Score: <strong style="color: #34d399; font-family: var(--font-mono);">${routerMeta.similarity_score !== undefined ? Number(routerMeta.similarity_score).toFixed(4) : '0.0000'}</strong></span>
+              <span>Min Routing Threshold: <strong style="color: #38bdf8; font-family: var(--font-mono);">${(routerMeta.threshold || 0.50).toFixed(2)}</strong></span>
+            </div>
+            ${routerMeta.explanation ? `<div style="color: #cbd5e1; font-style: italic; font-size: 0.75rem; background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 4px; border-left: 2px solid #38bdf8; margin-top: 4px;">${escapeHtml(routerMeta.explanation)}</div>` : ''}
+          </div>
+        </div>
+      `;
+    }
 
     // Render Skills evidence
     if (skills.length > 0) {
@@ -602,6 +714,14 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         `;
       });
+    }
+
+    if (skills.length === 0 && docs.length === 0 && routerMeta) {
+      html += `
+        <div style="text-align: center; color: var(--text-muted); font-size: 0.78rem; padding: 10px 0; border-top: 1px dashed rgba(255,255,255,0.1);">
+          No Skills or Documents retrieved for this turn.
+        </div>
+      `;
     }
 
     evidenceContainer.innerHTML = html;
@@ -2585,9 +2705,432 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Page 3: Agents Router Interface & Management
+  // ---------------------------------------------------------------------------
+  const agentsTbody = document.getElementById('agentsTbody');
+  const statTotalAgents = document.getElementById('statTotalAgents');
+  const statActiveAgents = document.getElementById('statActiveAgents');
+  const statOfflineAgents = document.getElementById('statOfflineAgents');
+  const statRoutingThreshold = document.getElementById('statRoutingThreshold');
+  const routerThresholdInput = document.getElementById('routerThresholdInput');
+  const btnSetThreshold = document.getElementById('btnSetThreshold');
+  const thresholdStatusMsg = document.getElementById('thresholdStatusMsg');
+  const btnRefreshAgents = document.getElementById('btnRefreshAgents');
+  const btnOpenAddAgentModal = document.getElementById('btnOpenAddAgentModal');
+  const addAgentModal = document.getElementById('addAgentModal');
+  const btnCloseAddAgentModalX = document.getElementById('btnCloseAddAgentModalX');
+  const btnCancelAddAgent = document.getElementById('btnCancelAddAgent');
+  const btnSubmitAddAgent = document.getElementById('btnSubmitAddAgent');
+  const addAgentAlertMsg = document.getElementById('addAgentAlertMsg');
+  const btnTestRoute = document.getElementById('btnTestRoute');
+  const testRouteInput = document.getElementById('testRouteInput');
+  const testRouteResults = document.getElementById('testRouteResults');
+
+  async function updateRoutingThreshold() {
+    if (!routerThresholdInput) return;
+    const val = parseFloat(routerThresholdInput.value);
+    if (isNaN(val) || val < 0.0 || val > 1.0) {
+      alert('Routing threshold must be a number between 0.0 and 1.0 (e.g. 0.50)');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/router/threshold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: val })
+      });
+      const res = await resp.json();
+      if (resp.ok) {
+        if (statRoutingThreshold) statRoutingThreshold.textContent = `${Math.round(res.threshold * 100)}%`;
+        if (thresholdStatusMsg) {
+          thresholdStatusMsg.style.display = 'inline';
+          thresholdStatusMsg.textContent = 'Saved!';
+          setTimeout(() => { thresholdStatusMsg.style.display = 'none'; }, 2500);
+        }
+        await loadAgentsData();
+      } else {
+        alert(`Failed to set threshold: ${res.message || 'Error'}`);
+      }
+    } catch (e) {
+      alert(`Error updating threshold: ${e.message}`);
+    }
+  }
+
+  if (btnSetThreshold) {
+    btnSetThreshold.addEventListener('click', updateRoutingThreshold);
+  }
+  if (routerThresholdInput) {
+    routerThresholdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        updateRoutingThreshold();
+      }
+    });
+  }
+
+  async function loadAgentsData() {
+    if (!agentsTbody) return;
+    try {
+      const resp = await fetch('/api/router/agents');
+      if (!resp.ok) {
+        agentsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Agents Router service initializing...</td></tr>';
+        return;
+      }
+      const data = await resp.json();
+      const agents = data.agents || [];
+
+      // Update threshold display and input
+      if (typeof data.threshold === 'number') {
+        const pct = Math.round(data.threshold * 100);
+        if (statRoutingThreshold) statRoutingThreshold.textContent = `${pct}%`;
+        if (routerThresholdInput && document.activeElement !== routerThresholdInput) {
+          routerThresholdInput.value = data.threshold.toFixed(2);
+        }
+      }
+
+      // Update statistics
+      let activeCount = 0;
+      let offlineCount = 0;
+      agents.forEach(a => {
+        if (a.status === 'up') activeCount++;
+        else offlineCount++;
+      });
+
+      if (statTotalAgents) statTotalAgents.textContent = agents.length;
+      if (statActiveAgents) statActiveAgents.textContent = activeCount;
+      if (statOfflineAgents) statOfflineAgents.textContent = offlineCount;
+
+      agentsTbody.innerHTML = '';
+      if (agents.length === 0) {
+        agentsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No agents registered in router.</td></tr>';
+        return;
+      }
+
+      agents.forEach(agent => {
+        const tr = document.createElement('tr');
+        const isUp = (agent.status === 'up');
+        const isDefault = agent.is_default;
+
+        const statusBadge = isUp 
+          ? `<span class="badge badge-active" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981;"></span> UP (Active)</span>`
+          : `<span class="badge badge-locked" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#ef4444;"></span> DOWN (Offline)</span>`;
+
+        const typeBadge = isDefault
+          ? `<span class="badge" style="background:#065f46; color:#a7f3d0; border:1px solid #10b981;">🛡️ Default Fallback</span>`
+          : `<span class="badge" style="background:#581c87; color:#e9d5ff; border:1px solid #a855f7;">⚡ Specialized</span>`;
+
+        // Format sample prompts preview
+        let sampleTags = '';
+        if (agent.sample_prompts && agent.sample_prompts.length > 0) {
+          const previewPrompts = agent.sample_prompts.slice(0, 3);
+          sampleTags = '<div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:4px;">' + 
+            previewPrompts.map(p => `<span style="font-size:0.73rem; background:#1e293b; color:#94a3b8; padding:2px 6px; border-radius:4px; border:1px solid #334155;" title="${escapeHtml(p)}">${escapeHtml(p.length > 45 ? p.substring(0, 42) + '...' : p)}</span>`).join('') +
+            (agent.sample_prompts.length > 3 ? `<span style="font-size:0.73rem; color:#64748b;">+${agent.sample_prompts.length - 3} more</span>` : '') +
+            '</div>';
+        }
+
+        tr.innerHTML = `
+          <td>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:1.2rem;">${isDefault ? '🤖' : '🛠️'}</span>
+              <div>
+                <strong style="color:#f8fafc; font-size:0.9rem;">${escapeHtml(agent.name)}</strong>
+                <div style="font-family:var(--font-mono); font-size:0.75rem; color:#64748b;">ID: ${escapeHtml(agent.id)}</div>
+              </div>
+            </div>
+          </td>
+          <td>${statusBadge}</td>
+          <td>${typeBadge}</td>
+          <td><code style="background:#0f172a; padding:4px 8px; border-radius:4px; font-size:0.78rem; border:1px solid #334155; color:#38bdf8;">${escapeHtml(agent.url)}</code></td>
+          <td style="max-width:320px;">
+            <div style="font-size:0.83rem; color:#cbd5e1; line-height:1.3;">${escapeHtml(agent.description)}</div>
+            ${sampleTags}
+          </td>
+          <td style="text-align:center;">
+            <span class="badge" style="background:#1e293b; color:#38bdf8; font-weight:600;">${agent.queries_handled || 0}</span>
+          </td>
+          <td style="text-align:right;">
+            <div style="display:inline-flex; gap:6px; align-items:center;">
+              <button class="btn-secondary btn-agent-status" data-id="${escapeHtml(agent.id)}" data-status="${escapeHtml(agent.status)}" style="padding:4px 8px; font-size:0.78rem;" title="Toggle operational status">
+                ${isUp ? 'Turn DOWN' : 'Turn UP'}
+              </button>
+              <button class="btn-secondary btn-agent-health" data-id="${escapeHtml(agent.id)}" style="padding:4px 8px; font-size:0.78rem;" title="Ping container health">
+                🏥 Ping
+              </button>
+              ${!isDefault ? `
+                <button class="btn-danger btn-agent-delete" data-id="${escapeHtml(agent.id)}" style="padding:4px 8px; font-size:0.78rem;" title="Unregister agent">
+                  🗑️
+                </button>
+              ` : ''}
+            </div>
+          </td>
+        `;
+
+        // Wire actions
+        const btnStatus = tr.querySelector('.btn-agent-status');
+        if (btnStatus) {
+          btnStatus.onclick = () => toggleAgentStatus(agent.id, agent.status);
+        }
+        const btnHealth = tr.querySelector('.btn-agent-health');
+        if (btnHealth) {
+          btnHealth.onclick = () => checkAgentHealth(agent.id);
+        }
+        const btnDelete = tr.querySelector('.btn-agent-delete');
+        if (btnDelete) {
+          btnDelete.onclick = () => deleteAgent(agent.id, agent.name);
+        }
+
+        agentsTbody.appendChild(tr);
+      });
+    } catch (e) {
+      console.error('Error loading agents data:', e);
+      if (agentsTbody) agentsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error connecting to agents router.</td></tr>';
+    }
+  }
+
+  async function toggleAgentStatus(agentId, currentStatus) {
+    const nextStatus = (currentStatus === 'up') ? 'down' : 'up';
+    try {
+      const resp = await fetch(`/api/router/agents/${encodeURIComponent(agentId)}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus })
+      });
+      const res = await resp.json();
+      if (resp.ok) {
+        loadAgentsData();
+      } else {
+        alert(`Failed to update status: ${res.message || 'Unknown error'}`);
+      }
+    } catch (e) {
+      alert(`Error toggling agent status: ${e.message}`);
+    }
+  }
+
+  async function checkAgentHealth(agentId) {
+    try {
+      const resp = await fetch(`/api/router/agents/${encodeURIComponent(agentId)}/health`, { method: 'POST' });
+      const data = await resp.json();
+      if (data.status === 'healthy') {
+        alert(`✅ Agent '${agentId}' is healthy and responding (HTTP ${data.code || 200}).`);
+      } else {
+        alert(`⚠️ Agent '${agentId}' health check reported: ${data.status} ${data.error ? '(' + data.error + ')' : ''}`);
+      }
+      loadAgentsData();
+    } catch (e) {
+      alert(`Health ping failed for agent '${agentId}': ${e.message}`);
+    }
+  }
+
+  async function deleteAgent(agentId, agentName) {
+    if (!confirm(`Are you sure you want to unregister agent '${agentName}' (${agentId}) from the router?`)) return;
+    try {
+      const resp = await fetch(`/api/router/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
+      const res = await resp.json();
+      if (resp.ok) {
+        loadAgentsData();
+      } else {
+        alert(`Failed to remove agent: ${res.message}`);
+      }
+    } catch (e) {
+      alert(`Error unregistering agent: ${e.message}`);
+    }
+  }
+
+  // Modal Handlers for Add Agent
+  if (btnOpenAddAgentModal) {
+    btnOpenAddAgentModal.onclick = () => {
+      if (addAgentAlertMsg) addAgentAlertMsg.classList.add('hidden');
+      const inputId = document.getElementById('inputNewAgentId');
+      const inputName = document.getElementById('inputNewAgentName');
+      const inputUrl = document.getElementById('inputNewAgentUrl');
+      const inputDesc = document.getElementById('inputNewAgentDesc');
+      const inputPrompts = document.getElementById('inputNewAgentPrompts');
+      if (inputId) inputId.value = '';
+      if (inputName) inputName.value = '';
+      if (inputUrl) inputUrl.value = '';
+      if (inputDesc) inputDesc.value = '';
+      if (inputPrompts) inputPrompts.value = '';
+      if (addAgentModal) addAgentModal.classList.remove('hidden');
+    };
+  }
+
+  function closeAddAgentModal() {
+    if (addAgentModal) addAgentModal.classList.add('hidden');
+  }
+
+  if (btnCloseAddAgentModalX) btnCloseAddAgentModalX.onclick = closeAddAgentModal;
+  if (btnCancelAddAgent) btnCancelAddAgent.onclick = closeAddAgentModal;
+
+  if (btnSubmitAddAgent) {
+    btnSubmitAddAgent.onclick = async () => {
+      const inputId = document.getElementById('inputNewAgentId');
+      const inputName = document.getElementById('inputNewAgentName');
+      const inputUrl = document.getElementById('inputNewAgentUrl');
+      const inputDesc = document.getElementById('inputNewAgentDesc');
+      const inputPrompts = document.getElementById('inputNewAgentPrompts');
+      const selectStatus = document.getElementById('selectNewAgentStatus');
+
+      const id = inputId ? inputId.value.trim() : '';
+      const name = inputName ? inputName.value.trim() : '';
+      const url = inputUrl ? inputUrl.value.trim() : '';
+      const description = inputDesc ? inputDesc.value.trim() : '';
+      const promptsRaw = inputPrompts ? inputPrompts.value.trim() : '';
+      const status = selectStatus ? selectStatus.value : 'up';
+
+      if (!id || !name || !url) {
+        if (addAgentAlertMsg) {
+          addAgentAlertMsg.textContent = 'Please provide Agent ID, Display Name, and Container URL.';
+          addAgentAlertMsg.classList.remove('hidden');
+        }
+        return;
+      }
+
+      const sample_prompts = promptsRaw ? promptsRaw.split('\n').map(p => p.trim()).filter(Boolean) : [];
+
+      try {
+        const resp = await fetch('/api/router/agents/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: id,
+            name: name,
+            url: url,
+            description: description,
+            sample_prompts: sample_prompts,
+            status: status,
+            is_default: false
+          })
+        });
+        const res = await resp.json();
+        if (resp.ok) {
+          closeAddAgentModal();
+          loadAgentsData();
+        } else {
+          if (addAgentAlertMsg) {
+            addAgentAlertMsg.textContent = res.message || 'Registration failed.';
+            addAgentAlertMsg.classList.remove('hidden');
+          }
+        }
+      } catch (e) {
+        if (addAgentAlertMsg) {
+          addAgentAlertMsg.textContent = `Network error: ${e.message}`;
+          addAgentAlertMsg.classList.remove('hidden');
+        }
+      }
+    };
+  }
+
+  if (btnRefreshAgents) {
+    btnRefreshAgents.onclick = () => loadAgentsData();
+  }
+
+  // Test Semantic Route Execution
+  async function testSemanticRoute() {
+    if (!testRouteInput || !testRouteResults) return;
+    const query = testRouteInput.value.trim();
+    if (!query) {
+      alert('Please enter a query to test semantic routing.');
+      return;
+    }
+
+    testRouteResults.style.display = 'block';
+    testRouteResults.innerHTML = '<div style="color:#94a3b8; font-size:0.9rem;">Computing semantic vector embeddings and matching agents...</div>';
+
+    try {
+      const resp = await fetch('/api/router/test_route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: query })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        testRouteResults.innerHTML = `<div style="color:#ef4444;">Routing test failed: ${escapeHtml(data.message || 'Error')}</div>`;
+        return;
+      }
+
+      const isFallback = data.is_default_fallback;
+      const topAgent = data.selected_agent;
+      const scorePct = data.similarity_percent || '0%';
+      const ranked = data.ranked_scores || [];
+
+      let outcomeBadge = isFallback
+        ? `<span class="badge" style="background:#065f46; color:#a7f3d0; font-size:0.85rem; padding:4px 8px;">🛡️ Default Fallback (< 50% match or specialist offline)</span>`
+        : `<span class="badge" style="background:#0284c7; color:#f0f9ff; font-size:0.85rem; padding:4px 8px;">✅ Matched Specialized Agent (> 50% Threshold)</span>`;
+
+      let rankedRows = ranked.map((r, idx) => {
+        const isWinner = (topAgent && r.agent_id === topAgent.id);
+        const barWidth = Math.max(0, Math.min(100, Math.round(r.score * 100)));
+        return `
+          <tr style="${isWinner ? 'background:rgba(56, 189, 248, 0.12);' : ''}">
+            <td style="font-weight:${isWinner ? '700' : '400'}; color:${isWinner ? '#38bdf8' : '#e2e8f0'};">
+              ${isWinner ? '👉 ' : ''}${escapeHtml(r.agent_name)} 
+              <span style="font-size:0.75rem; color:#64748b;">(${escapeHtml(r.agent_id)})</span>
+            </td>
+            <td>
+              <span class="badge ${r.status === 'up' ? 'badge-active' : 'badge-locked'}" style="font-size:0.75rem;">
+                ${escapeHtml(r.status.toUpperCase())}
+              </span>
+            </td>
+            <td>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div style="flex:1; background:#1e293b; height:8px; border-radius:4px; overflow:hidden;">
+                  <div style="width:${barWidth}%; background:${barWidth >= 50 ? '#10b981' : '#f59e0b'}; height:100%;"></div>
+                </div>
+                <span style="font-family:var(--font-mono); font-weight:600; font-size:0.85rem; color:${barWidth >= 50 ? '#34d399' : '#fbbf24'}; width:50px; text-align:right;">
+                  ${r.similarity_percent}
+                </span>
+              </div>
+            </td>
+            <td>${r.is_default ? '<span style="color:#10b981; font-size:0.8rem;">Yes (Default)</span>' : '<span style="color:#a78bfa; font-size:0.8rem;">Specialized</span>'}</td>
+          </tr>
+        `;
+      }).join('');
+
+      testRouteResults.innerHTML = `
+        <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <span style="font-size:0.85rem; color:#94a3b8;">Routing Decision:</span>
+            <strong style="color:#ffffff; font-size:1.05rem; margin-left:6px;">${topAgent ? escapeHtml(topAgent.name) : 'None'}</strong>
+            <span style="color:#38bdf8; font-family:var(--font-mono); font-size:0.85rem; margin-left:8px;">Score: ${scorePct}</span>
+          </div>
+          <div>${outcomeBadge}</div>
+        </div>
+        <p style="font-size:0.84rem; color:#cbd5e1; margin-bottom:14px; background:#1e293b; padding:8px 12px; border-radius:6px; border-left:3px solid #38bdf8;">
+          💡 <strong>Explanation:</strong> ${escapeHtml(data.explanation || '')} <span style="color:#64748b; font-size:0.75rem;">(Routing Latency: ${data.routing_latency_ms || 0}ms)</span>
+        </p>
+        <div style="font-size:0.82rem; font-weight:600; color:#94a3b8; margin-bottom:6px;">Agent Similarity Breakdown:</div>
+        <table class="data-table" style="font-size:0.82rem;">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th style="width:100px;">Status</th>
+              <th style="width:200px;">Similarity Match</th>
+              <th style="width:120px;">Role</th>
+            </tr>
+          </thead>
+          <tbody>${rankedRows}</tbody>
+        </table>
+      `;
+    } catch (e) {
+      testRouteResults.innerHTML = `<div style="color:#ef4444;">Error testing semantic route: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  if (btnTestRoute) {
+    btnTestRoute.onclick = testSemanticRoute;
+  }
+  if (testRouteInput) {
+    testRouteInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') testSemanticRoute();
+    });
+  }
+
   // Initial Data Load
   loadModelsAndSkills();
   loadContainers();
+  loadAgentsData();
 
   // Auto-refresh active view every 15 seconds so data updates in real-time
   setInterval(() => {
@@ -2595,6 +3138,9 @@ document.addEventListener('DOMContentLoaded', () => {
       loadTelemetryData();
     } else if (currentActiveTab === 'page-audit') {
       loadAuditLogs();
+    } else if (currentActiveTab === 'page-agents') {
+      loadAgentsData();
     }
   }, 15000);
 });
+

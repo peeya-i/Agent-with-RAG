@@ -54,7 +54,12 @@ adk_agent = GoogleADKAgent(doc_rag_url=DOC_RAG_URL, tools_url=TOOLS_URL, logging
 try:
     from jwt_auth import decode_jwt_token, extract_jwt_from_request
 except ImportError:
-    from agents.jwt_auth import decode_jwt_token, extract_jwt_from_request
+    import sys
+    from pathlib import Path
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from jwt_auth import decode_jwt_token, extract_jwt_from_request
 
 def validate_agent_request_auth(jwt_token, invoker="web_ui"):
     if not jwt_token:
@@ -177,7 +182,8 @@ def process_chat():
         custom_endpoint=custom_endpoint,
         jwt_token=jwt_token,
         user=user,
-        domain=domain
+        domain=domain,
+        history=data.get("history") or []
     )
 
     return jsonify(result)

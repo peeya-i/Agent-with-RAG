@@ -18,25 +18,28 @@ An enterprise multi-container web application and autonomous AI Agent platform w
 * **Dual-Collection Vector Store (`doc_RAG`):** Powered by ChromaDB and local Ollama embeddings (`nomic-embed-text`, `bge-m3`) across two isolated collections:
   * `skill`: Semantic discovery and prompt augmentation for procedural skills.
   * `document`: High-precision chunked semantic document retrieval with tenant isolation.
-* **Granular Authentication & RBAC (`auth_service`):** SQLite-backed credential and role-based access control (`Admin`, `Editor`, `User`) with unified multi-tenant JWT tokens issued at login for secure inter-service authentication without container-level fallback keys.
-* **Real-Time Container Topology (`Container Mgr`):** Visual interactive system architecture diagram with live CPU/RAM metrics, health status, and administrative container lifecycle operations (`Start`, `Stop`, `Restart`, `Shutdown All`).
-* **Comprehensive Telemetry & Audit Logs (`logging`):** Centralized append-only JSON logging capturing full raw payloads, latency distributions (TTFT, ITL, TPS, TPOT), and user conversation histories.
+* **Semantic Vector Routing (`agents_router`):** Vector embedding engine with cosine similarity and deterministic local fallback that analyzes prompts from Web UI. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds 50% (> 0.50) and agent status is UP. Defaults to the primary `agents` container for general queries or whenever match is <= 50%.
+* **Specialized Product Tech Support Agent (`agent_tech_support`):** Dedicated domain agent for product troubleshooting, DevOps, Docker container crash log inspection (exit 137 OOMKilled), microservice timeouts, and database connection debugging. Dynamically auto-registers with the router upon container turn-up.
+* **Agents Router Management GUI (`Agents` Tab):** Positioned between VectorDB and Telemetry, displays real-time directory of all registered agents with operational status badges (UP/DOWN), interactive semantic prompt routing simulator, and dynamic onboarding form/modal ("Add New Agent") to manually link new agent containers.
+* **Unified Single `jwt_auth.py` Architecture:** A single copy of `jwt_auth.py` is maintained at the repository root and volume-mounted into all containers via `docker-compose.yml`, eliminating code duplication while guaranteeing full host and container interoperability.
 
 ---
 
 ## 2. Architecture & Container Port Assignments
 
-The platform runs as 7 decoupled microservices orchestrated via Docker Compose:
+The platform runs as 9 decoupled microservices orchestrated via Docker Compose:
 
 | Service | Directory | TCP Port | Protocol | Purpose |
 |---|---|---|---|---|
-| **Web UI** | `web_ui/` | **8000** | HTTP / Flask | 6-Page responsive web interface & Docker orchestrator |
+| **Web UI** | `web_ui/` | **8000** | HTTP / Flask | 7-Page responsive web interface & Docker orchestrator |
 | **Auth Service** | `auth_service/` | **8001** | HTTP REST | SQLite authentication, multi-tenant accounts, JWT issuing |
-| **Agents** | `agents/` | **8002** | FastMCP (async HTTP) | Custom & Google ADK Agent multi-turn reasoning loops |
+| **Agents (Default)** | `agents/` | **8002** | FastMCP / HTTP REST | Default fallback agent multi-turn reasoning loops, tool & RAG synthesis |
 | **Doc & Skills RAG** | `doc_RAG/` | **8003** | FastMCP (async HTTP) | ChromaDB vector store with tenant domain isolation |
-| **Ollama Embeddings** | `ollama` | **11434** | REST API | Official Ollama daemon generating dense vector embeddings |
+| **Agents Router** | `agent_router/` | **8004** | HTTP REST | Vector embedding routing (> 50% threshold) & dynamic agent registry |
 | **Tools** | `tools/` | **8005** | FastMCP (async HTTP) | Domain-scoped CSV databases (employee & customer) & market tools |
 | **Logging** | `logging/` | **8006** | HTTP REST | Centralized audit logs, conversation history, and telemetry |
+| **Tech Support Agent**| `agent_tech_support/`| **8007** | HTTP REST | Specialized technical support & DevOps diagnostics agent |
+| **Ollama Embeddings** | `ollama` | **11434** | REST API | Official Ollama daemon generating dense vector embeddings |
 
 ---
 
@@ -142,6 +145,8 @@ Access the Web Console at: **`http://localhost:8000`**
 3. Click **Ok** to authenticate. A signed JWT token is issued and stored in session storage for all API interactions.
 
 ### 🗣️ Page 1: Chat & Knowledge Mgnt
+* **Card Title & New Session:** The primary conversation card is named **"Chat"** and features a **"New Session"** button to its right. Clicking "New Session" clears conversational context, resets the conversation ID, clears evidence, and restores the initial welcome view.
+* **Multi-Turn Conversational Context:** Conversational history from previous turns is preserved and sent in subsequent prompts, allowing the agent to remember context across queries.
 * **Model Selection:** Choose from active Google AI Studio models or select **Custom Model** to specify an OpenAI-compatible endpoint.
 * **Hyperparameters:** Tune `Temperature` (0.0–2.0), `Max Tokens` (default 2048), and `Max Turns` (default: 5, range 1–10).
 * **Agent Selector:** Toggle between **Custom Agent** and **Google ADK Agent**.
@@ -150,7 +155,7 @@ Access the Web Console at: **`http://localhost:8000`**
   * `LLM Selects`: Supplies all skill definitions to the model for cognitive selection.
   * Direct Skill: Forces execution of a designated skill.
 * **Inspection Bubbles:** Click **Show Logs** on any completed agent response to expand step-by-step component execution bubbles (Agent, Skills, Tools, RAG, LLM).
-* **Retrieved Evidence:** The right card displays semantic chunks retrieved from vector stores matching your query within your tenant domain.
+* **Retrieved Evidence:** The right card displays the **Selected Agent** that processed the prompt, its **similarity score**, routing match status (Specialized Match vs Default Fallback), and detailed routing explanation, alongside matched procedural **Skills** and semantic **Documents**.
 
 ### 🛢️ Page 2: VectorDB Mgnt
 * **Asymmetric Layout:** Populate Vector Database occupies **40% width**, and Vector Storage Status occupies **60% width**.
@@ -163,12 +168,23 @@ Access the Web Console at: **`http://localhost:8000`**
 * **Real-time Statistics:** Monitor total ingested document chunks, unique files, and vector DB size in MB scoped to your tenant domain.
 * **Storage Status & Reset:** Inspect active document records with their authorized **Tenant Domain** (identifying the organization that stored and retains access to each document, e.g. `example-a.com`, `sample-b.com`, or `All Tenants (Admin)`), delete individual documents, or trigger a full database reset (Admin only).
 
-### 📊 Page 3: Telemetry
+### 🤖 Page 3: Agents (Agents Router Interface)
+* **Horizontal Statistics Cards:** All metrics are displayed as cards arranged horizontally across the page:
+  * **Registered Agents:** Total count of agents registered with the vector router.
+  * **Active Agents (UP):** Count of online agents ready to receive traffic.
+  * **Offline Agents (DOWN):** Count of offline agents (requests automatically skip to fallback).
+  * **Routing Threshold:** Active similarity threshold percentage.
+* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) allows setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container.
+* **Registered Agents Directory:** Live status table with UP/DOWN badges, container endpoint URLs, role/type, handled query counters, status toggling, health ping, and agent deletion.
+* **Dynamic & Manual Registration:** Agent containers auto-register upon startup via `POST /api/router/agents/register` or manually via the "Add New Agent" modal.
+* **Test Semantic Route:** Interactive prompt simulator calculating vector embeddings and displaying real-time agent similarity rankings.
+
+### 📊 Page 4: Telemetry
 * Accessible by all authenticated users (User, Editor, Domain Admin, Global Admin).
 * **Throughput & Velocity Graphs:** Track Request Throughput (prompts, responses, errors) and Token Velocity (input and output tokens) across selectable intervals (1 min, 15 min, 1 hr, 1 day) and ranges.
 * **Hardware-Agnostic Latency Metrics:** View calculated Time to First Token (TTFT), Inter-Token Latency (ITL), Tokens Per Second (TPS), and Time Per Output Token (TPOT).
 
-### 📝 Page 4: Log Viewer (Audit Logs & Events)
+### 📝 Page 5: Log Viewer (Audit Logs & Events)
 * **Prompt Sender in Logs:** All agent executions, chat events, and model interactions record the name of the user who sends the prompt (`user` and `domain`).
 * **Role Scoping:**
   * Users and Editors view only logs that they generate.
@@ -177,13 +193,13 @@ Access the Web Console at: **`http://localhost:8000`**
 * **User Conversations Table:** Browse conversation sessions, user queries, agent responses, agent types, and event counts. Includes a dedicated **User / Sender** column.
 * **Events for Conversation Table:** Select any conversation row to view chronologically sorted event traces with full JSON inspection.
 
-### 🚢 Page 5: Container Mgr (Global Admin Only)
+### 🚢 Page 6: Container Mgr (Global Admin Only)
 * **Access Control:** Visible and accessible strictly to the Global Admin (`admin` with no domain). Hidden for domain administrators, editors, and users to prevent unauthorized host orchestration.
 * **Visual Topology Canvas:** Live drawing illustrating container interconnectivity and runtime state (light green for active, light red for stopped).
 * **Interactive Node Control:** Click or right-click any container node to inspect port mappings, dependencies, and trigger `Start` or `Stop`.
 * **Global Controls:** Use `Restart All` or `Shutdown All` for bulk orchestration.
 
-### 🔑 Page 6: Password Mgnt & JWT
+### 🔑 Page 7: Password Mgnt & JWT
 * **Global Refresh Control:** Click the **Refresh** button (`#btnRefreshAuth`) in the header to update all tables across both sub-tabs simultaneously.
 * **Passwords Sub-Tab (Admin Only):**
   * **User Account Directory Access Control:** Administrators can manage User accounts (changing roles, toggling Active/Locked status, resetting passwords, creating new users, and deleting users). Domain Admins manage users in their domain; Global Admin manages all users.

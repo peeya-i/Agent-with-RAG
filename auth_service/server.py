@@ -12,7 +12,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 try:
     from jwt_auth import generate_jwt_token, decode_jwt_token, get_domain_from_email, extract_jwt_from_request
 except ImportError:
-    from auth_service.jwt_auth import generate_jwt_token, decode_jwt_token, get_domain_from_email, extract_jwt_from_request
+    import sys
+    from pathlib import Path
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from jwt_auth import generate_jwt_token, decode_jwt_token, get_domain_from_email, extract_jwt_from_request
 
 app = Flask(__name__)
 try:

@@ -4,15 +4,26 @@ Build a web app to manage an AI Agent with RAG ability.
 ## 📂 Directory Architecture
 ```text
 Agent-with-RAG/
-├── agents/                  # Custom and Google ADK Agent microservices (Port 8002)
+├── agent_router/            # Semantic Vector Router & Dynamic Agent Registry (Port 8004)
+│   ├── embeddings.py        # Vector embedding engine (Google GenAI + local fallback)
+│   ├── registry.py          # Dynamic agent registry, operational status, and health pings
+│   ├── router.py            # Vector routing (> 50% threshold) & default agents:8002 fallback
+│   ├── server.py            # Flask REST router API (/api/router/chat, /api/router/agents)
+│   ├── Dockerfile
+│   └── requirements.txt
+├── agent_tech_support/      # Specialized Product Tech Support & DevOps Agent (Port 8007)
+│   ├── server.py            # Technical diagnostics, error analysis, auto-registration daemon
+│   ├── Dockerfile
+│   └── requirements.txt
+├── agents/                  # Primary Default Multi-Tool & RAG Agent microservice (Port 8002)
 │   ├── custom_agent/        # Custom autonomous planning & orchestrator agent
 │   ├── genai/               # Google ADK / GenAI Agent implementation
 │   ├── secrets/             # Agent runtime secrets (.env, keys)
 │   ├── skills/              # Domain skills (SKILL.md, tools, and trigger queries)
 │   ├── Dockerfile
 │   └── server.py
-├── auth_service/            # Authentication & API Key Management Service (Port 8001)
-│   ├── secrets/                # SQLite persistent storage (auth.db)
+├── auth_service/            # Authentication & Multi-Tenant Accounts Service (Port 8001)
+│   ├── secrets/             # SQLite persistent storage (auth.db)
 │   ├── Dockerfile
 │   └── server.py
 ├── doc_RAG/                 # ChromaDB Vector Store & Embedding Manager (Port 8003)
@@ -24,30 +35,22 @@ Agent-with-RAG/
 │   ├── Dockerfile
 │   └── server.py
 ├── tools/                   # Procedural Tools Service (Port 8005)
-│   ├── data/                # Data storage (employee_database.csv)
+│   ├── data/                # Data storage (employee & customer CSV databases)
 │   ├── scripts/             # Tool implementation & seeding scripts
 │   ├── Dockerfile
 │   └── server.py
-├── web_ui/                  # Interactive 6-Tab Web Dashboard (Port 8000)
+├── web_ui/                  # Interactive 7-Tab Web Dashboard (Port 8000)
 │   ├── secrets/             # User secrets & session keys
 │   ├── static/              # CSS, JavaScript, and UI icons
 │   ├── templates/           # Flask Jinja2 HTML templates
 │   ├── Dockerfile
 │   └── app.py
+├── jwt_auth.py              # Single top-level JWT module mounted into all container volumes
 ├── sample_docs/             # Sample knowledge documents (Markdown & PDF)
-│   ├── agent_and_rag.md     # Agent and RAG architecture overview (~3000 words)
-│   ├── company_marketing_strategy.md # Enterprise marketing strategy (~3000 words)
-│   ├── financial_report.md  # Multi-year financial performance report (~3000 words)
-│   ├── nexus_enterprise_solutions_company_profile.pdf # Extended company profile (>=4000 words)
-│   ├── vanguard_global_logistics_company_profile.pdf # Extended company profile (>=4000 words)
-│   └── product_catalog_100_offerings.pdf # 100 products with tiered volume pricing (1, 10, 100)
 ├── scripts/                 # Automation & PDF generation scripts
-│   ├── build_all_sample_pdfs.py # Master generator for sample PDF documents
-│   ├── nexus_profile_data.py    # Nexus Enterprise profile data generator
-│   ├── vanguard_profile_data.py # Vanguard Logistics profile data generator
-│   └── product_catalog_data.py  # 100 product offerings catalog data generator
-├── tests/                   # Pytest microservices test suite
-├── docker-compose.yml       # 7-container deployment configuration
+├── tests/                   # Pytest microservices & router test suite
+├── docker-compose.yml       # 9-container deployment configuration
+├── docker-compose.yaml      # Symlink to docker-compose.yml
 ├── requirements.txt         # Root Python dependencies
 └── README.md                # System documentation and operational guide
 ```
@@ -98,14 +101,15 @@ The system enforces strict role-based access control and tenant isolation across
 The Main App window should have:
   - If the static/images folder have a file called tab-icon.gif, use it as the icon for the tab
   - If the static/images folder have a file called app-icon.gif, put it on the left side of the App name at the top left of the window
-  - Six tabs with appropriate icon to the left of each tab name:
+  - Seven tabs with appropriate icon to the left of each tab name:
     1. Chat & Knowledge Mgnt
     2. VectorDB Mgnt
-    3. Telemetry
-    4. Log Viewer
-    5. Container Mgr (Visible only to Global Admin)
-    6. Password Mgnt & JWT
-  - Add a button to the right of the six tabs called "Logout"
+    3. Agents (Agents Router interface)
+    4. Telemetry
+    5. Log Viewer
+    6. Container Mgr (Visible only to Global Admin)
+    7. Password Mgnt & JWT
+  - Add a button to the right of the tabs called "Logout"
     - When the user clicks this button, close the current tab and go to the login window.
   - On the right side of the screen, put a button in the light red color “Shutdown” button
     - When the user clicks this button, open a dialog box warning the user that this will shutdown the app and all the services. All the users will be affected by this action. Confirm by typing “Shutdown the services” in the text box.
@@ -121,16 +125,24 @@ The Main App window should have:
   - To the left of the temperature box, add a text box to allow the user to set the “Max Tokens” parameter to send to the model. Do not allow the user to set the number larger than the max tokens of the model selected.
   - The following left and right cards should be the same width
     
-#### Left Card: "Chat with the Agent"
+#### Left Card: "Chat"
+- Name changed to **"Chat"**.
+- To the right of the "Chat" card name, includes a **"New Session"** button (`btnNewChatSession`):
+  - Clears conversational context and message history.
+  - Resets the active conversation ID.
+  - Clears context evidence card and restores the welcome view.
+- Multi-Turn Conversational Context:
+  - Allows context from previous turns to be passed to subsequent prompts within the session (`history` payload).
+  - Agents incorporate previous conversation turns into prompt context to maintain continuity across queries.
 - Add a drop down box called "Agent" on the right side of the card. The choices are: Custom Agent, Google ADK LlmAgent.
   - If the user selects Custom Agent, use the agent described in the Agent section of this document.
   - If the user selects Google ADK Agent, use the google ADK agent
 - To the right of the "Agent" box, add a text box for the user to select the "Max Turns" the default is 5. Do not allow the user to set the number larger than 10. Use this as the maximum number of turns for the maximum Agent loop or number of turns.
 - At the bottom of the card, put a text box for the user to enter the chat message.
-  - Use a new conversation ID for each question
-  - When the user clicks on the "Send" button or presses the Enter key, send the message to the agents container to process.
+  - When the user clicks on the "Send" button or presses the Enter key, send the message and conversational history to the agents router / agents container to process.
     - Use the Agents API key stored in the secrets manager
     - Include the Conversation ID of the message to the agent
+    - Include conversational turn history (`history` list)
     - Agent from the dropdown menu in the Chat Agent card
     - Max Turns from the text box in the Chat Agent card
     - Model Selection from the dropdown menu in the Chat page
@@ -148,6 +160,10 @@ The Main App window should have:
   - Anchor "Show Logs" button at the top-right corner of the detail box.
 
 #### Right Card: "Retrieved Context Evidence"
+- Displays the Agent that was selected to process the prompt and the similarity score along with Skills and Documents if any were used:
+  - **Routed Agent Banner**: Displays the selected agent name, similarity score percentage and float, routing match status (`Specialized Match (> Threshold)` vs `Default Fallback (<= Threshold)`), and detailed routing explanation.
+  - **Skills Vector Store Matches**: Displays matched procedural skills, similarity scores, and descriptions.
+  - **Document Vector Store Matches**: Displays source document names, chunk indexes, similarity scores, and text excerpts.
 - Add a box at the right side of the card named "Doc Threshold" for the user to set the threshold for the document retrieval.
   - The default value is 0.3.
   - Use this number as the minimum matching score the Document Vector Store should use to determine whether the text chunk should be returned in the query.
@@ -203,7 +219,45 @@ The Main App window should have:
 #### Bottom: "Available Embedding Models".
 - Display the list of available Embedding Models for the embedding service. Briefly list the characteristics including the dimensions, context window, size, brief description, and status (Installed, Active, Available to Pull).
 
-### 📊 The third page: “Telemetry”
+### 🤖 The third page: “Agents” (Agents Router Interface)
+The **Agents Router Interface** manages semantic vector routing and dynamic registration of specialized agent containers across the cluster.
+- **Placement**: Located between **VectorDB Mgnt** (Tab 2) and **Telemetry** (Tab 4).
+- **Header & Controls**:
+  - **Routing Threshold Input Text Box**: Allows the user to set the minimum Routing Threshold (e.g. `0.50`) to route to specialized agents or fall back to the default Agent. Supported via `GET` / `POST /api/router/threshold`.
+  - **"Refresh"** button to poll live status and handled query counts of all registered agents.
+  - **"Add New Agent"** button that opens a configuration modal for manual agent onboarding.
+- **Summary Metrics (Displayed as Horizontal Cards)**:
+  - All statistics are displayed as cards arranged horizontally across the page:
+    - Total Registered Agents count.
+    - Active Agents (UP) count.
+    - Offline Agents (DOWN) count.
+    - Routing Threshold (e.g. `50%` / `> 0.50`).
+- **Registered Agents Directory & Live Status**:
+  - Displays table of all agents currently registered with the router:
+    - **Agent Name & ID**: Agent identifier slug and human-readable title.
+    - **Status Badge**: Operational status (`UP` / `DOWN`) displayed prominently next to each agent with color-coded live indicators.
+    - **Role / Type**: `Default Fallback Agent` (primary multi-tool agent on port 8002) vs `Specialized Agent` (e.g. `agent-tech-support` on port 8007).
+    - **Container Link / URL**: Container endpoint URI (e.g. `http://agent_tech_support:8007` or `http://agents:8002`).
+    - **Description & Sample Queries**: Specialized domain capabilities and sample prompts used for vector embedding calculations.
+    - **Handled Queries**: Counter of prompts routed and handled by this agent.
+    - **Actions**:
+      - **Turn UP / Turn DOWN**: Instantly toggles the operational state of the agent (`POST /api/router/agents/<id>/status`). If an agent is DOWN, semantic matches for it are skipped and routed to the default fallback agent.
+      - **Ping / Health**: Pings `{agent.url}/health` to test live container connectivity.
+      - **Delete**: Unregisters an agent from the router (disabled for default fallback agent).
+- **Dynamic & Manual Agent Registration**:
+  - **API Registration**: Containers dynamically register themselves on startup by calling `POST http://agents_router:8004/api/router/agents/register` with their `id`, `name`, `url`, `description`, `sample_prompts`, and `status`.
+  - **Manual UI Registration**: Users can click "Add New Agent" in the GUI to manually register an agent container by providing:
+    - Agent ID
+    - Agent Display Name
+    - Container Link / URL
+    - Specialization & Description
+    - Sample Prompts / Queries (multiline)
+    - Initial Status (`UP` / `DOWN`).
+- **Interactive Prompt Routing Playground ("Test Semantic Route")**:
+  - Input field to test query routing without invoking the LLM generation loop.
+  - Returns target agent selected, similarity percentage, threshold pass status (`> 50%` vs default fallback triggered), explanation, routing latency, and a complete ranked breakdown of all agents and their individual similarity scores.
+
+### 📊 The fourth page: “Telemetry”
 - The Web UI queries the Logging container's statistics and query API to compute and display the telemetry counters and timeline graphs.
 - Accessible by all authenticated roles (User, Editor, Domain Admin, Global Admin).
 - On the right side of the page, put the button called “Refresh Telemetry” to allow the user to manually refresh the page.

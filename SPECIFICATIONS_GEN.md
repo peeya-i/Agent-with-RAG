@@ -10,16 +10,18 @@ Comprehensive system engineering specification for recreating the **Agent with R
 The system is an enterprise-grade, microservice-based AI Agent platform equipped with Retrieval-Augmented Generation (RAG), autonomous multi-turn tool execution, real-time telemetry, forensic audit logging, container lifecycle control, and role-based access management (RBAC).
 
 ### 1.2 Microservice Mesh & Network Topology
-The system consists of 7 isolated Docker containers communicating across an internal Docker bridge network (`agent-network`):
+The system consists of 9 isolated Docker containers communicating across an internal Docker bridge network (`agent-network`):
 
 | Container Name | Service Role | Port | Base Framework / Image | Storage / Persistence |
 | :--- | :--- | :--- | :--- | :--- |
 | `web_ui` | Unified Web Dashboard & API Gateway | `8000` | Python 3.11 / Flask | `./web_ui/secrets`, Docker socket |
-| `auth_service` | Authentication, RBAC & Key Authority | `8001` | Python 3.11 / Flask + SQLite | `./auth_service/secrets/auth.db` |
-| `agents` | Custom Agent & Google ADK Microservice | `8002` | Python 3.11 / Flask + Google GenAI | `./agents/secrets`, `./agents/skills` |
+| `auth_service` | Authentication, RBAC & Multi-Tenant Authority | `8001` | Python 3.11 / Flask + SQLite | `./auth_service/secrets/auth.db` |
+| `agents` | Default Multi-Tool Agent & FastMCP Service | `8002` | Python 3.11 / Flask + Google GenAI | `./agents/secrets`, `./agents/skills` |
 | `doc_rag` | ChromaDB Vector Store & RAG Engine | `8003` | Python 3.11 / Flask + FastMCP | `./doc_RAG/chroma`, `./doc_RAG/secrets` |
+| `agents_router` | Semantic Vector Router & Dynamic Agent Registry | `8004` | Python 3.11 / Flask + Embeddings | Router Registry (In-memory + health pings) |
 | `tools` | Procedural Tools Execution Engine | `8005` | Python 3.11 / Flask + FastMCP | `./tools/data`, `./tools/secrets` |
 | `logging` | Central Logging & Telemetry Engine | `8006` | Python 3.11 / Flask | `./logging/logs/log.json` |
+| `agent_tech_support` | Specialized Product Tech Support & DevOps Agent | `8007` | Python 3.11 / Flask + Google GenAI | Standalone diagnostics & auto-registration |
 | `ollama` | Local High-Dimensional Vector Embedder | `11434` | `ollama/ollama:latest` | Host `~/.ollama` volume |
 
 ```
@@ -30,34 +32,55 @@ The system consists of 7 isolated Docker containers communicating across an inte
                                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Web UI Gateway (`web_ui`, Port 8000)                                                        │
-│ ├─ Chat & Knowledge Mgnt ├─ VectorDB Mgnt ├─ Telemetry ├─ Audit Logs ├─ Containers ├─ Auth  │
-└────────┬───────────────────────┬──────────────────────┬──────────────────────┬──────────────┘
-         │                       │                      │                      │
-         ▼                       ▼                      ▼                      ▼
-┌─────────────────┐     ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Agents Service  │     │ Vector Store    │    │ Auth Service    │    │ Logging Service │
-│ (`agents`, 8002)│◄───►│ (`doc_rag`,8003)│◄──►│ (`auth_service`,│◄──►│ (`logging`,     │
-│                 │     │                 │    │  8001)          │    │  8006)          │
-└────────┬────────┘     └────────┬────────┘    └─────────────────┘    └─────────────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐
-│ Tools Service   │     │ Ollama Embedder │
-│ (`tools`, 8005) │     │ (`ollama`,11434)│
-└─────────────────┘     └─────────────────┘
+│ ├─ Chat ├─ VectorDB Mgnt ├─ Agents Router ├─ Telemetry ├─ Audit Logs ├─ Containers ├─ Auth  │
+└────────────────────────┬───────────────────────────────────────────────┬────────────────────┘
+                         │                                               │
+                         ▼                                               ▼
+               ┌───────────────────────┐                        ┌─────────────────┐
+               │     Agents Router     │                        │ Auth Service    │
+               │ (`agents_router`,8004)│                        │ (`auth_service`,│
+               └───────────┬───────────┘                        │  8001)          │
+              > 50% Match  │       <= 50% Fallback              └─────────────────┘
+         ┌─────────────────┴─────────────────┐                           │
+         ▼                                   ▼                           │
+┌─────────────────────────┐         ┌─────────────────────────┐          │
+│ Tech Support Specialist │         │ Default Multi-Tool Agent│          │
+│(`agent_tech_support`,   │         │ (`agents`, Port 8002)   │          │
+│  Port 8007)             │         └────────────┬────────────┘          │
+└────────────┬────────────┘                      │                       │
+             │                                   ▼                       ▼
+             │                      ┌─────────────────┐         ┌─────────────────┐
+             │                      │ Tools Service   │         │ Logging Service │
+             │                      │ (`tools`, 8005) │         │ (`logging`,     │
+             │                      └─────────────────┘         │  8006)          │
+             ▼                                                  └─────────────────┘
+   ┌──────────────────┐                                                  ▲
+   │   ChromaDB RAG   │◄─────────────────────────────────────────────────┤
+   │ (`doc_rag`, 8003)│──────► Ollama Embedder (`ollama`, 11434)
+   └──────────────────┘
 ```
 
 ### 1.3 Repository Directory Layout
 ```text
 Agent-with-RAG/
-├── agents/                       # Custom & Google ADK agent service
+├── agent_router/                 # Semantic Vector Router & Dynamic Agent Registry (Port 8004)
+│   ├── embeddings.py             # Vector embedding engine (Google GenAI + local fallback)
+│   ├── registry.py               # Dynamic agent registry, status management, health check
+│   ├── router.py                 # Cosine similarity vector routing (> 50% threshold) & fallback
+│   ├── server.py                 # Flask REST server (/api/router/chat, /api/router/agents)
+│   ├── Dockerfile
+│   └── requirements.txt
+├── agent_tech_support/           # Specialized Product Technical Support Agent (Port 8007)
+│   ├── server.py                 # Diagnostic reasoning, error log analysis, auto-registration
+│   ├── Dockerfile
+│   └── requirements.txt
+├── agents/                       # Primary Default Multi-Tool Agent & FastMCP service (Port 8002)
 │   ├── custom_agent/             # Autonomous planning orchestrator
 │   │   └── custom_agent.py
 │   ├── genai/                    # Google ADK agent implementation
 │   ├── secrets/                  # Inter-container keys & env configs
 │   ├── skills/                   # Discovered domain skills
-│   │   ├── time-weather-skill/   # Live time & weather queries
-│   │   ├── stock-analysis-skill/ # Financial market gainer/loser queries
+├── jwt_auth.py                   # Single top-level JWT module mounted into all container volumes
 │   │   ├── person-information-skill/  # Employee database lookup
 │   │   └── document-search-skill/# Vector knowledge base retrieval
 │   ├── Dockerfile

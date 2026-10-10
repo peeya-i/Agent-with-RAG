@@ -12,7 +12,12 @@ from flask import Flask, request, jsonify, Response
 try:
     from jwt_auth import decode_jwt_token, extract_jwt_from_request
 except ImportError:
-    from doc_RAG.jwt_auth import decode_jwt_token, extract_jwt_from_request
+    import sys
+    from pathlib import Path
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from jwt_auth import decode_jwt_token, extract_jwt_from_request
 
 app = Flask(__name__)
 try:

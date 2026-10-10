@@ -211,6 +211,19 @@ class CustomAgent:
         steps = []
         max_turns = max(1, min(int(max_turns or 5), 10))
 
+        # Build prior conversation context if passed
+        chat_history = kwargs.get("history") or []
+        history_prompt = ""
+        if chat_history and isinstance(chat_history, list):
+            history_lines = []
+            for h in chat_history[-6:]:
+                role = "User" if h.get("role") in ["user", "human"] else "Assistant"
+                c_text = (h.get("content") or "").strip()
+                if c_text:
+                    history_lines.append(f"{role}: {c_text}")
+            if history_lines:
+                history_prompt = "Conversation History (Prior Turns):\n" + "\n".join(history_lines) + "\n\n"
+
         # Initial Agent Invocaton Log
         self.log(
             invoker="Web UI",
@@ -340,7 +353,7 @@ class CustomAgent:
             if not active_skills:
                 # No skill found: direct assistant prompt
                 sys_prompt = "You are a helpful, accurate AI assistant. Answer the user question clearly and concisely."
-                user_prompt = f"User Question: {message}"
+                user_prompt = f"{history_prompt}User Question: {message}"
                 res_text, _, _, dur = self.call_llm(user_prompt, sys_prompt, model, temperature, max_tokens, custom_endpoint, conversation_id)
                 final_answer = res_text
                 steps.append({
@@ -375,7 +388,7 @@ class CustomAgent:
                 "Instead, output your complete final answer to the user."
             )
 
-            prompt_content = f"User Query: {message}\n\nAvailable Skills:\n{skill_context_str}\n"
+            prompt_content = f"{history_prompt}User Query: {message}\n\nAvailable Skills:\n{skill_context_str}\n"
             if context_history:
                 prompt_content += "\nPrevious Observations:\n" + "\n".join(context_history) + "\n"
 
@@ -536,7 +549,7 @@ class CustomAgent:
         # If loop reached max turns without breaking, make final call
         if not final_answer:
             final_sys = "You are a helpful assistant. Synthesize the final answer based on the collected context."
-            final_p = f"User Query: {message}\n\nInformation Collected:\n" + "\n".join(context_history)
+            final_p = f"{history_prompt}User Query: {message}\n\nInformation Collected:\n" + "\n".join(context_history)
             final_answer, _, _, dur_ms = self.call_llm(final_p, final_sys, model, temperature, max_tokens, custom_endpoint, conversation_id)
             steps.append({
                 "component": "LLM",

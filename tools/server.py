@@ -32,7 +32,12 @@ except ImportError:
     from tools.scripts.employee_search import seed_employee_data, search_employees
     from tools.scripts.customer_search import seed_customer_data, search_customers
     from tools.scripts.stock_analysis import analyze_stocks
-    from tools.jwt_auth import decode_jwt_token, extract_jwt_from_request
+    import sys
+    from pathlib import Path
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from jwt_auth import decode_jwt_token, extract_jwt_from_request
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 CSV_PATH = os.path.join(DATA_DIR, "employee_database.csv")

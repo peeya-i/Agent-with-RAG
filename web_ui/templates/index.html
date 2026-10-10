@@ -30,6 +30,10 @@
         <span class="tab-icon">🛢️</span>
         <span class="tab-label">VectorDB Mgnt</span>
       </button>
+      <button class="nav-tab" data-target="page-agents" id="tabAgents">
+        <span class="tab-icon">🤖</span>
+        <span class="tab-label">Agents</span>
+      </button>
       <button class="nav-tab" data-target="page-telemetry">
         <span class="tab-icon">📊</span>
         <span class="tab-label">Telemetry</span>
@@ -111,8 +115,11 @@
         <!-- Left Card: Chat with the Agent -->
         <div class="glass-card chat-card">
           <div class="card-header">
-            <div class="card-title">
-              <span class="card-icon">🤖</span> Chat with the Agent
+            <div class="card-title" style="display: flex; align-items: center; gap: 12px;">
+              <span><span class="card-icon">💬</span> Chat</span>
+              <button id="btnNewChatSession" class="btn-secondary" style="font-size: 0.76rem; padding: 3px 10px; display: inline-flex; align-items: center; gap: 5px; height: 28px;" title="Clear context and start a new chat session">
+                <span class="icon">✨</span> New Session
+              </button>
             </div>
             <div class="card-action-group">
               <div class="header-control">
@@ -381,7 +388,126 @@
     </section>
 
     <!-- ================================================================= -->
-    <!-- PAGE 3: Telemetry                                                -->
+    <!-- PAGE 3: Agents Router                                             -->
+    <!-- ================================================================= -->
+    <section id="page-agents" class="page-view">
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">🤖</span> Agents Router & Dynamic Registration</h2>
+        </div>
+        <div class="page-controls-area">
+          <div class="control-box" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px;">
+            <label for="routerThresholdInput" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
+              <span class="control-icon">🎯</span> Min Routing Threshold:
+            </label>
+            <input type="number" id="routerThresholdInput" value="0.50" min="0.0" max="1.0" step="0.05" style="width: 75px; padding: 4px 8px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 4px; color: #38bdf8; font-weight: 700; text-align: center;" title="Minimum similarity score required to route to a specialized agent instead of default fallback agent" />
+            <button id="btnSetThreshold" class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" title="Apply minimum routing threshold">
+              Set
+            </button>
+            <span id="thresholdStatusMsg" style="font-size: 0.75rem; color: #34d399; margin-left: 4px; display: none;">Saved</span>
+          </div>
+          <button id="btnRefreshAgents" class="btn-secondary" title="Refresh agents list">
+            <span class="icon">🔄</span> Refresh
+          </button>
+          <button id="btnOpenAddAgentModal" class="btn-primary" style="background: #2563eb; color: #ffffff;">
+            <span class="icon">➕</span> Add New Agent
+          </button>
+        </div>
+      </div>
+
+      <!-- Stats Summary Cards Displayed Horizontally -->
+      <div class="metric-tiles-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.15rem; margin-top: 1rem; margin-bottom: 1.25rem;">
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2.2rem;">🤖</div>
+          <div>
+            <div class="metric-label">Registered Agents</div>
+            <div class="metric-value" id="statTotalAgents">0</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2.2rem;">🟢</div>
+          <div>
+            <div class="metric-label">Active Agents (UP)</div>
+            <div class="metric-value" id="statActiveAgents" style="color: #34d399;">0</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2.2rem;">🔴</div>
+          <div>
+            <div class="metric-label">Offline Agents (DOWN)</div>
+            <div class="metric-value" id="statOfflineAgents" style="color: #f87171;">0</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2.2rem;">⚡</div>
+          <div>
+            <div class="metric-label">Routing Threshold</div>
+            <div class="metric-value" id="statRoutingThreshold" style="color: #38bdf8;">50%</div>
+            <div style="font-size: 0.73rem; color: #94a3b8; margin-top: 2px;">Min for specialized match</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Registered Agents Table Card -->
+      <div class="glass-card full-width-card" style="margin-top: 20px;">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">📋</span> Registered Agents Directory & Real-time Status
+          </div>
+          <div class="text-muted" style="font-size: 0.82rem;">
+            Agents dynamically register on container turn-up or can be manually added. Toggle operational status (UP/DOWN) or inspect health.
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-container">
+            <table class="data-table" id="agentsTable">
+              <thead>
+                <tr>
+                  <th style="width: 220px;">Agent Name & ID</th>
+                  <th style="width: 140px;">Status</th>
+                  <th style="width: 160px;">Role / Type</th>
+                  <th style="width: 220px;">Container Link / URL</th>
+                  <th>Description & Sample Queries</th>
+                  <th style="width: 90px; text-align: center;">Queries</th>
+                  <th style="width: 180px; text-align: right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="agentsTbody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive Test Routing Card -->
+      <div class="glass-card full-width-card" style="margin-top: 20px;">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">🎯</span> Test Semantic Prompt Routing (Vector Similarity)
+          </div>
+          <div class="text-muted" style="font-size: 0.82rem;">
+            Simulate how prompts are embedded and routed to specialized agents or fallback to default agents container.
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+            <input type="text" id="testRouteInput" class="input-field" placeholder="Enter a sample query (e.g., 'Docker container crashed with code 137 OOMKilled' or 'What is the stock price of Apple?')" style="flex: 1; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff;" />
+            <button id="btnTestRoute" class="btn-primary" style="padding: 10px 20px;">
+              <span class="icon">🚀</span> Test Route
+            </button>
+          </div>
+
+          <!-- Test Route Results Container -->
+          <div id="testRouteResults" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px;">
+            <!-- Dynamically populated test results -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- PAGE 4: Telemetry                                                -->
     <!-- ================================================================= -->
     <section id="page-telemetry" class="page-view">
       <div class="page-subheader">
@@ -651,7 +777,7 @@
         </div>
         <div class="card-body">
           <div class="topology-canvas-wrapper" id="topologyWrapper">
-            <svg class="topology-svg" id="topologySvg" viewBox="0 0 1000 480">
+            <svg class="topology-svg" id="topologySvg" viewBox="0 0 1060 520">
               <defs>
                 <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
@@ -663,36 +789,39 @@
 
               <!-- Connection Lines -->
               <!-- User to Web UI -->
-              <line x1="500" y1="45" x2="500" y2="85" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrow)" />
-              
-              <!-- Web UI to Agent & Doc_RAG -->
-              <line x1="450" y1="140" x2="320" y2="200" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)" />
-              <line x1="550" y1="140" x2="680" y2="200" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)" />
+              <line x1="530" y1="50" x2="530" y2="75" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrow)" />
 
-              <!-- Agent to Doc_RAG & Tools -->
-              <line x1="390" y1="230" x2="610" y2="230" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow)" />
-              <line x1="320" y1="260" x2="320" y2="330" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow)" />
+              <!-- Web UI to Agents Router -->
+              <line x1="530" y1="135" x2="530" y2="175" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrow)" />
+
+              <!-- Agents Router to Agents (Default) & Tech Support Agent (Specialized) -->
+              <line x1="470" y1="235" x2="360" y2="280" stroke="#60a5fa" stroke-width="2.2" marker-end="url(#arrow)" />
+              <line x1="590" y1="235" x2="700" y2="280" stroke="#a78bfa" stroke-width="2.2" marker-end="url(#arrow)" />
+
+              <!-- Agents (Default) to Tools & Doc_RAG -->
+              <line x1="290" y1="340" x2="240" y2="395" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow)" />
+              <line x1="370" y1="340" x2="480" y2="395" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow)" />
 
               <!-- Doc_RAG to Embedding (Ollama) -->
-              <line x1="680" y1="260" x2="680" y2="330" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)" />
+              <line x1="610" y1="425" x2="750" y2="425" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)" />
 
               <!-- Dashed lines to Auth and Logging -->
-              <line x1="250" y1="110" x2="150" y2="170" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
-              <line x1="750" y1="110" x2="850" y2="170" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
-              <line x1="250" y1="230" x2="150" y2="230" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
-              <line x1="750" y1="230" x2="850" y2="230" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
-              <line x1="250" y1="360" x2="150" y2="270" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
-              <line x1="750" y1="360" x2="850" y2="270" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="450" y1="105" x2="190" y2="190" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="610" y1="105" x2="870" y2="190" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="450" y1="205" x2="190" y2="205" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="610" y1="205" x2="870" y2="205" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="250" y1="310" x2="180" y2="235" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
+              <line x1="810" y1="310" x2="880" y2="235" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-dash)" />
 
               <!-- TOP USER NODE -->
-              <g class="topology-user-node" transform="translate(430, 10)">
-                <rect width="140" height="40" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
-                <text x="70" y="25" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">👤 End User (Client)</text>
+              <g class="topology-user-node" transform="translate(450, 10)">
+                <rect width="160" height="40" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+                <text x="80" y="25" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">👤 End User (Client)</text>
               </g>
 
               <!-- CONTAINER NODES -->
               <!-- 1. Web UI (Port 8000) -->
-              <g class="topology-node node-active" id="node-web_ui" transform="translate(420, 85)" data-name="web_ui">
+              <g class="topology-node node-active" id="node-web_ui" transform="translate(450, 75)" data-name="web_ui">
                 <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
                 <text x="80" y="24" text-anchor="middle" class="node-title">🌐 Web UI</text>
                 <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8000</text>
@@ -700,47 +829,63 @@
               </g>
 
               <!-- 2. Auth Service (Port 8001) -->
-              <g class="topology-node node-active" id="node-auth_service" transform="translate(50, 190)" data-name="auth_service">
+              <g class="topology-node node-active" id="node-auth_service" transform="translate(40, 175)" data-name="auth_service">
                 <rect width="150" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
                 <text x="75" y="24" text-anchor="middle" class="node-title">🔒 Auth Service</text>
                 <text x="75" y="40" text-anchor="middle" class="node-status">Active • Port 8001</text>
                 <text x="75" y="53" text-anchor="middle" class="node-metric" id="metric-auth_service">CPU: 0.1% | 32 MB</text>
               </g>
 
-              <!-- 3. Agents Container (Port 8002) -->
-              <g class="topology-node node-active" id="node-agents" transform="translate(240, 200)" data-name="agents">
+              <!-- 3. Agents Router (Port 8004) -->
+              <g class="topology-node node-active" id="node-agents_router" transform="translate(450, 175)" data-name="agents_router">
+                <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#38bdf8" stroke-width="2" />
+                <text x="80" y="24" text-anchor="middle" class="node-title">🔀 Agents Router</text>
+                <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8004</text>
+                <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-agents_router">CPU: 0.1% | 35 MB</text>
+              </g>
+
+              <!-- 4. Default Agents Container (Port 8002) -->
+              <g class="topology-node node-active" id="node-agents" transform="translate(250, 280)" data-name="agents">
                 <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
-                <text x="80" y="24" text-anchor="middle" class="node-title">🤖 Agents (FastMCP)</text>
+                <text x="80" y="24" text-anchor="middle" class="node-title">🤖 Agents (Default)</text>
                 <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8002</text>
                 <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-agents">CPU: 0.2% | 68 MB</text>
               </g>
 
-              <!-- 4. Doc & Skills RAG (Port 8003) -->
-              <g class="topology-node node-active" id="node-doc_rag" transform="translate(600, 200)" data-name="doc_rag">
-                <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
-                <text x="80" y="24" text-anchor="middle" class="node-title">📚 Doc & Skills RAG</text>
-                <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8003</text>
-                <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-doc_rag">CPU: 0.2% | 85 MB</text>
+              <!-- 5. Specialized Tech Support Agent (Port 8007) -->
+              <g class="topology-node node-active" id="node-agent_tech_support" transform="translate(650, 280)" data-name="agent_tech_support">
+                <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#a78bfa" stroke-width="2" />
+                <text x="80" y="24" text-anchor="middle" class="node-title">🛠️ Tech Support Agent</text>
+                <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8007</text>
+                <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-agent_tech_support">CPU: 0.1% | 40 MB</text>
               </g>
 
-              <!-- 5. Tools Container (Port 8005) -->
-              <g class="topology-node node-active" id="node-tools" transform="translate(240, 330)" data-name="tools">
+              <!-- 6. Tools Container (Port 8005) -->
+              <g class="topology-node node-active" id="node-tools" transform="translate(150, 395)" data-name="tools">
                 <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
                 <text x="80" y="24" text-anchor="middle" class="node-title">🔧 Tools (FastMCP)</text>
                 <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8005</text>
                 <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-tools">CPU: 0.1% | 38 MB</text>
               </g>
 
-              <!-- 6. Embedding Container (Port 11434) -->
-              <g class="topology-node node-active" id="node-ollama" transform="translate(600, 330)" data-name="ollama">
+              <!-- 7. Doc & Skills RAG (Port 8003) -->
+              <g class="topology-node node-active" id="node-doc_rag" transform="translate(450, 395)" data-name="doc_rag">
+                <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
+                <text x="80" y="24" text-anchor="middle" class="node-title">📚 Doc & Skills RAG</text>
+                <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 8003</text>
+                <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-doc_rag">CPU: 0.2% | 85 MB</text>
+              </g>
+
+              <!-- 8. Embedding Container (Port 11434) -->
+              <g class="topology-node node-active" id="node-ollama" transform="translate(750, 395)" data-name="ollama">
                 <rect width="160" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
                 <text x="80" y="24" text-anchor="middle" class="node-title">⚡ Ollama Embedder</text>
                 <text x="80" y="40" text-anchor="middle" class="node-status">Active • Port 11434</text>
                 <text x="80" y="53" text-anchor="middle" class="node-metric" id="metric-ollama">CPU: 0.4% | 1.1 GB</text>
               </g>
 
-              <!-- 7. Logging Container (Port 8006) -->
-              <g class="topology-node node-active" id="node-logging" transform="translate(790, 190)" data-name="logging">
+              <!-- 9. Logging Container (Port 8006) -->
+              <g class="topology-node node-active" id="node-logging" transform="translate(870, 175)" data-name="logging">
                 <rect width="150" height="60" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
                 <text x="75" y="24" text-anchor="middle" class="node-title">📝 Logging Service</text>
                 <text x="75" y="40" text-anchor="middle" class="node-status">Active • Port 8006</text>
@@ -1278,11 +1423,60 @@
         </div>
       </div>
     </div>
+  <!-- Modal 9: Add New Agent Modal -->
+  <div class="modal-overlay hidden" id="addAgentModal">
+    <div class="modal-box" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3><span class="modal-icon">🤖</span> Register New Agent</h3>
+        <button id="btnCloseAddAgentModalX" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="addAgentAlertMsg" class="modal-alert-text hidden" style="margin-bottom: 0.75rem; font-size: 0.88rem; color: #ef4444;"></div>
+        
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Identifier (ID) *</label>
+          <input type="text" id="inputNewAgentId" class="input-text" placeholder="e.g. agent-billing" required style="width: 100%;">
+          <span style="font-size: 0.75rem; color: #64748b;">Unique alphanumeric slug without spaces.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Display Name *</label>
+          <input type="text" id="inputNewAgentName" class="input-text" placeholder="e.g. Billing & Financial Specialist" required style="width: 100%;">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Container Link / URL *</label>
+          <input type="text" id="inputNewAgentUrl" class="input-text" placeholder="e.g. http://agent_billing:8008 or http://localhost:8008" required style="width: 100%;">
+          <span style="font-size: 0.75rem; color: #64748b;">HTTP endpoint where the agent container listens.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Specialization & Description</label>
+          <textarea id="inputNewAgentDesc" class="input-text" rows="2" placeholder="e.g. Handles payment processing, subscriptions, invoices, and refunds." style="width: 100%; resize: vertical;"></textarea>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Sample Queries / Prompts (One per line)</label>
+          <textarea id="inputNewAgentPrompts" class="input-text" rows="3" placeholder="Where is my latest invoice?&#10;How do I update credit card payment details?&#10;Process refund request for order 9872" style="width: 100%; resize: vertical;"></textarea>
+          <span style="font-size: 0.75rem; color: #64748b;">Used to compute vector embeddings for semantic routing.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0.5rem; display: flex; gap: 1rem; align-items: center;">
+          <div style="flex: 1;">
+            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Initial Operational Status</label>
+            <select id="selectNewAgentStatus" class="input-text" style="width: 100%;">
+              <option value="up" selected>UP (Active for Routing)</option>
+              <option value="down">DOWN (Offline)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <button id="btnCancelAddAgent" class="btn-secondary">Cancel</button>
+        <button id="btnSubmitAddAgent" class="btn-primary" style="background: #2563eb; color: #fff;">Register Agent</button>
+      </div>
+    </div>
   </div>
-
-
-
-  <!-- Scripts -->
   <script src="/static/js/chart.umd.min.js"></script>
   <script src="/static/js/app.js"></script>
 </body>

@@ -34,6 +34,8 @@ except ImportError:
 
 AUTH_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth_service:8001")
 AGENTS_URL = os.environ.get("AGENTS_URL", "http://agents:8002")
+ROUTER_URL = os.environ.get("ROUTER_URL", "http://agents_router:8004")
+TECH_SUPPORT_URL = os.environ.get("TECH_SUPPORT_URL", "http://agent_tech_support:8007")
 DOC_RAG_URL = os.environ.get("DOC_RAG_URL", "http://doc_rag:8003")
 TOOLS_URL = os.environ.get("TOOLS_URL", "http://tools:8005")
 LOGGING_URL = os.environ.get("LOGGING_URL", "http://logging:8006")
@@ -42,7 +44,9 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 CONTAINER_PORTS = {
     "web_ui": 8000,
     "auth_service": 8001,
+    "agents_router": 8004,
     "agents": 8002,
+    "agent_tech_support": 8007,
     "doc_rag": 8003,
     "ollama": 11434,
     "tools": 8005,
@@ -79,7 +83,9 @@ def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, statu
 
 CONTAINER_DIR_MAP = {
     "web_ui": "web_ui",
+    "agents_router": "agent_router",
     "agents": "agents",
+    "agent_tech_support": "agent_tech_support",
     "doc_rag": "doc_RAG",
     "tools": "tools",
     "auth_service": "auth_service",
@@ -431,7 +437,8 @@ def proxy_chat():
     data = request.get_json(silent=True) or {}
     conv_id = data.get("conversation_id") or f"conv_{int(time.time())}"
     data["conversation_id"] = conv_id
-    url = resolve_url(AGENTS_URL, "agents", 8002)
+    agents_url = resolve_url(AGENTS_URL, "agents", 8002)
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
 
     user = session.get("user") or {}
     username = user.get("email") or data.get("user") or "anonymous"
@@ -439,18 +446,6 @@ def proxy_chat():
     data["user"] = username
     data["username"] = username
     data["domain"] = domain
-
-    # Log outgoing chat request from Web UI to Agents
-    log_event(
-        invoker="Web UI",
-        recipient="agents",
-        event_type="send_chat_request",
-        desc=f"Web UI submitted query from {username}: '{data.get('message', '')[:80]}'",
-        payload=data,
-        conv_id=conv_id,
-        user=username,
-        domain=domain
-    )
 
     # Attach active JWT token
     jwt_token = data.get("jwt_token") or session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
@@ -461,51 +456,147 @@ def proxy_chat():
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
 
+    # Log outgoing chat request from Web UI
+    log_event(
+        invoker="Web UI",
+        recipient="agents_router",
+        event_type="send_chat_request",
+        desc=f"Web UI submitted query from {username}: '{data.get('message', '')[:80]}'",
+        payload=data,
+        conv_id=conv_id,
+        user=username,
+        domain=domain
+    )
+
+    # First attempt routing through agents-router
+    res_data = None
+    status_code = 200
     try:
-        r = requests.post(f"{url}/api/agent/chat", json=data, headers=headers, timeout=60)
+        r = requests.post(f"{router_url}/api/router/chat", json=data, headers=headers, timeout=60)
         res_data = r.json()
-        
-        # Enrich response with retrieved_evidence pulled from Logging per SPECIFICATIONS.md
-        logged_ev = extract_evidence_from_logs(conv_id)
-        if logged_ev.get("skills") or logged_ev.get("documents"):
-            res_data["retrieved_evidence"] = {
-                "skills": logged_ev.get("skills", []),
-                "documents": logged_ev.get("documents", [])
-            }
-        elif not res_data.get("retrieved_evidence"):
-            res_data["retrieved_evidence"] = {"skills": [], "documents": []}
+        status_code = r.status_code
+    except Exception as router_err:
+        # Fallback directly to default agents container if router unreachable
+        print(f"[WebUI] Router unavailable ({router_err}), falling back to direct agents container...")
+        try:
+            r = requests.post(f"{agents_url}/api/agent/chat", json=data, headers=headers, timeout=60)
+            res_data = r.json()
+            status_code = r.status_code
+        except Exception as e:
+            log_event(
+                invoker="agents",
+                recipient="Web UI",
+                event_type="chat_error",
+                desc=f"Agent request failed: {e}",
+                payload={"error": str(e)},
+                conv_id=conv_id,
+                status="error",
+                user=username,
+                domain=domain
+            )
+            return jsonify({"error": f"Agent service unreachable: {e}"}), 502
 
-        # Ensure user_query is present in res_data
-        if not res_data.get("user_query") and data.get("message"):
-            res_data["user_query"] = data.get("message")
+    # Enrich response with retrieved_evidence pulled from Logging per SPECIFICATIONS.md
+    logged_ev = extract_evidence_from_logs(conv_id)
+    if logged_ev.get("skills") or logged_ev.get("documents"):
+        res_data["retrieved_evidence"] = {
+            "skills": logged_ev.get("skills", []),
+            "documents": logged_ev.get("documents", [])
+        }
+    elif not res_data.get("retrieved_evidence"):
+        res_data["retrieved_evidence"] = {"skills": [], "documents": []}
 
-        # Log response received by Web UI from Agents
-        log_event(
-            invoker="agents",
-            recipient="Web UI",
-            event_type="received_chat_response",
-            desc=f"Web UI received response from agent ({res_data.get('elapsed_ms', 0)}ms)",
-            payload=res_data,
-            conv_id=conv_id,
-            duration_ms=res_data.get("elapsed_ms", 0),
-            model=res_data.get("model", ""),
-            user=username,
-            domain=domain
-        )
-        return jsonify(res_data), r.status_code
+    # Ensure user_query is present in res_data
+    if not res_data.get("user_query") and data.get("message"):
+        res_data["user_query"] = data.get("message")
+
+    # Log response received by Web UI
+    log_event(
+        invoker="agents_router",
+        recipient="Web UI",
+        event_type="received_chat_response",
+        desc=f"Web UI received response from agent ({res_data.get('elapsed_ms', 0)}ms)",
+        payload=res_data,
+        conv_id=conv_id,
+        duration_ms=res_data.get("elapsed_ms", 0),
+        model=res_data.get("model", ""),
+        user=username,
+        domain=domain
+    )
+    return jsonify(res_data), status_code
+
+# -------------------------------------------------------------
+# Agents Router Management APIs
+# -------------------------------------------------------------
+@app.route("/api/router/agents", methods=["GET"])
+def router_get_agents():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        r = requests.get(f"{router_url}/api/router/agents", timeout=5)
+        return jsonify(r.json()), r.status_code
     except Exception as e:
-        log_event(
-            invoker="agents",
-            recipient="Web UI",
-            event_type="chat_error",
-            desc=f"Agent request failed: {e}",
-            payload={"error": str(e)},
-            conv_id=conv_id,
-            status="error",
-            user=username,
-            domain=domain
-        )
-        return jsonify({"error": f"Agent service unreachable: {e}"}), 502
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}", "agents": []}), 502
+
+@app.route("/api/router/agents/register", methods=["POST"])
+def router_register_agent():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    data = request.get_json(silent=True) or {}
+    try:
+        r = requests.post(f"{router_url}/api/router/agents/register", json=data, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/agents/<agent_id>/status", methods=["POST"])
+def router_set_agent_status(agent_id):
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    data = request.get_json(silent=True) or {}
+    try:
+        r = requests.post(f"{router_url}/api/router/agents/{agent_id}/status", json=data, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/agents/<agent_id>/health", methods=["GET", "POST"])
+def router_check_agent_health(agent_id):
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        r = requests.get(f"{router_url}/api/router/agents/{agent_id}/health", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/agents/<agent_id>", methods=["DELETE"])
+def router_delete_agent(agent_id):
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        r = requests.delete(f"{router_url}/api/router/agents/{agent_id}", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/test_route", methods=["POST"])
+def router_test_route():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    data = request.get_json(silent=True) or {}
+    try:
+        r = requests.post(f"{router_url}/api/router/test_route", json=data, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/threshold", methods=["GET", "POST"])
+def router_get_or_set_threshold():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            r = requests.post(f"{router_url}/api/router/threshold", json=data, timeout=5)
+        else:
+            r = requests.get(f"{router_url}/api/router/threshold", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}", "threshold": 0.50}), 502
 
 def extract_evidence_from_logs(conv_id):
     """Pulls logs for a conversation from the Logging container and extracts skills and documents evidence."""
@@ -801,7 +892,15 @@ def populate_vectordb():
         if auth_hdr.startswith("Bearer "):
             t = auth_hdr.split(" ", 1)[1].strip()
             try:
-                from jwt_auth import decode_jwt_token
+                try:
+                    from jwt_auth import decode_jwt_token
+                except ImportError:
+                    import sys
+                    from pathlib import Path
+                    _parent = str(Path(__file__).resolve().parent.parent)
+                    if _parent not in sys.path:
+                        sys.path.insert(0, _parent)
+                    from jwt_auth import decode_jwt_token
                 p = decode_jwt_token(t)
                 if p:
                     user = {"email": p.get("email"), "role": p.get("role", "User"), "domain": p.get("domain")}
@@ -1143,7 +1242,9 @@ def list_containers():
 def get_container_accesses(container_name):
     """Defined container dependency mappings per SPECIFICATIONS.md."""
     deps = {
-        "web_ui": ["agents", "doc_rag", "auth_service", "logging"],
+        "web_ui": ["agents_router", "doc_rag", "auth_service", "logging"],
+        "agents_router": ["agents", "agent_tech_support", "logging"],
+        "agent_tech_support": ["logging"],
         "agents": ["auth_service", "doc_rag", "tools", "logging"],
         "doc_rag": ["auth_service", "ollama", "logging"],
         "tools": ["auth_service", "logging"],

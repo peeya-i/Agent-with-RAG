@@ -25,7 +25,7 @@ services:
     volumes:
       - ./auth_service/secrets:/app/secrets
       - ./auth_service/server.py:/app/server.py
-      - ./auth_service/jwt_auth.py:/app/jwt_auth.py
+      - ./jwt_auth.py:/app/jwt_auth.py
     environment:
       - PORT=8001
       - RUNNING_IN_DOCKER=true
@@ -55,6 +55,7 @@ services:
       - ./doc_RAG/chroma:/app/chroma
       - ./doc_RAG/secrets:/app/secrets
       - ./doc_RAG/server.py:/app/server.py
+      - ./jwt_auth.py:/app/jwt_auth.py
     environment:
       - PORT=8003
       - RUNNING_IN_DOCKER=true
@@ -79,6 +80,7 @@ services:
       - ./tools/data:/app/data
       - ./tools/secrets:/app/secrets
       - ./tools/server.py:/app/server.py
+      - ./jwt_auth.py:/app/jwt_auth.py
     environment:
       - PORT=8005
       - RUNNING_IN_DOCKER=true
@@ -103,6 +105,7 @@ services:
       - ./agents/server.py:/app/server.py
       - ./agents/skills_loader.py:/app/skills_loader.py
       - ./agents/custom_agent:/app/custom_agent
+      - ./jwt_auth.py:/app/jwt_auth.py
     environment:
       - PORT=8002
       - RUNNING_IN_DOCKER=true
@@ -119,6 +122,53 @@ services:
       - doc_rag
       - tools
 
+  agents_router:
+    build:
+      context: ./agent_router
+      dockerfile: Dockerfile
+    container_name: agents-router
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./jwt_auth.py:/app/jwt_auth.py
+      - ./agent_router/server.py:/app/server.py
+      - ./agent_router/router.py:/app/router.py
+      - ./agent_router/registry.py:/app/registry.py
+      - ./agent_router/embeddings.py:/app/embeddings.py
+    environment:
+      - PORT=8004
+      - RUNNING_IN_DOCKER=true
+      - AGENTS_URL=http://agents:8002
+      - TECH_SUPPORT_URL=http://agent_tech_support:8007
+      - LOGGING_URL=http://logging:8006
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - logging
+      - agents
+
+  agent_tech_support:
+    build:
+      context: ./agent_tech_support
+      dockerfile: Dockerfile
+    container_name: agent-tech-support
+    restart: unless-stopped
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./jwt_auth.py:/app/jwt_auth.py
+      - ./agent_tech_support/server.py:/app/server.py
+    environment:
+      - PORT=8007
+      - RUNNING_IN_DOCKER=true
+      - ROUTER_URL=http://agents_router:8004
+      - LOGGING_SERVICE_URL=http://logging:8006/api/logs
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemma-4-26b-a4b-it}
+    depends_on:
+      - logging
+      - agents_router
+
   web_ui:
     build:
       context: ./web_ui
@@ -132,6 +182,7 @@ services:
       - ./web_ui/static:/app/static
       - ./web_ui/templates:/app/templates
       - ./web_ui/app.py:/app/app.py
+      - ./jwt_auth.py:/app/jwt_auth.py
       - ./agents/secrets:/app/container_secrets/agents
       - ./doc_RAG/secrets:/app/container_secrets/doc_rag
       - ./tools/secrets:/app/container_secrets/tools
@@ -145,6 +196,8 @@ services:
       - RUNNING_IN_DOCKER=true
       - AUTH_SERVICE_URL=http://auth_service:8001
       - AGENTS_URL=http://agents:8002
+      - ROUTER_URL=http://agents_router:8004
+      - TECH_SUPPORT_URL=http://agent_tech_support:8007
       - DOC_RAG_URL=http://doc_rag:8003
       - TOOLS_URL=http://tools:8005
       - LOGGING_URL=http://logging:8006
@@ -153,6 +206,8 @@ services:
       - logging
       - auth_service
       - agents
+      - agents_router
+      - agent_tech_support
       - doc_rag
       - tools
 
