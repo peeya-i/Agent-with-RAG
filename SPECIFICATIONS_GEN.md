@@ -18,7 +18,7 @@ The system consists of 9 isolated Docker containers communicating across an inte
 | `auth_service` | Authentication, RBAC & Multi-Tenant Authority | `8001` | Python 3.11 / Flask + SQLite | `./auth_service/secrets/auth.db` |
 | `agents` | Default Multi-Tool Agent & FastMCP Service | `8002` | Python 3.11 / Flask + Google GenAI | `./agents/secrets`, `./agents/skills` |
 | `doc_rag` | ChromaDB Vector Store & RAG Engine | `8003` | Python 3.11 / Flask + FastMCP | `./doc_RAG/chroma`, `./doc_RAG/secrets` |
-| `agents_router` | Semantic Vector Router & Dynamic Agent Registry | `8004` | Python 3.11 / Flask + Embeddings | Router Registry (In-memory + health pings) |
+| `agents_router` | Semantic Vector Router & Dynamic Agent Registry | `8004` | Python 3.11 / Flask + Embeddings | `./agent_router/data/manual_agents.json` |
 | `tools` | Procedural Tools Execution Engine | `8005` | Python 3.11 / Flask + FastMCP | `./tools/data`, `./tools/secrets` |
 | `logging` | Central Logging & Telemetry Engine | `8006` | Python 3.11 / Flask | `./logging/logs/log.json` |
 | `agent_tech_support` | Specialized Product Tech Support & DevOps Agent | `8007` | Python 3.11 / Flask + Google GenAI | Standalone diagnostics & auto-registration |
@@ -64,8 +64,10 @@ The system consists of 9 isolated Docker containers communicating across an inte
 ```text
 Agent-with-RAG/
 ├── agent_router/                 # Semantic Vector Router & Dynamic Agent Registry (Port 8004)
+│   ├── data/                     # Volume-mounted persistence directory for manual agents
+│   │   └── manual_agents.json    # Persistent JSON store of manually added agents
 │   ├── embeddings.py             # Vector embedding engine (Google GenAI + local fallback)
-│   ├── registry.py               # Dynamic agent registry, status management, health check
+│   ├── registry.py               # Dynamic agent registry, persistence, actual status & health pings
 │   ├── router.py                 # Cosine similarity vector routing (> 50% threshold) & fallback
 │   ├── server.py                 # Flask REST server (/api/router/chat, /api/router/agents)
 │   ├── Dockerfile
@@ -218,10 +220,15 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
 └───────────────────────────────────────────────┴───────────────────────────────────────────────┘
 ```
 
-#### 2.4.3 Left Card: "Chat with the Agent" (50% Window Width)
+#### 2.4.3 Left Card: "Chat" (50% Window Width)
 - **Header Controls**:
+  - Title displayed simply as **"Chat"**.
+  - **"New Session"** button (`#btnNewChatSession`): Clears in-memory multi-turn context, resets message log, restores initial quick prompts, and initiates a fresh `conversation_id`.
   - `Agent` dropdown: Choices are `Custom Agent` (default) and `Google ADK Agent`.
   - `Max Turns` input: Numeric input (Default: `5`, Min: `1`, Max: `10`). Limits autonomous agent reasoning loops.
+- **Multi-Turn Context Passing**:
+  - Automatically maintains conversation turn history (`history` list) across successive user prompts under the active conversation ID.
+  - Passes prior turns in outbound requests to `/api/chat` so the agent and LLM retain continuity.
 - **Body Content**:
   - Scrollable conversation history container (`#chatMessages`).
   - Welcome banner with 4 quick prompt chips:
@@ -244,9 +251,15 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
 - **Footer**:
   - Auto-resizing textarea for user prompt.
   - Send button (`Enter` to submit, `Shift+Enter` for newline).
-  - Sends request to `/api/chat` with newly generated Conversation ID (`conv_<timestamp>`).
+  - Sends request to `/api/chat` forwarding prompt, conversation ID, and turn history.
 
 #### 2.4.4 Right Card: "Retrieved Context Evidence" (50% Window Width)
+- **Routed Agent Banner**:
+  - Displays top card for the selected agent:
+    - Selected agent display name and ID.
+    - Similarity score percentage and float value (e.g. `99.4% (0.9937)`).
+    - Match status badge (`Specialized Match (> Threshold)` vs `Default Fallback (<= Threshold)`).
+    - Routing explanation explaining why the target agent or default fallback was selected.
 - **Header Controls** (`.card-action-group`):
   - `Max RAG Chunks` dropdown: Options are `2`, `3`, `5` (Default), `7`, `10`. Defines maximum context chunks retrieved from vector store.
   - `Doc Threshold` input: Numeric similarity threshold (Default: `0.3`, Min: `0.0`, Max: `1.0`, Step: `0.05`).
@@ -297,7 +310,67 @@ The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the
 
 ---
 
-### 2.6 Tab 3: "Telemetry"
+### 2.6 Tab 3: "Agents" (Agents Router Interface)
+The **Agents Router Interface** manages semantic vector routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
+
+#### 2.6.1 Header & Control Bar
+- **Routing Threshold Control**: Input text box (`#routerThresholdInput`) and **Set** button to configure the minimum similarity routing threshold (default: `0.50` / `50%`). Backed by `GET` / `POST /api/router/threshold`.
+- **Refresh**: Triggers live health check sweep across all containers and reloads the directory.
+- **Add New Agent Button**: Displays a popup window modal (`#addAgentModal`) for manual agent onboarding.
+
+#### 2.6.2 Metric Cards (Horizontal Layout)
+All metrics are presented as cards displayed horizontally across the page:
+- **Total Registered Agents**: Count of all registered agents.
+- **Active Agents (UP)**: Count of operational agents currently healthy.
+- **Offline Agents (DOWN)**: Count of offline or unreachable agents.
+- **Routing Threshold**: Active minimum similarity threshold percentage (e.g., `50%`).
+
+#### 2.6.3 Top Card: "Test Semantic Prompt Routing (Vector Similarity)"
+- Positioned directly above the Registered Agents Directory table.
+- Interactive prompt playground to compute vector embeddings and evaluate semantic routing without invoking the LLM generation loop.
+- Displays selected agent, similarity score, threshold evaluation, routing explanation, routing latency, and ranked breakdown of all agents.
+
+#### 2.6.4 Bottom Card: "Registered Agents Directory & Real-time Status"
+- Table columns:
+  - **Agent Name & ID**: Agent identifier slug and display name.
+  - **Status**: Live actual status (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)` with failure reason in tooltip).
+  - **Role / Type**: Role badge with registration type below:
+    - `Hard Coded`: Primary default fallback agent (`agents-default`).
+    - `API Registered`: Dynamically registered agent via API (`agent-tech-support`).
+    - `Manually Added`: Agent added manually through the GUI.
+  - **Container Link / URI**: Endpoint URI (e.g. `http://agent_tech_support:8007`).
+  - **Description & Sample Queries**: Specialization description and sample prompt tags.
+  - **Queries**: Count of prompts routed to this agent.
+  - **Actions**:
+    - **Turn UP / Turn DOWN**: Toggles operational state (`POST /api/router/agents/<id>/status`).
+    - **🏥 Ping**: Dispatches active `/health` check against the target container.
+    - **🗑️ Delete**: Unregisters an agent and removes it from the persistent storage file.
+
+#### 2.6.5 Row-Click Inspection & Editing
+- Clicking any directory row opens the agent details modal.
+- For **Manually Added** agents, fields (Name, URI, Description, Prompts) are editable and saved via **Save Changes** (`POST /api/router/agents/<id>/update`).
+- For **Hard Coded** and **API Registered** agents, fields are read-only with a notice badge.
+
+#### 2.6.6 30-Second Periodic Actual Health Checking
+- The status of all registered agents is checked every **30 seconds**.
+- Background daemon thread in `agents_router` executes `check_all_health()` every 30 seconds.
+- Web UI frontend polls and executes health checks every 30 seconds (`POST /api/router/agents/health_check_all`) and refreshes the directory table.
+
+#### 2.6.7 "Add New Agent" Popup Window & Chrome Autofill Protection
+- Modal collects Agent ID, Display Name, URI, Description, and Sample Prompts.
+- Status dropdown (Up / Down) is removed; initial status is verified immediately via an active `/health` check ping.
+- Form is enclosed in `<form id="formAddAgent" autocomplete="off" onsubmit="event.preventDefault(); return false;">` with `data-lpignore="true"` and `type="button"` attributes on buttons to prevent Google Chrome from prompting to save passwords.
+- Bottom buttons: Cancel (closes modal) and Add (validates, registers, closes modal, dispatches health check, and updates table).
+
+#### 2.6.8 Volume Persistence for Manually Added Agents
+- Volume `./agent_router/data:/app/data` is mounted to the `agents_router` container.
+- Manually configured agents are stored in `/app/data/manual_agents.json`.
+- All manually configured agents are automatically loaded upon starting the router.
+- When an agent is deleted, its entry is permanently removed from `manual_agents.json`.
+
+---
+
+### 2.7 Tab 4: "Telemetry"
 Live operational analytics and token velocity monitoring.
 
 #### 2.6.1 Filter Bar
@@ -1020,7 +1093,6 @@ services:
       - ./tools/secrets:/app/container_secrets/tools
       - ./auth_service/secrets:/app/container_secrets/auth_service
       - ./web_ui/secrets:/app/container_secrets/web_ui
-      - ./embedding/secrets:/app/container_secrets/ollama
       - ./sample_docs:/app/sample_docs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment: [PORT=8000, RUNNING_IN_DOCKER=true, AUTH_SERVICE_URL=http://auth_service:8001, AGENTS_URL=http://agents:8002, DOC_RAG_URL=http://doc_rag:8003, TOOLS_URL=http://tools:8005, LOGGING_URL=http://logging:8006, OLLAMA_URL=http://ollama:11434]

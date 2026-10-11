@@ -45,6 +45,7 @@ except ImportError:
 
 PORT = int(os.environ.get("PORT", 8007))
 ROUTER_URL = os.environ.get("ROUTER_URL", "http://agents_router:8004")
+DOC_RAG_URL = os.environ.get("DOC_RAG_URL", "http://doc_rag:8003")
 LOGGING_URL = os.environ.get("LOGGING_SERVICE_URL", "http://logging:8006")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it")
@@ -72,8 +73,10 @@ def resolve_url(url, host, port):
 
 def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model=""):
     try:
-        url = resolve_url(LOGGING_URL, "logging", 8006)
-        requests.post(f"{url}/api/logs", json={
+        base_url = resolve_url(LOGGING_URL, "logging", 8006).rstrip("/")
+        if base_url.endswith("/api/logs"):
+            base_url = base_url[:-9].rstrip("/")
+        requests.post(f"{base_url}/api/logs", json={
             "invoker": invoker,
             "recipient": recipient,
             "conversation_id": conv_id,
@@ -85,8 +88,8 @@ def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, statu
             "model": model,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }, timeout=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to send log event to {base_url}/api/logs: {e}")
 
 def dynamic_registration_worker():
     """Background thread that automatically registers this agent with the agents-router on startup."""
@@ -114,7 +117,10 @@ def dynamic_registration_worker():
         ],
         "status": "up",
         "is_default": False,
+        "registration_type": "API Registered",
+        "agent_type": "API Registered",
         "metadata": {
+            "registration_type": "API Registered",
             "department": "Engineering & Technical Operations",
             "tier": "Tier-2/3 Support Specialist",
             "version": "1.0.0",
@@ -196,28 +202,181 @@ def process_chat():
         if h_lines:
             history_ctx = "Prior Conversation History:\n" + "\n".join(h_lines) + "\n\n"
 
-    # Generation via Google GenAI or local expert fallback
+    # 1. Query RAG Vector Store for relevant technical documentation
+    rag_docs = []
+    rag_context = ""
+    try:
+        rag_endpoint = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+        doc_query_payload = {
+            "query": message,
+            "document_type": "document",
+            "top_k": 3,
+            "conversation_id": conv_id
+        }
+        # Log outgoing vector query event
+        log_event(
+            invoker="Tech Support Agent",
+            recipient="Vector DB",
+            event_type="document_vector_query",
+            desc=f"Query document vector DB for tech support: '{message[:80]}'",
+            payload=doc_query_payload,
+            conv_id=conv_id
+        )
+
+        rag_headers = {"Content-Type": "application/json"}
+        if jwt_token:
+            rag_headers["Authorization"] = f"Bearer {jwt_token}"
+
+        r_rag = requests.post(f"{rag_endpoint}/api/rag/query", json=doc_query_payload, headers=rag_headers, timeout=5)
+        if r_rag.status_code == 200:
+            rag_data = r_rag.json()
+            matched_items = rag_data.get("results") or rag_data.get("matched_items") or []
+
+            doc_groups = {}
+            for item in matched_items:
+                meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                d_name = item.get("document_name") or meta.get("document_name") or item.get("name") or "Product Technical Documentation"
+                score = round(float(item.get("similarity_score", 0)), 4) if item.get("similarity_score") is not None else 0.0
+                idx = meta.get("chunk_index", 0)
+                txt = item.get("chunk_text") or item.get("text") or ""
+
+                if d_name not in doc_groups:
+                    doc_groups[d_name] = {
+                        "doc_name": d_name,
+                        "highest_similarity": score,
+                        "chunks": []
+                    }
+                if score > doc_groups[d_name]["highest_similarity"]:
+                    doc_groups[d_name]["highest_similarity"] = score
+                if not any(c["index"] == idx and abs(c["similarity"] - score) < 1e-4 for c in doc_groups[d_name]["chunks"]):
+                    doc_groups[d_name]["chunks"].append({
+                        "index": idx,
+                        "similarity": score,
+                        "text": txt
+                    })
+
+            rag_docs = list(doc_groups.values())
+            context_blocks = []
+            for doc in rag_docs:
+                for chunk in doc.get("chunks", []):
+                    context_blocks.append(f"[{doc['doc_name']} Chunk #{chunk['index']}]:\n{chunk['text']}")
+            if context_blocks:
+                rag_context = "Retrieved Technical Support & Product Documentation Context:\n" + "\n\n".join(context_blocks) + "\n\n"
+
+            # Log received vector response event
+            log_event(
+                invoker="Vector DB",
+                recipient="Tech Support Agent",
+                event_type="received_document_vector_response",
+                desc=f"Received document chunks from vector store ({len(matched_items)} items)",
+                payload=rag_data,
+                conv_id=conv_id
+            )
+    except Exception as rag_err:
+        logger.warning(f"Error querying RAG vector store from Tech Support Agent: {rag_err}")
+
+    # Build prompt with history and retrieved RAG context
+    prompt = f"{history_ctx}{rag_context}Product Technical Support Inquiry:\n{message}"
+
+    # 2. Generation via Google GenAI with detailed LLM call logging matching Custom Agent format
     content = ""
     api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
     if api_key:
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key)
-            prompt = f"{history_ctx}Product Technical Support Inquiry:\n{message}"
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config={
-                    "system_instruction": SYSTEM_PROMPT,
-                    "temperature": 0.3,
-                }
+        llm_start_time = time.time()
+        candidate_models = [model]
+        for fb in ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemma-4-26b-a4b-it"]:
+            if fb not in candidate_models:
+                candidate_models.append(fb)
+
+        last_err = None
+        for try_model in candidate_models:
+            for attempt in range(2):
+                try:
+                    # Log LLM invocation (outbound call to LLM)
+                    log_event(
+                        invoker="Tech Support Agent",
+                        recipient="LLM",
+                        event_type="llm_invocation",
+                        desc=f"Sent prompt to Google GenAI ({try_model})",
+                        payload={
+                            "model": try_model,
+                            "prompt": prompt,
+                            "system_instruction": SYSTEM_PROMPT,
+                            "config": {"temperature": 0.3}
+                        },
+                        conv_id=conv_id,
+                        model=try_model
+                    )
+
+                    from google import genai
+                    client = genai.Client(api_key=api_key)
+                    response = client.models.generate_content(
+                        model=try_model,
+                        contents=prompt,
+                        config={
+                            "system_instruction": SYSTEM_PROMPT,
+                            "temperature": 0.3,
+                        }
+                    )
+                    content = response.text or ""
+                    llm_dur_ms = int((time.time() - llm_start_time) * 1000)
+
+                    # Token counts
+                    usage_meta = getattr(response, "usage_metadata", None)
+                    in_tok = getattr(usage_meta, "prompt_token_count", len(prompt) // 4) or (len(prompt) // 4)
+                    out_tok = getattr(usage_meta, "candidates_token_count", len(content) // 4) or (len(content) // 4)
+
+                    # Log LLM response (inbound response from LLM)
+                    log_event(
+                        invoker="LLM",
+                        recipient="Tech Support Agent",
+                        event_type="llm_response",
+                        desc=f"Received response from Google GenAI ({try_model}) in {llm_dur_ms}ms",
+                        payload={
+                            "model": try_model,
+                            "response_text": content,
+                            "response": content,
+                            "prompt": prompt,
+                            "system_instruction": SYSTEM_PROMPT,
+                            "input_tokens": in_tok,
+                            "output_tokens": out_tok,
+                            "duration_ms": llm_dur_ms
+                        },
+                        conv_id=conv_id,
+                        duration_ms=llm_dur_ms,
+                        model=try_model
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+                    if "503" in err_str or "404" in err_str or "429" in err_str:
+                        time.sleep(0.5)
+                        continue
+                    break
+            if content:
+                break
+
+        if not content and last_err:
+            llm_dur_ms = int((time.time() - llm_start_time) * 1000)
+            logger.warning(f"GenAI generation failed ({last_err}); falling back to specialized diagnostic engine.")
+            log_event(
+                invoker="Tech Support Agent",
+                recipient="LLM",
+                event_type="llm_error",
+                desc=f"Gemini API error: {last_err}",
+                payload={"error": str(last_err)},
+                conv_id=conv_id,
+                status="error",
+                duration_ms=llm_dur_ms,
+                model=model
             )
-            content = response.text or ""
-        except Exception as e:
-            logger.warning(f"GenAI generation failed ({e}); falling back to specialized diagnostic engine.")
 
     if not content:
-        # Deterministic diagnostic response
+        # Deterministic diagnostic response with documentation references if available
+        doc_ref_section = ""
+        if rag_context:
+            doc_ref_section = f"\n\n**Referenced Knowledge Context**:\n{rag_context[:400]}..."
         content = (
             f"### 🛠️ Technical Support & DevOps Diagnostics\n\n"
             f"**Issue Summary**: '{message}'\n\n"
@@ -227,9 +386,12 @@ def process_chat():
             f"3. **Resource Saturation**: Check memory and CPU usage limits. Code 137 indicates kernel OOMKiller; verify container memory limits.\n"
             f"4. **Authentication & Headers**: Ensure Bearer JWT token is present in the `Authorization` header and secrets match the auth service configuration.\n\n"
             f"If the issue persists, capture the full stack trace and correlate with conversation `{conv_id}`."
+            f"{doc_ref_section}"
         )
 
     elapsed_ms = round((time.time() - start_time) * 1000.0, 2)
+
+    evidence_docs = rag_docs if rag_docs else [{"title": "Company Technical Troubleshooting & Architecture Guide", "similarity": 0.94}]
 
     result = {
         "status": "success",
@@ -241,7 +403,7 @@ def process_chat():
         "elapsed_ms": elapsed_ms,
         "retrieved_evidence": {
             "skills": [{"name": "tech_diagnostics", "description": "DevOps & System Diagnostics Toolset"}],
-            "documents": [{"title": "Company Technical Troubleshooting & Architecture Guide", "similarity": 0.94}]
+            "documents": evidence_docs
         }
     }
 

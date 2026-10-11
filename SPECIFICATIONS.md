@@ -5,8 +5,10 @@ Build a web app to manage an AI Agent with RAG ability.
 ```text
 Agent-with-RAG/
 ├── agent_router/            # Semantic Vector Router & Dynamic Agent Registry (Port 8004)
+│   ├── data/                # Volume-mounted persistence directory for manual agents
+│   │   └── manual_agents.json # Persistent JSON store of manually added agents
 │   ├── embeddings.py        # Vector embedding engine (Google GenAI + local fallback)
-│   ├── registry.py          # Dynamic agent registry, operational status, and health pings
+│   ├── registry.py          # Dynamic agent registry, persistence, actual status & health pings
 │   ├── router.py            # Vector routing (> 50% threshold) & default agents:8002 fallback
 │   ├── server.py            # Flask REST router API (/api/router/chat, /api/router/agents)
 │   ├── Dockerfile
@@ -220,42 +222,57 @@ The Main App window should have:
 - Display the list of available Embedding Models for the embedding service. Briefly list the characteristics including the dimensions, context window, size, brief description, and status (Installed, Active, Available to Pull).
 
 ### 🤖 The third page: “Agents” (Agents Router Interface)
-The **Agents Router Interface** manages semantic vector routing and dynamic registration of specialized agent containers across the cluster.
+The **Agents Router Interface** manages semantic vector routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
 - **Placement**: Located between **VectorDB Mgnt** (Tab 2) and **Telemetry** (Tab 4).
 - **Header & Controls**:
-  - **Routing Threshold Input Text Box**: Allows the user to set the minimum Routing Threshold (e.g. `0.50`) to route to specialized agents or fall back to the default Agent. Supported via `GET` / `POST /api/router/threshold`.
-  - **"Refresh"** button to poll live status and handled query counts of all registered agents.
-  - **"Add New Agent"** button that opens a configuration modal for manual agent onboarding.
+  - **Routing Threshold Input Text Box**: Allows the user to set the minimum Routing Threshold (e.g. `0.50`) to route to specialized agents or fall back to the default Agent. Supported via `GET` / `POST /api/router/threshold` with an inline **Set** button.
+  - **"Refresh"** button to poll live status, trigger a full health-check sweep across all agents, and update handled query counts.
+  - **"Add New Agent"** button that opens a popup window for manual agent onboarding.
 - **Summary Metrics (Displayed as Horizontal Cards)**:
   - All statistics are displayed as cards arranged horizontally across the page:
-    - Total Registered Agents count.
-    - Active Agents (UP) count.
-    - Offline Agents (DOWN) count.
-    - Routing Threshold (e.g. `50%` / `> 0.50`).
+    - **Total Registered Agents**: Count of all registered agents.
+    - **Active Agents (UP)**: Count of operational agents currently responding as healthy.
+    - **Offline Agents (DOWN)**: Count of offline or unreachable agents.
+    - **Routing Threshold**: Active minimum similarity threshold percentage (e.g. `50%` / `> 0.50`).
+- **Interactive Prompt Routing Playground ("Test Semantic Route")**:
+  - Positioned directly **above** the "Registered Agents Directory & Real-time Status" card.
+  - Input field to test query routing without invoking the LLM generation loop.
+  - Returns selected agent, similarity percentage, threshold pass status (`> 50%` vs default fallback triggered), explanation, routing latency, and a complete ranked breakdown of all agents and their individual similarity scores.
 - **Registered Agents Directory & Live Status**:
   - Displays table of all agents currently registered with the router:
     - **Agent Name & ID**: Agent identifier slug and human-readable title.
-    - **Status Badge**: Operational status (`UP` / `DOWN`) displayed prominently next to each agent with color-coded live indicators.
-    - **Role / Type**: `Default Fallback Agent` (primary multi-tool agent on port 8002) vs `Specialized Agent` (e.g. `agent-tech-support` on port 8007).
-    - **Container Link / URL**: Container endpoint URI (e.g. `http://agent_tech_support:8007` or `http://agents:8002`).
+    - **Status**: Displays the **actual status** of each agent (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)` with failure reason in tooltip).
+    - **Role / Type**: Role badge (`Default Fallback` vs `Specialized`) with the registration type displayed below:
+      - `Hard Coded`: Primary default agent defined in system code (`agents-default`).
+      - `API Registered`: Container registered dynamically via API upon turn-up (`agent-tech-support`).
+      - `Manually Added`: Agent added manually through the GUI.
+    - **Container Link / URI**: Container endpoint URI (e.g. `http://agent_tech_support:8007` or `http://agents:8002`).
     - **Description & Sample Queries**: Specialized domain capabilities and sample prompts used for vector embedding calculations.
-    - **Handled Queries**: Counter of prompts routed and handled by this agent.
+    - **Queries**: Counter of prompts routed and handled by this agent.
     - **Actions**:
-      - **Turn UP / Turn DOWN**: Instantly toggles the operational state of the agent (`POST /api/router/agents/<id>/status`). If an agent is DOWN, semantic matches for it are skipped and routed to the default fallback agent.
-      - **Ping / Health**: Pings `{agent.url}/health` to test live container connectivity.
-      - **Delete**: Unregisters an agent from the router (disabled for default fallback agent).
-- **Dynamic & Manual Agent Registration**:
-  - **API Registration**: Containers dynamically register themselves on startup by calling `POST http://agents_router:8004/api/router/agents/register` with their `id`, `name`, `url`, `description`, `sample_prompts`, and `status`.
-  - **Manual UI Registration**: Users can click "Add New Agent" in the GUI to manually register an agent container by providing:
-    - Agent ID
-    - Agent Display Name
-    - Container Link / URL
-    - Specialization & Description
-    - Sample Prompts / Queries (multiline)
-    - Initial Status (`UP` / `DOWN`).
-- **Interactive Prompt Routing Playground ("Test Semantic Route")**:
-  - Input field to test query routing without invoking the LLM generation loop.
-  - Returns target agent selected, similarity percentage, threshold pass status (`> 50%` vs default fallback triggered), explanation, routing latency, and a complete ranked breakdown of all agents and their individual similarity scores.
+      - **Turn UP / Turn DOWN**: Toggles operational state (`POST /api/router/agents/<id>/status`).
+      - **Ping / Health**: Dispatches on-demand `/health` check against the container endpoint.
+      - **Delete**: Unregisters an agent from the router and permanently removes it from the persistent storage file (disabled for default fallback agent).
+- **Row-Click Details & Editing**:
+  - Clicking any row in the directory table opens the details modal.
+  - For **Manually Added** agents, parameters (Name, URI, Description, Prompts) are fully editable and saved via **Save Changes** (`POST /api/router/agents/<id>/update`).
+  - For **Hard Coded** and **API Registered** agents, the configuration is read-only with a contextual tag.
+- **30-Second Periodic Actual Health Checking**:
+  - The status of all registered agents is checked every **30 seconds**.
+  - A background daemon thread in `agents_router` executes `check_all_health()` every 30 seconds to update actual connectivity.
+  - The Web UI automatically runs periodic health checks every 30 seconds (`POST /api/router/agents/health_check_all`) and refreshes the directory table.
+- **"Add New Agent" Popup Window & Chrome Autofill Isolation**:
+  - Modal displays fields for Agent ID, Display Name, URI, Description, and Sample Prompts.
+  - The selection for Agent status drop down (Up / Down) is removed; initial status is determined immediately by an active `/health` check upon creation.
+  - Modal contents are enclosed in an explicit form with `autocomplete="off"`, `data-lpignore="true"`, and explicit `type="button"` attributes to prevent Google Chrome from prompting to save passwords when closing or submitting the window.
+  - Bottom buttons:
+    - **Cancel**: Closes the popup window and returns to the Agents page.
+    - **Add**: Registers the agent, closes the popup window immediately, sends a health check, and updates the display with the actual status.
+- **Volume Mounted Persistence for Manually Added Agents**:
+  - A persistent volume (`./agent_router/data:/app/data`) is mounted to the `agents_router` container.
+  - Manually configured agents are stored in `/app/data/manual_agents.json`.
+  - Upon starting, `agents_router` automatically loads all manually configured agents from the storage file into the registry.
+  - When the delete button is clicked, the agent is removed from the file.
 
 ### 📊 The fourth page: “Telemetry”
 - The Web UI queries the Logging container's statistics and query API to compute and display the telemetry counters and timeline graphs.

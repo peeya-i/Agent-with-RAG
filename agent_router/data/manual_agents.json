@@ -1,0 +1,27 @@
+[
+  {
+    "id": "agent-movie-script",
+    "name": "Movie Script Creator",
+    "description": "Make Movie script and iterate until it is good.",
+    "url": "http://agent-movie-script:8010",
+    "sample_prompts": [
+      "I want a movie script and screenplay written",
+      "Write a movie script about\u2026",
+      "Write a playwright for me about\u2026",
+      "I need a story for theater play"
+    ],
+    "status": "up",
+    "is_available": true,
+    "is_default": false,
+    "queries_handled": 0,
+    "created_at": "2026-10-11T05:17:31.992954+00:00",
+    "last_status_change": "2026-10-11T05:17:31.992954+00:00",
+    "last_health_check": null,
+    "health_status": "unknown",
+    "metadata": {
+      "registration_type": "Manually Added"
+    },
+    "agent_type": "Manually Added",
+    "has_embedding": true
+  }
+]

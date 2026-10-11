@@ -216,3 +216,43 @@ def test_tech_support_agent_service():
     assert "response" in chat_data
     assert "Technical Support" in chat_data.get("agent_type", "")
     assert len(chat_data["response"]) > 0
+
+def test_manual_agents_persistence(tmp_path):
+    import json
+    storage_file = str(tmp_path / "manual_agents.json")
+    registry1 = AgentRegistry(storage_file=storage_file)
+
+    manual_agent = AgentInfo(
+        id="manual-billing-agent",
+        name="Manual Billing Agent",
+        description="Handles invoicing and billing queries",
+        url="http://billing:8008",
+        sample_prompts=["View invoice", "Update credit card"],
+        status="up",
+        metadata={"registration_type": "Manually Added"}
+    )
+    manual_agent.agent_type = "Manually Added"
+    registry1.register(manual_agent)
+
+    # Verify file is written
+    assert os.path.exists(storage_file)
+    with open(storage_file, "r") as f:
+        data = json.load(f)
+    assert len(data) == 1
+    assert data[0]["id"] == "manual-billing-agent"
+
+    # Simulate restart by initializing a new registry instance
+    registry2 = AgentRegistry(storage_file=storage_file)
+    loaded = registry2.load_manual_agents()
+    assert len(loaded) == 1
+    assert loaded[0].id == "manual-billing-agent"
+    assert registry2.get_agent("manual-billing-agent") is not None
+
+    # Delete agent
+    assert registry2.unregister("manual-billing-agent") is True
+    assert registry2.get_agent("manual-billing-agent") is None
+
+    # Verify entry is removed from the file
+    with open(storage_file, "r") as f:
+        data_after = json.load(f)
+    assert len(data_after) == 0

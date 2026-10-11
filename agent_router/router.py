@@ -236,6 +236,8 @@ class VectorRouter:
 
         # Inject routing metadata into the response
         if isinstance(resp_data, dict):
+            if "conversation_id" not in resp_data and payload.get("conversation_id"):
+                resp_data["conversation_id"] = payload.get("conversation_id")
             resp_data["router_metadata"] = {
                 "routed_agent_id": agent.id,
                 "routed_agent_name": agent.name,

@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any
@@ -107,8 +108,9 @@ def seed_default_agents():
         ],
         status="up",
         is_default=True,
-        metadata={"role": "default_fallback", "container": "agents", "port": 8002}
+        metadata={"role": "default_fallback", "container": "agents", "port": 8002, "registration_type": "Hard Coded"}
     )
+    default_agent.agent_type = "Hard Coded"
     registry.register(default_agent)
 
     # 2. Specialized Technical Support Agent
@@ -133,9 +135,14 @@ def seed_default_agents():
         ],
         status="up",
         is_default=False,
-        metadata={"role": "specialized_tech_support", "container": "agent_tech_support", "port": 8007}
+        metadata={"role": "specialized_tech_support", "container": "agent_tech_support", "port": 8007, "registration_type": "API Registered"}
     )
+    tech_agent.agent_type = "API Registered"
     registry.register(tech_agent)
+
+    # 3. Load all manually configured agents from the mounted volume storage file upon starting
+    manual_loaded = registry.load_manual_agents()
+    logger.info(f"Loaded {len(manual_loaded)} manually configured agents upon starting.")
 
 seed_default_agents()
 
@@ -199,6 +206,12 @@ def register_agent():
     sample_prompts = data.get("sample_prompts", [])
     status = data.get("status", "up")
     is_default = bool(data.get("is_default", False))
+    registration_type = (
+        data.get("registration_type")
+        or data.get("agent_type")
+        or (data.get("metadata", {}).get("registration_type") if isinstance(data.get("metadata"), dict) else None)
+        or ("Hard Coded" if is_default else "API Registered")
+    )
 
     if not agent_id or not name or not url:
         return jsonify({"status": "error", "message": "Missing required fields: id, name, url"}), 400
@@ -206,6 +219,11 @@ def register_agent():
     # Format sample_prompts if string was supplied
     if isinstance(sample_prompts, str):
         sample_prompts = [p.strip() for p in sample_prompts.split("\n") if p.strip()]
+
+    metadata = data.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["registration_type"] = registration_type
 
     agent = AgentInfo(
         id=agent_id.strip(),
@@ -215,17 +233,18 @@ def register_agent():
         sample_prompts=sample_prompts,
         status=status,
         is_default=is_default,
-        metadata=data.get("metadata", {})
+        metadata=metadata
     )
+    agent.agent_type = registration_type
 
     registered = registry.register(agent, auto_embed=True)
-    logger.info(f"Agent dynamically registered: {registered.id} ({registered.name}) at {registered.url}")
+    logger.info(f"Agent dynamically registered: {registered.id} ({registered.name}, Type: {registered.agent_type}) at {registered.url}")
 
     log_event(
         invoker="AgentRegistry",
         recipient="logging",
         event_type="agent_registered",
-        desc=f"Agent '{registered.name}' ({registered.id}) dynamically registered at {registered.url}",
+        desc=f"Agent '{registered.name}' ({registered.id}) registered as {registered.agent_type} at {registered.url}",
         payload=registered.to_dict(),
     )
 
@@ -234,6 +253,62 @@ def register_agent():
         "message": f"Agent '{registered.name}' registered successfully.",
         "agent": registered.to_dict()
     }), 201
+
+@app.route("/api/router/agents/<agent_id>/update", methods=["POST"])
+def update_agent(agent_id):
+    """Updates an existing agent's details (allowed for Manually Added agents)."""
+    agent = registry.get_agent(agent_id)
+    if not agent:
+        return jsonify({"status": "error", "message": f"Agent '{agent_id}' not found"}), 404
+
+    agent_type = getattr(agent, "agent_type", agent.metadata.get("registration_type", ""))
+    if agent_type != "Manually Added":
+        return jsonify({
+            "status": "error",
+            "message": f"Only 'Manually Added' agents can be modified (this agent is '{agent_type}')."
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    url = data.get("url")
+    description = data.get("description")
+    sample_prompts = data.get("sample_prompts")
+    status = data.get("status")
+
+    if name:
+        agent.name = name.strip()
+    if url:
+        agent.url = url.strip().rstrip("/")
+    if description is not None:
+        agent.description = description.strip()
+    if status in ["up", "down"]:
+        agent.status = status
+    if sample_prompts is not None:
+        if isinstance(sample_prompts, str):
+            agent.sample_prompts = [p.strip() for p in sample_prompts.split("\n") if p.strip()]
+        elif isinstance(sample_prompts, list):
+            agent.sample_prompts = [str(p).strip() for p in sample_prompts if str(p).strip()]
+
+    # Re-embed agent text
+    try:
+        agent.embedding = registry.embedding_engine.embed_text(agent.get_embedding_text())
+        if agent.sample_prompts:
+            agent.sample_embeddings = [registry.embedding_engine.embed_text(p) for p in agent.sample_prompts]
+        else:
+            agent.sample_embeddings = []
+    except Exception as e:
+        logger.warning(f"Error re-embedding agent '{agent_id}': {e}")
+
+    # Persist changes if this is a manually added agent
+    if getattr(agent, "agent_type", "") == "Manually Added" or (agent.metadata and agent.metadata.get("registration_type") == "Manually Added"):
+        registry.save_manual_agents()
+
+    logger.info(f"Agent '{agent_id}' updated successfully.")
+    return jsonify({
+        "status": "success",
+        "message": f"Agent '{agent.name}' updated successfully.",
+        "agent": agent.to_dict()
+    })
 
 @app.route("/api/router/agents/<agent_id>", methods=["DELETE"])
 def unregister_agent(agent_id):
@@ -273,6 +348,25 @@ def check_agent_health(agent_id):
     """Pings the target agent container to verify live connectivity."""
     result = registry.check_health(agent_id)
     return jsonify(result)
+
+@app.route("/api/router/agents/health_check_all", methods=["POST", "GET"])
+def check_all_agents_health():
+    """Pings all target agent containers to verify live connectivity."""
+    results = registry.check_all_health()
+    return jsonify({"status": "success", "results": results})
+
+def background_health_checker():
+    """Periodically probes all registered agents every 30 seconds to maintain actual status."""
+    time.sleep(2)
+    while True:
+        try:
+            registry.check_all_health()
+        except Exception as e:
+            logger.error(f"Error in background_health_checker: {e}")
+        time.sleep(30)
+
+health_checker_thread = threading.Thread(target=background_health_checker, daemon=True)
+health_checker_thread.start()
 
 @app.route("/api/router/test_route", methods=["POST"])
 def test_route():

@@ -347,8 +347,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Conversational session history and router metadata state
+  // Conversational session history and router metadata state
   let chatSessionHistory = [];
   let lastRouterMetadata = null;
+  let activeChatConversationId = 'conv_' + Date.now();
+  window.activeChatConversationId = activeChatConversationId;
+  window.currentActiveConversationId = activeChatConversationId;
 
   // New Session button to clear context and start new chat
   const btnNewChatSession = document.getElementById('btnNewChatSession');
@@ -356,8 +360,9 @@ document.addEventListener('DOMContentLoaded', () => {
     btnNewChatSession.addEventListener('click', () => {
       chatSessionHistory = [];
       lastRouterMetadata = null;
-      window.currentActiveConversationId = 'conv_' + Date.now();
-      selectedConversationId = window.currentActiveConversationId;
+      activeChatConversationId = 'conv_' + Date.now();
+      window.activeChatConversationId = activeChatConversationId;
+      window.currentActiveConversationId = activeChatConversationId;
       chatMessages.innerHTML = `
         <div class="chat-welcome">
           <div class="welcome-icon">💡</div>
@@ -413,8 +418,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const isCustomModel = (chatModel.value || '').toLowerCase().includes('custom');
-      const activeConvId = window.currentActiveConversationId || ('conv_' + Date.now());
-      window.currentActiveConversationId = activeConvId;
+      if (!activeChatConversationId) {
+        activeChatConversationId = 'conv_' + Date.now();
+        window.activeChatConversationId = activeChatConversationId;
+        window.currentActiveConversationId = activeChatConversationId;
+      }
+      const activeConvId = activeChatConversationId;
 
       const payload = {
         message: text,
@@ -457,8 +466,9 @@ document.addEventListener('DOMContentLoaded', () => {
       updateAgentBubble(pendingAgentBubble, data);
 
       if (data.conversation_id) {
+        activeChatConversationId = data.conversation_id;
+        window.activeChatConversationId = data.conversation_id;
         window.currentActiveConversationId = data.conversation_id;
-        selectedConversationId = data.conversation_id;
       }
 
       // Track router metadata if returned
@@ -1275,7 +1285,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function selectConversation(cid) {
     selectedConversationId = cid;
-    window.currentActiveConversationId = cid;
+    // Isolated audit logs selection - does NOT change activeChatConversationId
     selectedConvBadge.textContent = cid;
     loadContextEvidence(cid);
 
@@ -2719,6 +2729,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnRefreshAgents = document.getElementById('btnRefreshAgents');
   const btnOpenAddAgentModal = document.getElementById('btnOpenAddAgentModal');
   const addAgentModal = document.getElementById('addAgentModal');
+  const addAgentModalTitle = document.getElementById('addAgentModalTitle');
+  const modalAgentTypeNotice = document.getElementById('modalAgentTypeNotice');
   const btnCloseAddAgentModalX = document.getElementById('btnCloseAddAgentModalX');
   const btnCancelAddAgent = document.getElementById('btnCancelAddAgent');
   const btnSubmitAddAgent = document.getElementById('btnSubmitAddAgent');
@@ -2726,6 +2738,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnTestRoute = document.getElementById('btnTestRoute');
   const testRouteInput = document.getElementById('testRouteInput');
   const testRouteResults = document.getElementById('testRouteResults');
+
+  let currentModalMode = 'add'; // 'add', 'edit', 'view'
+  let currentModalAgentId = null;
 
   async function updateRoutingThreshold() {
     if (!routerThresholdInput) return;
@@ -2753,7 +2768,7 @@ document.addEventListener('DOMContentLoaded', () => {
         alert(`Failed to set threshold: ${res.message || 'Error'}`);
       }
     } catch (e) {
-      alert(`Error updating threshold: ${e.message}`);
+      alert(`Error setting routing threshold: ${e.message}`);
     }
   }
 
@@ -2767,6 +2782,21 @@ document.addEventListener('DOMContentLoaded', () => {
         updateRoutingThreshold();
       }
     });
+  }
+
+  function getAgentType(agent) {
+    let t = agent.agent_type;
+    if (!t && agent.metadata && agent.metadata.registration_type) {
+      t = agent.metadata.registration_type;
+    }
+    if (!t) {
+      t = agent.is_default ? "Hard Coded" : "API Registered";
+    }
+    const tLower = t.toLowerCase();
+    if (tLower.includes("manual")) return "Manually Added";
+    if (tLower.includes("hard")) return "Hard Coded";
+    if (tLower.includes("api")) return "API Registered";
+    return agent.is_default ? "Hard Coded" : "API Registered";
   }
 
   async function loadAgentsData() {
@@ -2789,11 +2819,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      // Update statistics
+      // Update statistics based on actual status
       let activeCount = 0;
       let offlineCount = 0;
       agents.forEach(a => {
-        if (a.status === 'up') activeCount++;
+        const isUp = (a.status === 'up' && (a.health_status === 'healthy' || !a.health_status));
+        if (isUp) activeCount++;
         else offlineCount++;
       });
 
@@ -2809,16 +2840,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
       agents.forEach(agent => {
         const tr = document.createElement('tr');
-        const isUp = (agent.status === 'up');
+        tr.style.cursor = 'pointer';
+        tr.title = 'Click to view or edit agent details';
+        const isUp = (agent.status === 'up' && (agent.health_status === 'healthy' || !agent.health_status));
         const isDefault = agent.is_default;
+        const agentType = getAgentType(agent);
 
-        const statusBadge = isUp 
-          ? `<span class="badge badge-active" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981;"></span> UP (Active)</span>`
-          : `<span class="badge badge-locked" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#ef4444;"></span> DOWN (Offline)</span>`;
+        let statusBadge = '';
+        if (isUp) {
+          statusBadge = `
+            <div style="display:inline-flex; flex-direction:column; gap:2px;">
+              <span class="badge badge-active" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;">
+                <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981;"></span> UP
+              </span>
+              <span style="font-size:0.7rem; color:#10b981; font-weight:500;">🟢 Healthy</span>
+            </div>`;
+        } else {
+          const rawErr = agent.health_status || 'Offline';
+          const shortErr = rawErr.startsWith('unreachable') ? 'Unreachable' : (rawErr.startsWith('unhealthy') ? 'Unhealthy' : 'Offline');
+          statusBadge = `
+            <div style="display:inline-flex; flex-direction:column; gap:2px;">
+              <span class="badge badge-locked" style="display:inline-flex; align-items:center; gap:5px; font-weight:700;" title="${escapeHtml(rawErr)}">
+                <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#ef4444;"></span> DOWN
+              </span>
+              <span style="font-size:0.7rem; color:#ef4444; font-weight:500;" title="${escapeHtml(rawErr)}">🔴 ${escapeHtml(shortErr)}</span>
+            </div>`;
+        }
 
-        const typeBadge = isDefault
+        const roleBadge = isDefault
           ? `<span class="badge" style="background:#065f46; color:#a7f3d0; border:1px solid #10b981;">🛡️ Default Fallback</span>`
           : `<span class="badge" style="background:#581c87; color:#e9d5ff; border:1px solid #a855f7;">⚡ Specialized</span>`;
+
+        let typeBadgeStyle = '';
+        let typeIcon = '';
+        if (agentType === "Hard Coded") {
+          typeBadgeStyle = 'background:#1e293b; color:#cbd5e1; border:1px solid #475569;';
+          typeIcon = '💻 ';
+        } else if (agentType === "API Registered") {
+          typeBadgeStyle = 'background:#0c4a6e; color:#7dd3fc; border:1px solid #0284c7;';
+          typeIcon = '🔌 ';
+        } else {
+          typeBadgeStyle = 'background:#451a03; color:#fdba74; border:1px solid #ea580c;';
+          typeIcon = '✍️ ';
+        }
+        const typeBadge = `<span class="badge" style="${typeBadgeStyle} font-size:0.75rem; display:inline-block; margin-top:4px;">${typeIcon}${agentType}</span>`;
 
         // Format sample prompts preview
         let sampleTags = '';
@@ -2841,7 +2906,10 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
           </td>
           <td>${statusBadge}</td>
-          <td>${typeBadge}</td>
+          <td>
+            <div>${roleBadge}</div>
+            <div>${typeBadge}</div>
+          </td>
           <td><code style="background:#0f172a; padding:4px 8px; border-radius:4px; font-size:0.78rem; border:1px solid #334155; color:#38bdf8;">${escapeHtml(agent.url)}</code></td>
           <td style="max-width:320px;">
             <div style="font-size:0.83rem; color:#cbd5e1; line-height:1.3;">${escapeHtml(agent.description)}</div>
@@ -2867,18 +2935,33 @@ document.addEventListener('DOMContentLoaded', () => {
           </td>
         `;
 
+        // Row click opens the modal with agent info
+        tr.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          openAgentDetailsModal(agent, agentType);
+        });
+
         // Wire actions
         const btnStatus = tr.querySelector('.btn-agent-status');
         if (btnStatus) {
-          btnStatus.onclick = () => toggleAgentStatus(agent.id, agent.status);
+          btnStatus.onclick = (e) => {
+            e.stopPropagation();
+            toggleAgentStatus(agent.id, agent.status);
+          };
         }
         const btnHealth = tr.querySelector('.btn-agent-health');
         if (btnHealth) {
-          btnHealth.onclick = () => checkAgentHealth(agent.id);
+          btnHealth.onclick = (e) => {
+            e.stopPropagation();
+            checkAgentHealth(agent.id);
+          };
         }
         const btnDelete = tr.querySelector('.btn-agent-delete');
         if (btnDelete) {
-          btnDelete.onclick = () => deleteAgent(agent.id, agent.name);
+          btnDelete.onclick = (e) => {
+            e.stopPropagation();
+            deleteAgent(agent.id, agent.name);
+          };
         }
 
         agentsTbody.appendChild(tr);
@@ -2886,6 +2969,86 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       console.error('Error loading agents data:', e);
       if (agentsTbody) agentsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error connecting to agents router.</td></tr>';
+    }
+  }
+
+  function openAgentDetailsModal(agent, agentType) {
+    if (addAgentAlertMsg) addAgentAlertMsg.classList.add('hidden');
+    const inputId = document.getElementById('inputNewAgentId');
+    const inputName = document.getElementById('inputNewAgentName');
+    const inputUrl = document.getElementById('inputNewAgentUrl');
+    const inputDesc = document.getElementById('inputNewAgentDesc');
+    const inputPrompts = document.getElementById('inputNewAgentPrompts');
+    const selectStatus = document.getElementById('selectNewAgentStatus');
+
+    currentModalAgentId = agent.id;
+
+    if (inputId) {
+      inputId.value = agent.id || '';
+      inputId.disabled = true;
+    }
+    if (inputName) {
+      inputName.value = agent.name || '';
+      inputName.disabled = (agentType !== 'Manually Added');
+    }
+    if (inputUrl) {
+      inputUrl.value = agent.url || '';
+      inputUrl.disabled = (agentType !== 'Manually Added');
+    }
+    if (inputDesc) {
+      inputDesc.value = agent.description || '';
+      inputDesc.disabled = (agentType !== 'Manually Added');
+    }
+    if (inputPrompts) {
+      inputPrompts.value = (agent.sample_prompts || []).join('\n');
+      inputPrompts.disabled = (agentType !== 'Manually Added');
+    }
+    if (selectStatus) {
+      selectStatus.value = agent.status || 'up';
+      selectStatus.disabled = (agentType !== 'Manually Added');
+    }
+
+    if (agentType === 'Manually Added') {
+      currentModalMode = 'edit';
+      if (addAgentModalTitle) addAgentModalTitle.innerHTML = `<span class="modal-icon">✏️</span> Edit Agent: ${escapeHtml(agent.name)}`;
+      if (modalAgentTypeNotice) {
+        modalAgentTypeNotice.className = '';
+        modalAgentTypeNotice.style.background = 'rgba(234, 88, 12, 0.15)';
+        modalAgentTypeNotice.style.border = '1px solid rgba(234, 88, 12, 0.4)';
+        modalAgentTypeNotice.style.color = '#fdba74';
+        modalAgentTypeNotice.innerHTML = `<strong>✍️ Manually Added:</strong> You can modify the configuration and URL of this agent.`;
+      }
+      if (btnCancelAddAgent) btnCancelAddAgent.textContent = 'Cancel';
+      if (btnSubmitAddAgent) {
+        btnSubmitAddAgent.style.display = 'inline-block';
+        btnSubmitAddAgent.textContent = 'Save Changes';
+      }
+    } else {
+      currentModalMode = 'view';
+      if (addAgentModalTitle) addAgentModalTitle.innerHTML = `<span class="modal-icon">🤖</span> Agent Details: ${escapeHtml(agent.name)}`;
+      if (modalAgentTypeNotice) {
+        modalAgentTypeNotice.className = '';
+        if (agentType === 'Hard Coded') {
+          modalAgentTypeNotice.style.background = 'rgba(100, 116, 139, 0.15)';
+          modalAgentTypeNotice.style.border = '1px solid rgba(100, 116, 139, 0.4)';
+          modalAgentTypeNotice.style.color = '#94a3b8';
+          modalAgentTypeNotice.innerHTML = `<strong>💻 Hard Coded:</strong> Defined in system code. Configuration is read-only.`;
+        } else {
+          modalAgentTypeNotice.style.background = 'rgba(2, 132, 199, 0.15)';
+          modalAgentTypeNotice.style.border = '1px solid rgba(2, 132, 199, 0.4)';
+          modalAgentTypeNotice.style.color = '#7dd3fc';
+          modalAgentTypeNotice.innerHTML = `<strong>🔌 API Registered:</strong> Registered dynamically via container API. Configuration is read-only.`;
+        }
+      }
+      if (btnCancelAddAgent) btnCancelAddAgent.textContent = 'Close';
+      if (btnSubmitAddAgent) {
+        btnSubmitAddAgent.style.display = 'none';
+      }
+    }
+
+    if (addAgentModal) {
+      addAgentModal.classList.remove('hidden');
+      addAgentModal.style.display = 'flex';
     }
   }
 
@@ -2939,55 +3102,95 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Modal Handlers for Add Agent
-  if (btnOpenAddAgentModal) {
-    btnOpenAddAgentModal.onclick = () => {
-      if (addAgentAlertMsg) addAgentAlertMsg.classList.add('hidden');
-      const inputId = document.getElementById('inputNewAgentId');
-      const inputName = document.getElementById('inputNewAgentName');
-      const inputUrl = document.getElementById('inputNewAgentUrl');
-      const inputDesc = document.getElementById('inputNewAgentDesc');
-      const inputPrompts = document.getElementById('inputNewAgentPrompts');
-      if (inputId) inputId.value = '';
-      if (inputName) inputName.value = '';
-      if (inputUrl) inputUrl.value = '';
-      if (inputDesc) inputDesc.value = '';
-      if (inputPrompts) inputPrompts.value = '';
-      if (addAgentModal) addAgentModal.classList.remove('hidden');
-    };
+  function openAddAgentModal() {
+    currentModalMode = 'add';
+    currentModalAgentId = null;
+    const alertMsg = document.getElementById('addAgentAlertMsg') || addAgentAlertMsg;
+    const typeNotice = document.getElementById('modalAgentTypeNotice') || modalAgentTypeNotice;
+    const title = document.getElementById('addAgentModalTitle') || addAgentModalTitle;
+    const modal = document.getElementById('addAgentModal') || addAgentModal;
+    const cancelBtn = document.getElementById('btnCancelAddAgent') || btnCancelAddAgent;
+    const submitBtn = document.getElementById('btnSubmitAddAgent') || btnSubmitAddAgent;
+
+    if (alertMsg) {
+      alertMsg.textContent = '';
+      alertMsg.classList.add('hidden');
+    }
+    if (typeNotice) {
+      typeNotice.className = 'hidden';
+      typeNotice.style.display = 'none';
+    }
+    if (title) {
+      title.innerHTML = `<span class="modal-icon">🤖</span> Add New Agent`;
+    }
+
+    const inputId = document.getElementById('inputNewAgentId');
+    const inputName = document.getElementById('inputNewAgentName');
+    const inputUrl = document.getElementById('inputNewAgentUrl');
+    const inputDesc = document.getElementById('inputNewAgentDesc');
+    const inputPrompts = document.getElementById('inputNewAgentPrompts');
+    const selectStatus = document.getElementById('selectNewAgentStatus');
+
+    if (inputId) { inputId.value = ''; inputId.disabled = false; }
+    if (inputName) { inputName.value = ''; inputName.disabled = false; }
+    if (inputUrl) { inputUrl.value = ''; inputUrl.disabled = false; }
+    if (inputDesc) { inputDesc.value = ''; inputDesc.disabled = false; }
+    if (inputPrompts) { inputPrompts.value = ''; inputPrompts.disabled = false; }
+    if (selectStatus) { selectStatus.value = 'up'; selectStatus.disabled = false; }
+
+    if (cancelBtn) {
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.display = 'inline-block';
+    }
+    if (submitBtn) {
+      submitBtn.style.display = 'inline-block';
+      submitBtn.textContent = 'Add';
+    }
+
+    if (modal) {
+      modal.classList.remove('hidden');
+      modal.style.display = 'flex';
+    }
   }
 
   function closeAddAgentModal() {
-    if (addAgentModal) addAgentModal.classList.add('hidden');
+    const modal = document.getElementById('addAgentModal') || addAgentModal;
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.style.display = 'none';
+    }
+    const form = document.getElementById('formAddAgent');
+    if (form) {
+      try { form.reset(); } catch(e) {}
+    }
+    currentModalMode = 'add';
+    currentModalAgentId = null;
   }
 
-  if (btnCloseAddAgentModalX) btnCloseAddAgentModalX.onclick = closeAddAgentModal;
-  if (btnCancelAddAgent) btnCancelAddAgent.onclick = closeAddAgentModal;
+  async function submitAddAgentModal() {
+    const inputId = document.getElementById('inputNewAgentId');
+    const inputName = document.getElementById('inputNewAgentName');
+    const inputUrl = document.getElementById('inputNewAgentUrl');
+    const inputDesc = document.getElementById('inputNewAgentDesc');
+    const inputPrompts = document.getElementById('inputNewAgentPrompts');
+    const alertMsg = document.getElementById('addAgentAlertMsg') || addAgentAlertMsg;
 
-  if (btnSubmitAddAgent) {
-    btnSubmitAddAgent.onclick = async () => {
-      const inputId = document.getElementById('inputNewAgentId');
-      const inputName = document.getElementById('inputNewAgentName');
-      const inputUrl = document.getElementById('inputNewAgentUrl');
-      const inputDesc = document.getElementById('inputNewAgentDesc');
-      const inputPrompts = document.getElementById('inputNewAgentPrompts');
-      const selectStatus = document.getElementById('selectNewAgentStatus');
+    const id = inputId ? inputId.value.trim() : '';
+    const name = inputName ? inputName.value.trim() : '';
+    const url = inputUrl ? inputUrl.value.trim() : '';
+    const description = inputDesc ? inputDesc.value.trim() : '';
+    const promptsRaw = inputPrompts ? inputPrompts.value.trim() : '';
 
-      const id = inputId ? inputId.value.trim() : '';
-      const name = inputName ? inputName.value.trim() : '';
-      const url = inputUrl ? inputUrl.value.trim() : '';
-      const description = inputDesc ? inputDesc.value.trim() : '';
-      const promptsRaw = inputPrompts ? inputPrompts.value.trim() : '';
-      const status = selectStatus ? selectStatus.value : 'up';
+    const sample_prompts = promptsRaw ? promptsRaw.split('\n').map(p => p.trim()).filter(Boolean) : [];
 
+    if (currentModalMode === 'add') {
       if (!id || !name || !url) {
-        if (addAgentAlertMsg) {
-          addAgentAlertMsg.textContent = 'Please provide Agent ID, Display Name, and Container URL.';
-          addAgentAlertMsg.classList.remove('hidden');
+        if (alertMsg) {
+          alertMsg.textContent = 'Please provide Agent ID, Display Name, and URI.';
+          alertMsg.classList.remove('hidden');
         }
         return;
       }
-
-      const sample_prompts = promptsRaw ? promptsRaw.split('\n').map(p => p.trim()).filter(Boolean) : [];
 
       try {
         const resp = await fetch('/api/router/agents/register', {
@@ -2999,31 +3202,108 @@ document.addEventListener('DOMContentLoaded', () => {
             url: url,
             description: description,
             sample_prompts: sample_prompts,
-            status: status,
-            is_default: false
+            status: 'up',
+            is_default: false,
+            registration_type: 'Manually Added',
+            metadata: { registration_type: 'Manually Added' }
+          })
+        });
+        const res = await resp.json();
+        if (resp.ok) {
+          // Close popup window and return to Agents page
+          closeAddAgentModal();
+          // Send health check to determine live status and display status
+          try {
+            await fetch(`/api/router/agents/${encodeURIComponent(id)}/health`, { method: 'POST' });
+          } catch (hErr) {
+            console.warn('Initial health check ping error:', hErr);
+          }
+          await loadAgentsData();
+        } else {
+          if (alertMsg) {
+            alertMsg.textContent = res.message || 'Registration failed.';
+            alertMsg.classList.remove('hidden');
+          }
+        }
+      } catch (e) {
+        if (alertMsg) {
+          alertMsg.textContent = `Network error: ${e.message}`;
+          alertMsg.classList.remove('hidden');
+        }
+      }
+    } else if (currentModalMode === 'edit') {
+      if (!name || !url) {
+        if (alertMsg) {
+          alertMsg.textContent = 'Please provide Display Name and URI.';
+          alertMsg.classList.remove('hidden');
+        }
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/router/agents/${encodeURIComponent(currentModalAgentId)}/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name,
+            url: url,
+            description: description,
+            sample_prompts: sample_prompts,
+            status: status
           })
         });
         const res = await resp.json();
         if (resp.ok) {
           closeAddAgentModal();
-          loadAgentsData();
+          try {
+            await fetch(`/api/router/agents/${encodeURIComponent(currentModalAgentId)}/health`, { method: 'POST' });
+          } catch (hErr) {
+            console.warn('Health check error after update:', hErr);
+          }
+          await loadAgentsData();
         } else {
-          if (addAgentAlertMsg) {
-            addAgentAlertMsg.textContent = res.message || 'Registration failed.';
-            addAgentAlertMsg.classList.remove('hidden');
+          if (alertMsg) {
+            alertMsg.textContent = res.message || 'Update failed.';
+            alertMsg.classList.remove('hidden');
           }
         }
       } catch (e) {
-        if (addAgentAlertMsg) {
-          addAgentAlertMsg.textContent = `Network error: ${e.message}`;
-          addAgentAlertMsg.classList.remove('hidden');
+        if (alertMsg) {
+          alertMsg.textContent = `Network error: ${e.message}`;
+          alertMsg.classList.remove('hidden');
         }
       }
-    };
+    }
+  }
+
+  // Expose globally for inline HTML event triggers
+  window.updateRoutingThreshold = updateRoutingThreshold;
+  window.loadAgentsData = loadAgentsData;
+  window.openAddAgentModal = openAddAgentModal;
+  window.closeAddAgentModal = closeAddAgentModal;
+  window.submitAddAgentModal = submitAddAgentModal;
+  window.testSemanticRoute = testSemanticRoute;
+
+  if (btnOpenAddAgentModal) btnOpenAddAgentModal.onclick = openAddAgentModal;
+  if (btnCloseAddAgentModalX) btnCloseAddAgentModalX.onclick = closeAddAgentModal;
+  if (btnCancelAddAgent) btnCancelAddAgent.onclick = closeAddAgentModal;
+  if (btnSubmitAddAgent) btnSubmitAddAgent.onclick = submitAddAgentModal;
+
+  if (addAgentModal) {
+    addAgentModal.addEventListener('click', (e) => {
+      if (e.target === addAgentModal) {
+        closeAddAgentModal();
+      }
+    });
   }
 
   if (btnRefreshAgents) {
-    btnRefreshAgents.onclick = () => loadAgentsData();
+    btnRefreshAgents.onclick = async () => {
+      try {
+        await fetch('/api/router/agents/health_check_all', { method: 'POST' }).catch(() => {});
+      } catch (e) {}
+      loadAgentsData();
+    };
   }
 
   // Test Semantic Route Execution
@@ -3131,6 +3411,8 @@ document.addEventListener('DOMContentLoaded', () => {
   loadModelsAndSkills();
   loadContainers();
   loadAgentsData();
+  // Immediate health check ping on startup
+  fetch('/api/router/agents/health_check_all', { method: 'POST' }).then(() => loadAgentsData()).catch(() => {});
 
   // Auto-refresh active view every 15 seconds so data updates in real-time
   setInterval(() => {
@@ -3138,9 +3420,17 @@ document.addEventListener('DOMContentLoaded', () => {
       loadTelemetryData();
     } else if (currentActiveTab === 'page-audit') {
       loadAuditLogs();
-    } else if (currentActiveTab === 'page-agents') {
-      loadAgentsData();
     }
   }, 15000);
+
+  // Periodically probe actual status of all registered agents every 30 seconds
+  setInterval(async () => {
+    try {
+      await fetch('/api/router/agents/health_check_all', { method: 'POST' }).catch(() => {});
+      await loadAgentsData();
+    } catch (e) {
+      console.warn('30s agent health check error:', e);
+    }
+  }, 30000);
 });
 

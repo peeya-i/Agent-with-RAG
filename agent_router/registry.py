@@ -1,3 +1,5 @@
+import os
+import json
 import logging
 import threading
 import time
@@ -34,6 +36,11 @@ class AgentInfo:
         self.status = status.lower()
         self.is_default = is_default
         self.metadata = metadata or {}
+        self.agent_type = (
+            self.metadata.get("registration_type")
+            or self.metadata.get("agent_type")
+            or ("Hard Coded" if is_default else "API Registered")
+        )
         self.embedding: Optional[np.ndarray] = None
         self.sample_embeddings: List[np.ndarray] = []
         self.queries_handled: int = 0
@@ -80,6 +87,7 @@ class AgentInfo:
             "last_health_check": self.last_health_check,
             "health_status": self.health_status,
             "metadata": self.metadata,
+            "agent_type": getattr(self, "agent_type", "API Registered"),
             "has_embedding": self.embedding is not None,
         }
         if include_embedding and self.embedding is not None:
@@ -98,6 +106,8 @@ class AgentInfo:
             is_default=bool(data.get("is_default", False)),
             metadata=data.get("metadata", {}),
         )
+        if "agent_type" in data:
+            agent.agent_type = data["agent_type"]
         agent.queries_handled = data.get("queries_handled", 0)
         agent.created_at = data.get("created_at", agent.created_at)
         agent.last_status_change = data.get("last_status_change", agent.last_status_change)
@@ -111,12 +121,64 @@ class AgentInfo:
 class AgentRegistry:
     """Thread-safe dynamic registry managing agents, their health, status, and embeddings."""
 
-    def __init__(self, embedding_engine: Optional[EmbeddingEngine] = None):
+    def __init__(self, embedding_engine: Optional[EmbeddingEngine] = None, storage_file: Optional[str] = None):
         self._agents: Dict[str, AgentInfo] = {}
         self._lock = threading.RLock()
         self.embedding_engine = embedding_engine or EmbeddingEngine()
+        data_dir = os.environ.get("AGENTS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+        self.storage_file = storage_file or os.environ.get("AGENTS_STORAGE_FILE", os.path.join(data_dir, "manual_agents.json"))
 
-    def register(self, agent: AgentInfo, auto_embed: bool = True) -> AgentInfo:
+    def save_manual_agents(self):
+        """Persists all manually configured agents into the mounted volume storage file."""
+        if not self.storage_file:
+            return
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(self.storage_file), exist_ok=True)
+                manual_list = []
+                for agent in self._agents.values():
+                    is_manual = (
+                        getattr(agent, "agent_type", "") == "Manually Added"
+                        or (agent.metadata and agent.metadata.get("registration_type") == "Manually Added")
+                    )
+                    if is_manual:
+                        manual_list.append(agent.to_dict(include_embedding=False))
+                with open(self.storage_file, "w", encoding="utf-8") as f:
+                    json.dump(manual_list, f, indent=2)
+                logger.info(f"Persisted {len(manual_list)} manual agents to {self.storage_file}")
+            except Exception as e:
+                logger.error(f"Error persisting manual agents to {self.storage_file}: {e}")
+
+    def load_manual_agents(self) -> List[AgentInfo]:
+        """Loads and registers all manually configured agents from the volume storage file upon starting."""
+        if not self.storage_file or not os.path.exists(self.storage_file):
+            return []
+        with self._lock:
+            try:
+                with open(self.storage_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                loaded = []
+                for item in data:
+                    agent = AgentInfo.from_dict(item)
+                    agent.agent_type = "Manually Added"
+                    if not agent.metadata:
+                        agent.metadata = {}
+                    agent.metadata["registration_type"] = "Manually Added"
+                    # Auto embed if missing
+                    if agent.embedding is None:
+                        text_to_embed = agent.get_embedding_text()
+                        agent.embedding = self.embedding_engine.embed_text(text_to_embed)
+                    if not agent.sample_embeddings and agent.sample_prompts:
+                        agent.sample_embeddings = [self.embedding_engine.embed_text(p) for p in agent.sample_prompts]
+                    self._agents[agent.id] = agent
+                    loaded.append(agent)
+                logger.info(f"Loaded {len(loaded)} manually configured agents from {self.storage_file}")
+                return loaded
+            except Exception as e:
+                logger.error(f"Error loading manual agents from {self.storage_file}: {e}")
+                return []
+
+    def register(self, agent: AgentInfo, auto_embed: bool = True, persist: bool = True) -> AgentInfo:
         with self._lock:
             if auto_embed:
                 if agent.embedding is None:
@@ -132,6 +194,12 @@ class AgentRegistry:
                 agent.created_at = self._agents[agent.id].created_at
 
             self._agents[agent.id] = agent
+            is_manual = (
+                getattr(agent, "agent_type", "") == "Manually Added"
+                or (agent.metadata and agent.metadata.get("registration_type") == "Manually Added")
+            )
+            if persist and is_manual:
+                self.save_manual_agents()
             logger.info(f"Agent '{agent.id}' successfully registered (URL: {agent.url}, Status: {agent.status}).")
             return agent
 
@@ -142,7 +210,8 @@ class AgentRegistry:
                 if self._agents[agent_id].is_default:
                     raise ValueError(f"Cannot unregister default fallback agent '{agent_id}'.")
                 del self._agents[agent_id]
-                logger.info(f"Agent '{agent_id}' unregistered.")
+                self.save_manual_agents()
+                logger.info(f"Agent '{agent_id}' unregistered and removed from persistence file.")
                 return True
             return False
 
@@ -218,10 +287,24 @@ class AgentRegistry:
             resp = requests.get(url, timeout=3)
             if resp.status_code == 200:
                 agent.health_status = "healthy"
+                agent.status = "up"
                 return {"agent_id": agent_id, "status": "healthy", "code": 200, "data": resp.json()}
             else:
                 agent.health_status = f"unhealthy ({resp.status_code})"
+                agent.status = "down"
                 return {"agent_id": agent_id, "status": "unhealthy", "code": resp.status_code}
         except Exception as e:
             agent.health_status = f"unreachable: {e}"
+            agent.status = "down"
             return {"agent_id": agent_id, "status": "unreachable", "error": str(e)}
+
+    def check_all_health(self) -> Dict[str, Any]:
+        with self._lock:
+            agent_ids = list(self._agents.keys())
+        results = {}
+        for aid in agent_ids:
+            try:
+                results[aid] = self.check_health(aid)
+            except Exception as e:
+                results[aid] = {"status": "error", "error": str(e)}
+        return results

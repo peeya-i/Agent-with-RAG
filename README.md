@@ -171,13 +171,19 @@ Access the Web Console at: **`http://localhost:8000`**
 ### 🤖 Page 3: Agents (Agents Router Interface)
 * **Horizontal Statistics Cards:** All metrics are displayed as cards arranged horizontally across the page:
   * **Registered Agents:** Total count of agents registered with the vector router.
-  * **Active Agents (UP):** Count of online agents ready to receive traffic.
+  * **Active Agents (UP):** Count of online agents actively responding as healthy.
   * **Offline Agents (DOWN):** Count of offline agents (requests automatically skip to fallback).
   * **Routing Threshold:** Active similarity threshold percentage.
-* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) allows setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container.
-* **Registered Agents Directory:** Live status table with UP/DOWN badges, container endpoint URLs, role/type, handled query counters, status toggling, health ping, and agent deletion.
-* **Dynamic & Manual Registration:** Agent containers auto-register upon startup via `POST /api/router/agents/register` or manually via the "Add New Agent" modal.
-* **Test Semantic Route:** Interactive prompt simulator calculating vector embeddings and displaying real-time agent similarity rankings.
+* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) and **Set** button allow setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container.
+* **Interactive Prompt Routing Playground ("Test Semantic Route"):** Positioned directly above the Registered Agents Directory, tests query routing without invoking LLMs and returns ranked similarity scores and routing explanations.
+* **Registered Agents Directory & Live Status Table:**
+  * Displays actual status (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)`).
+  * Displays Role / Type: `Hard Coded`, `API Registered`, or `Manually Added`.
+  * Actions: Status toggle (Turn UP / Turn DOWN), Health ping (`🏥 Ping`), and deletion (`🗑️ Delete`).
+* **30-Second Periodic Actual Health Checking:** Actual health of all registered agents is checked every 30 seconds via a background daemon thread in `agents_router` and frontend polling, updating the live table in real time.
+* **"Add New Agent" Popup Window & Chrome Autofill Protection:** Modal collects Agent ID, Display Name, URI, Description, and Sample Prompts. The status dropdown is removed; initial status is verified immediately via an active health check ping. Form fields and buttons are isolated (`autocomplete="off"`, `type="button"`, `data-lpignore="true"`) to prevent Google Chrome from prompting to save passwords.
+* **Volume Persistence for Manually Added Agents:** Manually added agents are stored in `./agent_router/data/manual_agents.json` mounted to `/app/data/manual_agents.json`. They are automatically loaded upon starting the router, and removed from the file when deleted.
+* **Row-Click Inspection & Editing:** Clicking any table row opens a details modal with editable fields for `Manually Added` agents and read-only details for `Hard Coded` and `API Registered` agents.
 
 ### 📊 Page 4: Telemetry
 * Accessible by all authenticated users (User, Editor, Domain Admin, Global Admin).

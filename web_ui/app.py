@@ -506,7 +506,9 @@ def proxy_chat():
     elif not res_data.get("retrieved_evidence"):
         res_data["retrieved_evidence"] = {"skills": [], "documents": []}
 
-    # Ensure user_query is present in res_data
+    # Ensure user_query and conversation_id are present in res_data
+    if isinstance(res_data, dict):
+        res_data["conversation_id"] = conv_id
     if not res_data.get("user_query") and data.get("message"):
         res_data["user_query"] = data.get("message")
 
@@ -547,6 +549,16 @@ def router_register_agent():
     except Exception as e:
         return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
 
+@app.route("/api/router/agents/<agent_id>/update", methods=["POST"])
+def router_update_agent(agent_id):
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    data = request.get_json(silent=True) or {}
+    try:
+        r = requests.post(f"{router_url}/api/router/agents/{agent_id}/update", json=data, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
 @app.route("/api/router/agents/<agent_id>/status", methods=["POST"])
 def router_set_agent_status(agent_id):
     router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
@@ -562,6 +574,15 @@ def router_check_agent_health(agent_id):
     router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
     try:
         r = requests.get(f"{router_url}/api/router/agents/{agent_id}/health", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
+
+@app.route("/api/router/agents/health_check_all", methods=["GET", "POST"])
+def router_check_all_agents_health():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        r = requests.post(f"{router_url}/api/router/agents/health_check_all", timeout=10)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
@@ -1173,9 +1194,48 @@ def proxy_clear_logs():
 def get_docker_client():
     try:
         import docker
+        if os.path.exists("/var/run/docker.sock"):
+            return docker.DockerClient(base_url="unix://var/run/docker.sock")
         return docker.from_env()
-    except Exception as e:
+    except Exception:
+        try:
+            import docker
+            return docker.from_env()
+        except Exception:
+            return None
+
+CONTAINER_DOCKER_NAME_MAP = {
+    "web_ui": ["web-ui-service", "web_ui", "web-ui"],
+    "auth_service": ["auth-service", "auth_service"],
+    "agents_router": ["agents-router", "agents_router"],
+    "agents": ["agents-service", "agents"],
+    "agent_tech_support": ["agent-tech-support", "agent_tech_support"],
+    "doc_rag": ["doc-rag-service", "doc_rag", "doc-rag"],
+    "ollama": ["ollama-embedding", "ollama"],
+    "tools": ["tools-service", "tools"],
+    "logging": ["logging-service", "logging"]
+}
+
+def find_docker_container(client, name):
+    if not client:
         return None
+    candidates = CONTAINER_DOCKER_NAME_MAP.get(name, []) + [name, name.replace("_", "-")]
+    for cand in candidates:
+        try:
+            return client.containers.get(cand)
+        except Exception:
+            pass
+    try:
+        all_containers = client.containers.list(all=True)
+        for cand in candidates:
+            cand_l = cand.lower()
+            for c in all_containers:
+                c_name = c.name.lstrip("/").lower()
+                if c_name == cand_l or cand_l in c_name:
+                    return c
+    except Exception:
+        pass
+    return None
 
 @app.route("/api/containers/list", methods=["GET"])
 def list_containers():
@@ -1205,10 +1265,8 @@ def list_containers():
 
         if client:
             try:
-                # Search for container by name pattern
-                c_list = client.containers.list(all=True, filters={"name": name})
-                if c_list:
-                    c = c_list[0]
+                c = find_docker_container(client, name)
+                if c:
                     status = c.status
                     if status == "running":
                         try:
@@ -1244,7 +1302,7 @@ def get_container_accesses(container_name):
     deps = {
         "web_ui": ["agents_router", "doc_rag", "auth_service", "logging"],
         "agents_router": ["agents", "agent_tech_support", "logging"],
-        "agent_tech_support": ["logging"],
+        "agent_tech_support": ["doc_rag", "logging"],
         "agents": ["auth_service", "doc_rag", "tools", "logging"],
         "doc_rag": ["auth_service", "ollama", "logging"],
         "tools": ["auth_service", "logging"],
@@ -1260,10 +1318,9 @@ def container_action(name, action):
     if not client:
         return jsonify({"status": "simulated", "container": name, "action": action, "message": "Docker socket not accessible; state simulated"})
     try:
-        c_list = client.containers.list(all=True, filters={"name": name})
-        if not c_list:
+        c = find_docker_container(client, name)
+        if not c:
             return jsonify({"error": f"Container {name} not found"}), 404
-        c = c_list[0]
         if action == "start":
             c.start()
         elif action == "stop":
@@ -1285,7 +1342,8 @@ def shutdown_all_containers():
     if client:
         for name in CONTAINER_PORTS.keys():
             try:
-                for c in client.containers.list(filters={"name": name}):
+                c = find_docker_container(client, name)
+                if c:
                     c.stop()
             except Exception:
                 pass
@@ -1302,7 +1360,8 @@ def restart_all_containers():
     if client:
         for name in CONTAINER_PORTS.keys():
             try:
-                for c in client.containers.list(all=True, filters={"name": name}):
+                c = find_docker_container(client, name)
+                if c:
                     c.restart()
             except Exception:
                 pass
@@ -1322,7 +1381,8 @@ def app_shutdown():
         for name in CONTAINER_PORTS.keys():
             if name != "web_ui":
                 try:
-                    for c in client.containers.list(filters={"name": name}):
+                    c = find_docker_container(client, name)
+                    if c:
                         c.stop()
                 except Exception:
                     pass

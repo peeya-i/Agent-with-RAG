@@ -136,9 +136,11 @@ services:
       - ./agent_router/router.py:/app/router.py
       - ./agent_router/registry.py:/app/registry.py
       - ./agent_router/embeddings.py:/app/embeddings.py
+      - ./agent_router/data:/app/data
     environment:
       - PORT=8004
       - RUNNING_IN_DOCKER=true
+      - AGENTS_DATA_DIR=/app/data
       - AGENTS_URL=http://agents:8002
       - TECH_SUPPORT_URL=http://agent_tech_support:8007
       - LOGGING_URL=http://logging:8006
@@ -162,12 +164,14 @@ services:
       - PORT=8007
       - RUNNING_IN_DOCKER=true
       - ROUTER_URL=http://agents_router:8004
+      - DOC_RAG_URL=http://doc_rag:8003
       - LOGGING_SERVICE_URL=http://logging:8006/api/logs
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemma-4-26b-a4b-it}
     depends_on:
       - logging
       - agents_router
+      - doc_rag
 
   web_ui:
     build:
@@ -188,7 +192,6 @@ services:
       - ./tools/secrets:/app/container_secrets/tools
       - ./auth_service/secrets:/app/container_secrets/auth_service
       - ./web_ui/secrets:/app/container_secrets/web_ui
-      - ./embedding/secrets:/app/container_secrets/ollama
       - ./sample_docs:/app/sample_docs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
