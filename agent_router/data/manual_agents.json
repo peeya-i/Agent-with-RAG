@@ -3,21 +3,21 @@
     "id": "agent-movie-script",
     "name": "Movie Script Creator",
     "description": "Make Movie script and iterate until it is good.",
-    "url": "http://agent-movie-script:8010",
+    "url": "http://127.0.0.1:8010",
     "sample_prompts": [
       "I want a movie script and screenplay written",
       "Write a movie script about\u2026",
       "Write a playwright for me about\u2026",
       "I need a story for theater play"
     ],
-    "status": "up",
-    "is_available": true,
+    "status": "down",
+    "is_available": false,
     "is_default": false,
     "queries_handled": 0,
     "created_at": "2026-10-11T05:17:31.992954+00:00",
-    "last_status_change": "2026-10-11T05:17:31.992954+00:00",
-    "last_health_check": null,
-    "health_status": "unknown",
+    "last_status_change": "2026-10-12T22:06:16.312088+00:00",
+    "last_health_check": "2026-10-12T22:20:22.955496+00:00",
+    "health_status": "unreachable: HTTPConnectionPool(host='agent-movie-script', port=8010): Max retries exceeded with url: /health (Caused by NameResolutionError(\"HTTPConnection(host='agent-movie-script', port=8010): Failed to resolve 'agent-movie-script' ([Errno -3] Temporary failure in name resolution)\"))",
     "metadata": {
       "registration_type": "Manually Added"
     },
