@@ -146,6 +146,15 @@ def init_db():
     );
     """)
 
+    # User preferences table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_preferences (
+        user_email TEXT PRIMARY KEY,
+        preferences_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+
     conn.commit()
 
     # Seed initial activity logs for pre-existing keys if none exist
@@ -367,6 +376,7 @@ def login():
             "token": jwt_token,
             "jwt_token": jwt_token,
             "session_token": jwt_token,
+            "preferences": get_user_preferences_from_db(username),
             "user": {
                 "email": username,
                 "domain": user_domain,
@@ -437,6 +447,69 @@ def logout():
     )
 
     return jsonify({"status": "success"})
+
+# User Preferences Helper & APIs
+def get_user_preferences_from_db(email: str) -> dict:
+    if not email:
+        return {}
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT preferences_json FROM user_preferences WHERE user_email = ?", (email,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row["preferences_json"]:
+        try:
+            return json.loads(row["preferences_json"])
+        except Exception:
+            return {}
+    return {}
+
+def save_user_preferences_to_db(email: str, prefs: dict) -> dict:
+    if not email:
+        return {}
+    conn = get_db()
+    cur = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    prefs_str = json.dumps(prefs)
+    cur.execute("""
+        INSERT INTO user_preferences (user_email, preferences_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_email) DO UPDATE SET
+            preferences_json = excluded.preferences_json,
+            updated_at = excluded.updated_at
+    """, (email, prefs_str, now_iso))
+    conn.commit()
+    conn.close()
+    return prefs
+
+@app.route("/api/auth/preferences", methods=["GET", "POST"])
+def user_preferences_route():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        email = data.get("email") or data.get("username")
+        if not email:
+            token = extract_jwt_from_request(request)
+            if token:
+                decoded = decode_jwt_token(token)
+                email = decoded.get("email") or decoded.get("sub")
+        if not email:
+            return jsonify({"status": "error", "error": "Missing user email"}), 400
+        prefs = data.get("preferences") if "preferences" in data and isinstance(data["preferences"], dict) else data
+        cleaned = {k: v for k, v in prefs.items() if k not in ["email", "username", "jwt_token"]}
+        saved = save_user_preferences_to_db(email, cleaned)
+        return jsonify({"status": "success", "email": email, "preferences": saved})
+
+    # GET
+    email = request.args.get("email") or request.args.get("username")
+    if not email:
+        token = extract_jwt_from_request(request)
+        if token:
+            decoded = decode_jwt_token(token)
+            email = decoded.get("email") or decoded.get("sub")
+    if not email:
+        return jsonify({"status": "error", "error": "Missing user email"}), 400
+    prefs = get_user_preferences_from_db(email)
+    return jsonify({"status": "success", "email": email, "preferences": prefs})
 
 # User Management APIs
 @app.route("/api/users", methods=["GET"])

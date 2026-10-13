@@ -54,6 +54,7 @@ class RoutingResult:
         response_data: Optional[Dict[str, Any]] = None,
         explanation: str = "",
         routing_latency_ms: float = 0.0,
+        total_latency_ms: float = 0.0,
         threshold: float = SIMILARITY_THRESHOLD,
         status_code: int = 200,
     ):

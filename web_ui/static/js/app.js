@@ -338,6 +338,161 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Per-User Preferences Management (Chat parameters & Routing Threshold)
+  // ---------------------------------------------------------------------------
+  function getActiveUserEmail() {
+    if (currentUser && currentUser.email) return currentUser.email;
+    const stored = sessionStorage.getItem('currentUser');
+    if (stored) {
+      try {
+        const u = JSON.parse(stored);
+        if (u && u.email) return u.email;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function getCurrentPreferences() {
+    const prefs = {};
+    if (chatMaxTokens) prefs.max_tokens = parseInt(chatMaxTokens.value) || 2048;
+    if (chatTemperature) prefs.temperature = parseFloat(chatTemperature.value) || 0.7;
+    if (agentChoice) prefs.agent = agentChoice.value;
+    if (chatMaxTurns) prefs.max_turns = parseInt(chatMaxTurns.value) || 5;
+    if (chatRagChunks) prefs.max_chunks = parseInt(chatRagChunks.value) || 5;
+    if (docThresholdInput) prefs.doc_threshold = parseFloat(docThresholdInput.value) || 0.3;
+    if (chatSkills) prefs.skill_selector = chatSkills.value;
+    if (chatSkillThreshold) prefs.skill_threshold = parseFloat(chatSkillThreshold.value) || 0.2;
+    const rInput = document.getElementById('routerThresholdInput');
+    if (rInput) prefs.router_threshold = parseFloat(rInput.value) || 0.50;
+    return prefs;
+  }
+
+  async function applyUserPreferences(prefs) {
+    if (!prefs || typeof prefs !== 'object') return;
+    if (prefs.max_tokens !== undefined && chatMaxTokens) {
+      chatMaxTokens.value = prefs.max_tokens;
+    }
+    if (prefs.temperature !== undefined && chatTemperature) {
+      chatTemperature.value = prefs.temperature;
+    }
+    if (prefs.agent && agentChoice) {
+      if (prefs.agent === 'Google ADK LlmAgent' || prefs.agent === 'Google ADK Agent') {
+        agentChoice.value = 'Google ADK Agent';
+      } else if (prefs.agent === 'Custom Agent') {
+        agentChoice.value = 'Custom Agent';
+      } else {
+        agentChoice.value = prefs.agent;
+      }
+    }
+    if (prefs.max_turns !== undefined && chatMaxTurns) {
+      chatMaxTurns.value = prefs.max_turns;
+    }
+    if (prefs.max_chunks !== undefined && chatRagChunks) {
+      chatRagChunks.value = String(prefs.max_chunks);
+    } else if (prefs.rag_chunks !== undefined && chatRagChunks) {
+      chatRagChunks.value = String(prefs.rag_chunks);
+    }
+    if (prefs.doc_threshold !== undefined && docThresholdInput) {
+      docThresholdInput.value = parseFloat(prefs.doc_threshold).toFixed(2);
+    }
+    if (prefs.skill_selector && chatSkills) {
+      chatSkills.value = prefs.skill_selector;
+      if (chatSkills.value === 'Vector Store Selects' || chatSkills.value === 'Vector Store') {
+        skillThresholdBox?.classList.remove('hidden');
+      } else {
+        skillThresholdBox?.classList.add('hidden');
+      }
+    } else if (prefs.skill_mode && chatSkills) {
+      chatSkills.value = prefs.skill_mode;
+      if (chatSkills.value === 'Vector Store Selects' || chatSkills.value === 'Vector Store') {
+        skillThresholdBox?.classList.remove('hidden');
+      } else {
+        skillThresholdBox?.classList.add('hidden');
+      }
+    }
+    if (prefs.skill_threshold !== undefined && chatSkillThreshold) {
+      chatSkillThreshold.value = parseFloat(prefs.skill_threshold).toFixed(2);
+    }
+    const rThreshVal = prefs.router_threshold !== undefined ? prefs.router_threshold : prefs.min_routing_threshold;
+    if (rThreshVal !== undefined) {
+      const val = parseFloat(rThreshVal);
+      if (!isNaN(val)) {
+        const rInput = document.getElementById('routerThresholdInput');
+        if (rInput) rInput.value = val.toFixed(2);
+        const rStat = document.getElementById('statRoutingThreshold');
+        if (rStat) rStat.textContent = `${Math.round(val * 100)}%`;
+        try {
+          await fetch('/api/router/threshold', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ threshold: val })
+          });
+        } catch (e) {
+          console.warn('Failed syncing router threshold preference:', e);
+        }
+      }
+    }
+  }
+
+  let prefSaveTimeout = null;
+  function saveUserPreferences(partial = {}) {
+    const email = getActiveUserEmail();
+    if (!email) return;
+    clearTimeout(prefSaveTimeout);
+    prefSaveTimeout = setTimeout(async () => {
+      const current = getCurrentPreferences();
+      const merged = { ...current, ...partial };
+      try {
+        localStorage.setItem(`user_prefs_${email}`, JSON.stringify(merged));
+      } catch (e) {}
+      try {
+        await fetch('/api/user/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(merged)
+        });
+      } catch (err) {
+        console.warn('Failed saving user preferences to server:', err);
+      }
+    }, 400);
+  }
+
+  async function loadUserPreferencesForUser(email, preloadedPrefs = null) {
+    if (!email) return;
+    let prefs = preloadedPrefs;
+    if (!prefs || Object.keys(prefs).length === 0) {
+      try {
+        const resp = await fetch('/api/user/preferences');
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.preferences && Object.keys(data.preferences).length > 0) {
+            prefs = data.preferences;
+          }
+        }
+      } catch (e) {}
+    }
+    if (!prefs || Object.keys(prefs).length === 0) {
+      try {
+        const cached = localStorage.getItem(`user_prefs_${email}`);
+        if (cached) prefs = JSON.parse(cached);
+      } catch (e) {}
+    }
+    if (prefs && Object.keys(prefs).length > 0) {
+      try {
+        localStorage.setItem(`user_prefs_${email}`, JSON.stringify(prefs));
+      } catch (e) {}
+      await applyUserPreferences(prefs);
+    }
+  }
+
+  // Auto-save listeners on Chat Page controls
+  [chatMaxTokens, chatTemperature, agentChoice, chatMaxTurns, chatRagChunks, docThresholdInput, chatSkills, chatSkillThreshold].forEach(el => {
+    if (el) {
+      el.addEventListener('change', () => saveUserPreferences());
+    }
+  });
+
   // Quick prompt chips
   document.querySelectorAll('.btn-chip').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1800,6 +1955,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (currentUser) {
     applyRolePermissions(currentUser);
     updateJwtDisplay(currentUser, currentJwt);
+    loadUserPreferencesForUser(currentUser.email);
   }
 
   async function handleLogin() {
@@ -1832,6 +1988,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateJwtDisplay(currentUser, currentJwt);
         logPageView('Chat & Knowledge Mgnt');
         loadIngestionData();
+        await loadUserPreferencesForUser(currentUser.email, data.preferences);
       } else {
         if (resp.status === 403 || data.is_locked || (data.error && data.error.includes('Locked'))) {
           loginErrorMsg.textContent = 'Account is Locked. Please contact the administrator.';
@@ -2769,13 +2926,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Enhanced Context Evidence loader hook in chat and audit flow
-  async function loadContextEvidence(convId) {
+  async function loadContextEvidence(convId, routerMeta) {
     if (!convId) return;
     try {
       const resp = await fetch(`/api/evidence/${encodeURIComponent(convId)}`);
       if (!resp.ok) return;
       const data = await resp.json();
-      renderEvidence(data.retrieved_evidence || data);
+      renderEvidence(data.retrieved_evidence || data, routerMeta || data.router_metadata || lastRouterMetadata);
     } catch (e) {
       console.warn("Failed to load context evidence:", e);
     }
@@ -2830,6 +2987,7 @@ document.addEventListener('DOMContentLoaded', () => {
           setTimeout(() => { thresholdStatusMsg.style.display = 'none'; }, 2500);
         }
         await loadAgentsData();
+        saveUserPreferences({ router_threshold: val });
       } else {
         alert(`Failed to set threshold: ${res.message || 'Error'}`);
       }
@@ -2842,6 +3000,12 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSetThreshold.addEventListener('click', updateRoutingThreshold);
   }
   if (routerThresholdInput) {
+    routerThresholdInput.addEventListener('change', () => {
+      const val = parseFloat(routerThresholdInput.value);
+      if (!isNaN(val) && val >= 0.0 && val <= 1.0) {
+        saveUserPreferences({ router_threshold: val });
+      }
+    });
     routerThresholdInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();

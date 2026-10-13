@@ -157,6 +157,7 @@ Access the Web Console at: **`http://localhost:8000`**
   * Direct Skill: Forces execution of a designated skill.
 * **Inspection Bubbles:** Click **Show Logs** on any completed agent response to expand step-by-step component execution bubbles (Agent, Skills, Tools, RAG, LLM).
 * **Retrieved Evidence:** The right card displays the **Selected Agent** that processed the prompt, its **similarity score**, routing match status (Specialized Match vs Default Fallback), and detailed routing explanation, alongside matched procedural **Skills** and semantic **Documents**.
+* **Per-User Parameter Preferences & Automatic Reload:** User settings for `Max Tokens`, `Temperature`, `Agent` choice (`Custom Agent` or `Google ADK LlmAgent`), `Max Turns`, `Max Chunks`, `Doc Threshold`, `Skill Selector`, `Skill Threshold`, and the `Min Routing Threshold` (from Page 3) are stored per user in the database. Different users maintain their own unique configurations, which are automatically reloaded and applied to the UI inputs and router backend whenever the user logs in.
 
 ### 🛢️ Page 2: VectorDB Mgnt
 * **Asymmetric Layout:** Populate Vector Database occupies **40% width**, and Vector Storage Status occupies **60% width**.
@@ -175,7 +176,7 @@ Access the Web Console at: **`http://localhost:8000`**
   * **Active Agents (UP):** Count of online agents actively responding as healthy.
   * **Offline Agents (DOWN):** Count of offline agents (requests automatically skip to fallback).
   * **Routing Threshold:** Active similarity threshold percentage.
-* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) and **Set** button allow setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container.
+* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) and **Set** button allow setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container. The configured threshold is persisted per user and automatically reloaded on login.
 * **Interactive Prompt Routing Playground ("Test Semantic Route"):** Positioned directly above the Registered Agents Directory, tests query routing without invoking LLMs and returns ranked similarity scores and routing explanations.
 * **Registered Agents Directory & Live Status Table:**
   * Displays actual status (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)`).

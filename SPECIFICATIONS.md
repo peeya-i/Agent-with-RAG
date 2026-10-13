@@ -154,6 +154,10 @@ The Main App window should have:
     - Skill Threshold from the text box in the Chat Agent card
     - Doc Threshold from the text box in the Retrieved Context Evidence card
     - Max Chunks from the text box in the Retrieved Context Evidence card
+- User Preference Persistence & Automatic Reload:
+  - User preferences for chat parameters (Max Tokens, Temperature, Agent selection [Custom Agent or Google ADK LlmAgent], Max Turns, Max Chunks, Doc Threshold, Skill Selector, and Skill Threshold) as well as the Min Routing Threshold from the Agents page are stored per user in the database.
+  - Different users can have different stored parameter values.
+  - When a user logs in, their stored values are automatically reloaded and populated into the corresponding input fields in the user interface, and their Min Routing Threshold is applied to the active router.
 - Use the typical chat user interface to display the chat messages and the agent's responses.
 - Once the response is completed, display the response.
   - Add the detail box in the response with a button named “Show Logs”. Within the detail box, add bubbles showing the name of the components that generated the logs (such as Agent, Tools, RAG, Skills), icons appropriate for the components, and the elapse time of each step.
@@ -229,6 +233,7 @@ The **Agents Router Interface** manages semantic vector routing, dynamic registr
 - **Placement**: Located between **VectorDB Mgnt** (Tab 2) and **Telemetry** (Tab 4).
 - **Header & Controls**:
   - **Routing Threshold Input Text Box**: Allows the user to set the minimum Routing Threshold (e.g. `0.50`) to route to specialized agents or fall back to the default Agent. Supported via `GET` / `POST /api/router/threshold` with an inline **Set** button.
+  - **Per-User Routing Threshold Storage**: Stored per user and persisted in the database. When a user logs in, their configured routing threshold is automatically reloaded and synchronized with the router backend.
   - **"Refresh"** button to poll live status, trigger a full health-check sweep across all agents, and update handled query counts.
   - **"Add New Agent"** button that opens a popup window for manual agent onboarding.
 - **Summary Metrics (Displayed as Horizontal Cards)**:

@@ -117,6 +117,7 @@ def auth_login():
         if resp.status_code == 200 and res_data.get("status") == "success":
             session["user"] = res_data.get("user")
             session["jwt_token"] = res_data.get("jwt_token") or res_data.get("token")
+            session["preferences"] = res_data.get("preferences") or {}
             # Log user login to Logging container
             log_event(
                 invoker="web_ui",
@@ -141,7 +142,52 @@ def auth_me():
     jwt_token = session.get("jwt_token")
     if not user:
         return jsonify({"authenticated": False}), 401
-    return jsonify({"authenticated": True, "user": user, "jwt_token": jwt_token})
+    email = user.get("email")
+    prefs = session.get("preferences") or {}
+    if not prefs and email:
+        try:
+            url = resolve_url(AUTH_URL, "auth_service", 8001)
+            r = requests.get(f"{url}/api/auth/preferences?email={email}", timeout=3)
+            if r.status_code == 200:
+                prefs = r.json().get("preferences", {})
+                session["preferences"] = prefs
+        except Exception:
+            pass
+    return jsonify({"authenticated": True, "user": user, "jwt_token": jwt_token, "preferences": prefs})
+
+@app.route("/api/user/preferences", methods=["GET", "POST"])
+def user_preferences():
+    user = session.get("user") or {}
+    email = user.get("email")
+    jwt_token = session.get("jwt_token")
+    if not email:
+        return jsonify({"status": "error", "message": "Not authenticated"}), 401
+
+    url = resolve_url(AUTH_URL, "auth_service", 8001)
+    headers = {"Content-Type": "application/json"}
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
+
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        data["email"] = email
+        try:
+            r = requests.post(f"{url}/api/auth/preferences", json=data, headers=headers, timeout=5)
+            res = r.json()
+            session["preferences"] = res.get("preferences", {})
+            return jsonify(res), r.status_code
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 502
+
+    # GET
+    try:
+        r = requests.get(f"{url}/api/auth/preferences?email={email}", headers=headers, timeout=5)
+        res = r.json()
+        session["preferences"] = res.get("preferences", {})
+        return jsonify(res), r.status_code
+    except Exception as e:
+        cached = session.get("preferences", {})
+        return jsonify({"status": "success", "preferences": cached, "source": "session"})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -755,10 +801,28 @@ def extract_evidence_from_logs(conv_id):
                 "content": ch["text"][:400]
             })
 
+    # 3. Extract Router Metadata if present in logs
+    router_meta = None
+    for l in logs:
+        l_type = l.get("type") or l.get("event_type") or ""
+        payload = l.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        if l_type == "routed_chat_request":
+            router_meta = {
+                "routed_agent_id": payload.get("selected_agent"),
+                "routed_agent_name": l.get("recipient") if l.get("recipient") != "agents-default" else "Default Multi-Tool & RAG Agent",
+                "similarity_score": payload.get("similarity_score"),
+                "threshold": payload.get("threshold"),
+                "is_default_fallback": payload.get("is_default_fallback"),
+                "explanation": l.get("short_description") or l.get("desc")
+            }
+
     return {
         "skills": skills,
         "documents": docs,
-        "flat_items": flat_items
+        "flat_items": flat_items,
+        "router_metadata": router_meta
     }
 
 @app.route("/api/evidence/<conv_id>", methods=["GET"])
@@ -774,7 +838,8 @@ def get_context_evidence(conv_id):
         },
         "skills": ev.get("skills", []),
         "documents": ev.get("documents", []),
-        "evidence": ev.get("flat_items", [])
+        "evidence": ev.get("flat_items", []),
+        "router_metadata": ev.get("router_metadata")
     })
 
 # -------------------------------------------------------------

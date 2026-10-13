@@ -249,6 +249,10 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
   - **Error Display & Expired JWT Notice**:
     - When a chat request returns an HTTP error (401, 403, 500) or an error payload, the card displays a prominent error bubble rather than a blank or broken response.
     - Specifically for HTTP 403 / 401 with an expired JWT token (`is_jwt_expired: true`), displays a dedicated warning card informing the user: `⚠️ Authentication Error (HTTP 403) - JWT Token Expired: Your session token has expired. Please log in again to renew your session.` accompanied by a `🔄 Refresh & Re-login` action button.
+- **Per-User Configuration Persistence & Automatic Reload**:
+  - Chat control parameters (`Max Tokens`, `Temperature`, `Agent selection` [`Custom Agent` or `Google ADK LlmAgent`], `Max Turns`, `Max Chunks`, `Doc Threshold`, `Skill Selector`, and `Skill Threshold`) and the `Min Routing Threshold` from Tab 3 are persisted on a per-user basis in the `user_preferences` database table.
+  - Different users have distinct stored values.
+  - When a user logs in, their personalized preferences are automatically reloaded, restoring their configured control values in the UI and updating the router threshold.
 - **Footer**:
   - Auto-resizing textarea for user prompt.
   - Send button (`Enter` to submit, `Shift+Enter` for newline).
@@ -315,7 +319,7 @@ The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the
 The **Agents Router Interface** manages semantic vector routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
 
 #### 2.6.1 Header & Control Bar
-- **Routing Threshold Control**: Input text box (`#routerThresholdInput`) and **Set** button to configure the minimum similarity routing threshold (default: `0.50` / `50%`). Backed by `GET` / `POST /api/router/threshold`.
+- **Routing Threshold Control**: Input text box (`#routerThresholdInput`) and **Set** button to configure the minimum similarity routing threshold (default: `0.50` / `50%`). Backed by `GET` / `POST /api/router/threshold`. Persisted per user in `user_preferences` and reloaded upon login.
 - **Refresh**: Triggers live health check sweep across all containers and reloads the directory.
 - **Add New Agent Button**: Displays a popup window modal (`#addAgentModal`) for manual agent onboarding.
 

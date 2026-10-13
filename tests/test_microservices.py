@@ -620,3 +620,61 @@ def test_chat_expired_jwt_error():
     assert data["is_jwt_expired"] is True
     assert "expired" in data["error"].lower()
 
+def test_user_preferences_persistence():
+    """Verify that different users have their own stored preferences for chat parameters & routing threshold."""
+    auth_srv = load_service("test_auth_prefs", "auth_service/server.py")
+    client = auth_srv.app.test_client()
+
+    # User 1 saves preferences
+    user1_prefs = {
+        "max_tokens": 1024,
+        "temperature": 0.2,
+        "agent": "Google ADK Agent",
+        "max_turns": 3,
+        "max_chunks": 7,
+        "doc_threshold": 0.45,
+        "skill_selector": "LLM Selects",
+        "skill_threshold": 0.25,
+        "router_threshold": 0.65
+    }
+    res1 = client.post("/api/auth/preferences", json={
+        "email": "user1@example.com",
+        "preferences": user1_prefs
+    })
+    assert res1.status_code == 200
+
+    # User 2 saves different preferences
+    user2_prefs = {
+        "max_tokens": 4096,
+        "temperature": 0.9,
+        "agent": "Custom Agent",
+        "max_turns": 8,
+        "max_chunks": 10,
+        "doc_threshold": 0.25,
+        "skill_selector": "Vector Store Selects",
+        "skill_threshold": 0.15,
+        "router_threshold": 0.40
+    }
+    res2 = client.post("/api/auth/preferences", json={
+        "email": "user2@example.com",
+        "preferences": user2_prefs
+    })
+    assert res2.status_code == 200
+
+    # Fetch User 1 preferences
+    get1 = client.get("/api/auth/preferences?email=user1@example.com")
+    assert get1.status_code == 200
+    data1 = get1.get_json()["preferences"]
+    assert data1["max_tokens"] == 1024
+    assert data1["agent"] == "Google ADK Agent"
+    assert data1["router_threshold"] == 0.65
+
+    # Fetch User 2 preferences
+    get2 = client.get("/api/auth/preferences?email=user2@example.com")
+    assert get2.status_code == 200
+    data2 = get2.get_json()["preferences"]
+    assert data2["max_tokens"] == 4096
+    assert data2["agent"] == "Custom Agent"
+    assert data2["router_threshold"] == 0.40
+
+

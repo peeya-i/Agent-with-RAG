@@ -5,20 +5,20 @@
     "description": "Make Movie script and iterate until it is good.",
     "url": "http://172.20.0.1:8010",
     "sample_prompts": [
-      "\"I want a movie script and screenplay written\",",
-      "\"Write a movie script about two astronauts stranded in deep space\",",
-      "\"Write a playwright for me about two estranged siblings meeting at a train station\",",
-      "\"I need a story for theater play\",",
-      "\"Create a film pitch and plot outline for a biopic\""
+      "I want a movie script and screenplay written",
+      "Write a movie script about two astronauts stranded in deep space",
+      "Write a playwright for me about two estranged siblings meeting at a train station",
+      "I need a story for theater play",
+      "Create a film pitch and plot outline for a biopic"
     ],
-    "status": "up",
-    "is_available": true,
+    "status": "down",
+    "is_available": false,
     "is_default": false,
     "queries_handled": 0,
     "created_at": "2026-10-13T19:08:40.955903+00:00",
     "last_status_change": "2026-10-13T19:08:40.955903+00:00",
-    "last_health_check": "2026-10-13T19:47:13.310333+00:00",
-    "health_status": "healthy",
+    "last_health_check": "2026-10-13T22:30:48.216515+00:00",
+    "health_status": "unreachable: HTTPConnectionPool(host='172.20.0.1', port=8010): Max retries exceeded with url: /health (Caused by NewConnectionError(\"HTTPConnection(host='172.20.0.1', port=8010): Failed to establish a new connection: [Errno 111] Connection refused\"))",
     "metadata": {
       "registration_type": "Manually Added"
     },
