@@ -262,7 +262,9 @@ The **Agents Router Interface** manages semantic vector routing, dynamic registr
   - A background daemon thread in `agents_router` executes `check_all_health()` every 30 seconds to update actual connectivity.
   - The Web UI automatically runs periodic health checks every 30 seconds (`POST /api/router/agents/health_check_all`) and refreshes the directory table.
 - **"Add New Agent" Popup Window & Chrome Autofill Isolation**:
-  - Modal displays fields for Agent ID, Display Name, URI, Description, and Sample Prompts.
+  - **2x Width & Responsive 2-Column Layout**: The popup window width is doubled to `max-width: 1080px; width: 95%` (2x from previous 540px) with a responsive CSS grid (`repeat(auto-fit, minmax(320px, 1fr))`):
+    - **Left Column**: Agent ID (`#addAgentId`), Display Name (`#addAgentName`), Container URI (`#addAgentUri`), and Specialization & Description (`#addAgentDesc`).
+    - **Right Column**: Sample Queries / Prompts (`#addAgentPrompts`) with expanded vertical height (`min-height: 220px; rows="10"`).
   - The selection for Agent status drop down (Up / Down) is removed; initial status is determined immediately by an active `/health` check upon creation.
   - Modal contents are enclosed in an explicit form with `autocomplete="off"`, `data-lpignore="true"`, and explicit `type="button"` attributes to prevent Google Chrome from prompting to save passwords when closing or submitting the window.
   - Bottom buttons:
@@ -273,6 +275,17 @@ The **Agents Router Interface** manages semantic vector routing, dynamic registr
   - Manually configured agents are stored in `/app/data/manual_agents.json`.
   - Upon starting, `agents_router` automatically loads all manually configured agents from the storage file into the registry.
   - When the delete button is clicked, the agent is removed from the file.
+- **180-Second Execution Timeout**:
+  - Both `agents_router` (`router.py`) and `web_ui` (`app.py`) configure a 180-second HTTP execution timeout (`timeout=180`) for agent requests. This accommodates complex multi-agent reasoning, multi-turn tool loops, and external model workflows without premature HTTP 504 gateway or read timeouts.
+- **External Agent Integration & Networking Architecture**:
+  - Independent or custom agent containers can be integrated into the router through two networking options:
+    - **Option A (Shared Docker Network)**: Attach the external container to the Docker Compose network `agent-with-rag_default` (e.g. `docker network connect agent-with-rag_default <container_name>`). The agent URI in the router is configured using its Docker service or container name: `http://<container_name>:<port>`.
+    - **Option B (Host Gateway IP)**: When running an external agent on the host OS or inside an independent Docker bridge with published host ports, configure the agent URI using the host gateway IP `http://172.20.0.1:<port>`. In Docker on Linux, `172.20.0.1` represents the default Docker bridge gateway of the base OS, allowing containers inside `agent-with-rag_default` to cleanly reach services bound to host loopback/ports (since `localhost` or `127.0.0.1` inside a container refers to that container itself).
+  - **Manual Registration Only**: External agents should disable or remove auto-registration daemons to ensure clean, explicit onboarding via the "Add New Agent" GUI modal.
+  - **External Agent Contract**: External agents must expose standard HTTP endpoints:
+    - `GET /health`: Returns HTTP 200 `{"status": "ok"}` or `{"status": "healthy"}` for health probes.
+    - `POST /chat` or `POST /api/chat`: Accepts JSON with user query (`{"prompt": "...", "message": "...", "conversation_id": "...", "model": "..."}`) and returns `{"response": "...", "status": "success"}`.
+    - **JWT Authentication**: Protected external agents validate caller JWT tokens using the shared `jwt_auth.py` module, returning diagnostic error strings on failure.
 
 ### 📊 The fourth page: “Telemetry”
 - The Web UI queries the Logging container's statistics and query API to compute and display the telemetry counters and timeline graphs.
@@ -451,10 +464,13 @@ The Documents and Skills container accesses:
 - Use TCP port 8001 for the Authentication Service container.
 - Use TCP port 8002 for the Agent container.
 - Use TCP port 8003 for the Documents and Skills Vector Store container.
-- Use TCP port 11434 for the Ollama Vector Embedding container.
+- Use TCP port 8004 for the Agents Router container.
 - Use TCP port 8005 for the Tools container.
 - Use TCP port 8006 for the Logging container.
+- Use TCP port 8007 for the Specialized Product Tech Support Agent container.
+- Use TCP port 11434 for the Ollama Vector Embedding container.
 - All of the containers should send all the logs to the Logging container using the Logging service API.
+- All services mount the shared `jwt_auth.py` module (`./jwt_auth.py:/app/jwt_auth.py`) for unified cryptographic JWT token decoding and verification.
 
 ### Web UI
 - Create a soft link from the ./.env file to the web_ui/secrets/.env file
@@ -731,6 +747,42 @@ All container-to-container communications must record the complete, untruncated 
 #### Automatic Metadata Extraction & API Key Redaction
 - **Automatic Metadata Extraction**: If root-level `duration_ms`, `model`, `input_tokens`, or `output_tokens` are omitted by the caller or set to `0`/`""`, the logging service automatically extracts them from `payload.response.duration_ms`, `payload.request.model_used`, `payload.token_usage`, etc.
 - **Recursive Redaction**: All API keys (e.g. `AIza...`, `sk-...`, `key-...`, or dictionary keys matching `api_key`, `secret`, `password`) are automatically masked as `****` prior to disk persistence.
+
+### Agents Router Container (Port 8004)
+- Create a container for the semantic vector router and dynamic agent registry in the `agent_router/` folder.
+  - Exposes port 8004 for REST API (`/health`, `/api/router/agents`, `/api/router/chat`, `/api/router/test_route`, `/api/router/threshold`).
+  - Computes dense vector embeddings using Google GenAI with deterministic local fallback (`embeddings.py`).
+  - Maintains dynamic in-memory registry of agent containers with support for:
+    - Default Fallback Agent (`agents:8002`, Hard Coded).
+    - API Registered Agents (`agent-tech-support`, dynamic registration on turn-up).
+    - Manually Added Agents (onboarded via Web UI modal, stored persistently).
+  - Mounts volume `./agent_router/data:/app/data` to persist manually onboarded agents in `/app/data/manual_agents.json`.
+  - Automatically reloads manual agents from `/app/data/manual_agents.json` on startup.
+  - Runs a background daemon thread executing periodic health check sweep (`check_all_health()`) every 30 seconds to update actual connectivity status (`UP` / `DOWN`).
+  - Forwards user queries via `POST /api/router/chat` using cosine similarity routing:
+    - If top similarity score > routing threshold (default `0.50` / `50%`) AND target agent is `UP`, routes to the specialized agent container.
+    - If similarity score <= threshold OR target agent is `DOWN`, routes to the default fallback agent (`http://agents:8002`).
+  - Implements a 180-second execution timeout (`timeout=180`) on outbound agent requests to accommodate complex multi-agent workflows.
+
+### Specialized Product Technical Support Agent Container (Port 8007)
+- Create a container for the technical support & DevOps specialist agent in the `agent_tech_support/` folder.
+  - Exposes port 8007 for REST API (`/health`, `/api/chat`).
+  - Specializes in troubleshooting system errors, container crash diagnostics (e.g. exit 137 OOMKilled), connection timeouts, and microservice configuration issues.
+  - Features a background registration daemon that automatically registers with `http://agents_router:8004/api/router/agents` upon startup with sample diagnostic prompts.
+  - Uses Google GenAI (`gemini-2.5-flash` or configured model) to generate diagnostic reasoning and root-cause analysis.
+
+### Single Unified JWT Authentication Module (`jwt_auth.py`)
+- Maintained as a single top-level file (`jwt_auth.py`) mounted into all containers at `/app/jwt_auth.py`.
+- Shared secret key loaded from `JWT_SECRET_KEY` environment variable (default: `agent-rag-shared-secret-jwt-key-2026`).
+- Core exported functions:
+  - `generate_jwt_token(payload, expires_in=86400)`: Encodes and signs HMAC-SHA256 JWT token with expiration timestamp.
+  - `decode_jwt_token_with_reason(token)`: Decodes and verifies token signature and expiration. Returns a tuple `(decoded_payload, error_reason)`. If valid, returns `(payload_dict, None)`. If invalid, returns `(None, error_string)` where `error_string` provides exact diagnostic reasons:
+    - `"Token expired"`
+    - `"Signature verification failed"`
+    - `"Invalid token format"`
+    - `"Token missing"`
+  - `decode_jwt_token(token)`: Backward-compatible wrapper returning `decoded_payload` or `None`.
+  - `authenticate_request(req)`: Inspects `Authorization: Bearer <token>` header or `jwt_token` query parameter/body. Returns `(True, payload_dict)` if valid, or `(False, error_reason_string)` if invalid.
 
 ## 🔌 Microservices API Reference
 
@@ -1051,6 +1103,148 @@ All container-to-container communications must record the complete, untruncated 
   - Lists downloaded and available embedding models.
 - `POST /api/pull`
   - Downloads / pulls a specified embedding model.
+
+### 8. Agents Router Service (`agent_router`, Port 8004)
+- `GET /health`
+  - Health check endpoint returning service name, status, and port 8004.
+  - Response: `{"status": "ok", "service": "agent_router", "port": 8004}`
+- `GET /api/router/agents`
+  - Returns directory of all registered agents with operational status, sample prompts, query count, and registration type.
+  - Response:
+    ```json
+    {
+      "status": "success",
+      "count": 2,
+      "agents": [
+        {
+          "id": "agents-default",
+          "name": "Default Agent",
+          "uri": "http://agents:8002",
+          "status": "UP",
+          "is_default": true,
+          "registration_type": "Hard Coded",
+          "description": "General multi-turn RAG reasoning and procedural tool agent",
+          "sample_prompts": ["What is Agentic RAG?", "Look up employee Dubois"],
+          "queries_handled": 5
+        }
+      ]
+    }
+    ```
+- `POST /api/router/agents`
+  - Dynamically registers a new agent with the router.
+  - Request:
+    ```json
+    {
+      "id": "agent-tech-support",
+      "name": "Tech Support Specialist",
+      "uri": "http://agent_tech_support:8007",
+      "description": "Specialized container diagnostics and DevOps troubleshooting",
+      "sample_prompts": ["Container exit 137 OOMKilled", "Microservice timeout error"],
+      "registration_type": "API Registered" | "Manually Added"
+    }
+    ```
+  - Response (201): `{"status": "success", "message": "Agent registered successfully", "agent": {...}}`
+- `PUT /api/router/agents/<agent_id>/update`
+  - Updates parameters (name, uri, description, sample_prompts) of a manually added agent and persists to `/app/data/manual_agents.json`.
+- `POST /api/router/agents/<agent_id>/status`
+  - Manually toggles agent status (`UP` / `DOWN`).
+  - Request: `{"status": "UP" | "DOWN"}`
+- `DELETE /api/router/agents/<agent_id>`
+  - Unregisters agent and permanently removes from `/app/data/manual_agents.json` (rejected for default fallback agent).
+- `POST /api/router/agents/<agent_id>/health`
+  - Probes live `/health` endpoint of target container and updates registry status.
+- `POST /api/router/agents/health_check_all`
+  - Performs on-demand `/health` sweep across all registered agent containers.
+- `GET /api/router/threshold` & `POST /api/router/threshold`
+  - Gets or sets the cosine similarity routing threshold (e.g. `0.50` / `50%`).
+- `POST /api/router/test_route`
+  - Simulates vector prompt routing without invoking LLM generation.
+  - Request: `{"prompt": "<test query>"}`
+  - Response:
+    ```json
+    {
+      "status": "success",
+      "selected_agent": "agent-tech-support",
+      "best_score": 0.74,
+      "threshold": 0.50,
+      "threshold_met": true,
+      "is_fallback": false,
+      "explanation": "Matched specialized agent 'Tech Support Specialist' with similarity 74.0% > 50.0%",
+      "latency_ms": 42.5,
+      "ranked_agents": [
+        {"id": "agent-tech-support", "name": "Tech Support Specialist", "score": 0.74, "status": "UP"},
+        {"id": "agents-default", "name": "Default Agent", "score": 0.32, "status": "UP"}
+      ]
+    }
+    ```
+- `POST /api/router/chat`
+  - Main routed chat invocation endpoint. Evaluates prompt similarity, dispatches request to top specialized agent (if score > threshold and status is UP) or fallback agent (`agents:8002`), adhering to a 180-second timeout.
+  - Request:
+    ```json
+    {
+      "message": "<user query>",
+      "conversation_id": "conv_<id>",
+      "jwt_token": "<token>",
+      "model": "gemma-4-26b-a4b-it",
+      "temperature": 0.7,
+      "max_turns": 5
+    }
+    ```
+  - Response:
+    ```json
+    {
+      "status": "success",
+      "response": "<synthesized answer>",
+      "routed_to": "agent-tech-support",
+      "similarity_score": 0.74,
+      "threshold_met": true,
+      "is_fallback": false,
+      "routing_explanation": "Routed to Tech Support Specialist (similarity: 74.0%)"
+    }
+    ```
+
+### 9. Specialized Tech Support Agent Service (`agent_tech_support`, Port 8007)
+- `GET /health`
+  - Health check endpoint returning service status.
+  - Response: `{"status": "ok", "service": "agent_tech_support", "port": 8007}`
+- `POST /api/chat`
+  - Specialized diagnostic reasoning loop evaluating container crash logs, microservice errors, and network anomalies using Google GenAI with domain SOP context.
+  - Request:
+    ```json
+    {
+      "message": "Why did container exit with code 137?",
+      "conversation_id": "conv_<id>",
+      "model": "gemma-4-26b-a4b-it",
+      "jwt_token": "<token>"
+    }
+    ```
+  - Response:
+    ```json
+    {
+      "status": "success",
+      "response": "Exit code 137 indicates that the Linux kernel terminated the container with SIGKILL (signal 9 + 128 = 137) due to Out Of Memory (OOMKilled)...",
+      "agent_type": "Specialized Tech Support Agent",
+      "duration_ms": 1180
+    }
+    ```
+
+### 10. External Agent Integration Contract & Networking Architecture
+- **Overview**: External or custom autonomous agents running outside the core docker-compose stack can be seamlessly registered and routed to via the Agents Router.
+- **Networking Configuration**:
+  - **Option A (Shared Docker Network)**:
+    - Attach the external container to the existing Docker Compose bridge network:
+      `docker network connect agent-with-rag_default <external_container_name>`
+    - In the router configuration, set the container URI using its Docker container/service hostname:
+      `http://<external_container_name>:<port>`
+  - **Option B (Host Gateway IP)**:
+    - When running an external agent on the host OS or on an independent Docker bridge with published ports to the host machine:
+      - Set the agent URI to `http://172.20.0.1:<port>`.
+      - **Rationale**: Inside Docker containers on Linux, `172.20.0.1` is the default bridge gateway IP representing the host base OS. Using `localhost` or `127.0.0.1` inside a container resolves to that container itself, causing connection refused (`Errno 111`). `172.20.0.1` routes cleanly out of the container to the host loopback/ports.
+- **Agent API Contract**:
+  - `GET /health`: Must respond with HTTP 200 `{"status": "ok"}` or `{"status": "healthy"}` for health probes.
+  - `POST /chat` or `POST /api/chat`: Must accept JSON request containing `message` or `prompt`, `conversation_id`, and `jwt_token`. Must return JSON with `{"response": "...", "status": "success"}`.
+  - **Auto-Registration vs Manual Registration**: To allow strictly manual registration via the Web UI's "Add New Agent" popup, disable or remove background auto-registration loops in the external agent.
+  - **JWT Authentication**: Protected external agents mount or import `jwt_auth.py` and validate caller tokens via `authenticate_request(req)` or `decode_jwt_token_with_reason(token)`.
 
 ## Sample Documents
 - Create the sample knowledge documents in the `sample_docs/` folder:

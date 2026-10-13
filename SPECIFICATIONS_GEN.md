@@ -82,9 +82,8 @@ Agent-with-RAG/
 │   ├── genai/                    # Google ADK agent implementation
 │   ├── secrets/                  # Inter-container keys & env configs
 │   ├── skills/                   # Discovered domain skills
-├── jwt_auth.py                   # Single top-level JWT module mounted into all container volumes
 │   │   ├── person-information-skill/  # Employee database lookup
-│   │   └── document-search-skill/# Vector knowledge base retrieval
+│   │   └── document-search-skill/     # Vector knowledge base retrieval
 │   ├── Dockerfile
 │   └── server.py
 ├── auth_service/                 # Authentication & authorization service
@@ -96,8 +95,6 @@ Agent-with-RAG/
 │   ├── secrets/                  # Keys & authorization storage
 │   ├── Dockerfile
 │   └── server.py
-├── embedding/                    # Embedding service configuration
-│   └── secrets/
 ├── logging/                      # Central logging & telemetry service
 │   ├── logs/                     # Persistent event log (log.json)
 │   ├── Dockerfile
@@ -131,6 +128,7 @@ Agent-with-RAG/
 │   └── product_catalog_data.py   # 100 product offerings catalog data generator
 ├── tests/                        # Microservice test suite
 │   └── test_microservices.py
+├── jwt_auth.py                   # Single unified JWT module mounted into all container volumes
 ├── docker-compose.yml            # Multi-service composition
 ├── requirements.txt              # Python runtime dependencies
 ├── README.md                     # System documentation
@@ -357,7 +355,9 @@ All metrics are presented as cards displayed horizontally across the page:
 - Web UI frontend polls and executes health checks every 30 seconds (`POST /api/router/agents/health_check_all`) and refreshes the directory table.
 
 #### 2.6.7 "Add New Agent" Popup Window & Chrome Autofill Protection
-- Modal collects Agent ID, Display Name, URI, Description, and Sample Prompts.
+- **2x Width & Responsive 2-Column Grid Layout**: Modal box `#addAgentModal .modal-box` is expanded to `max-width: 1080px; width: 95%` (double the previous 540px width) using a responsive CSS grid (`repeat(auto-fit, minmax(320px, 1fr))`):
+  - **Left Column**: Form inputs for Agent ID (`#addAgentId`), Display Name (`#addAgentName`), Container URI (`#addAgentUri`), and Specialization & Description (`#addAgentDesc`).
+  - **Right Column**: Sample Queries / Prompts textarea (`#addAgentPrompts`) with expanded height (`min-height: 220px; rows="10"`) and descriptive helper label.
 - Status dropdown (Up / Down) is removed; initial status is verified immediately via an active `/health` check ping.
 - Form is enclosed in `<form id="formAddAgent" autocomplete="off" onsubmit="event.preventDefault(); return false;">` with `data-lpignore="true"` and `type="button"` attributes on buttons to prevent Google Chrome from prompting to save passwords.
 - Bottom buttons: Cancel (closes modal) and Add (validates, registers, closes modal, dispatches health check, and updates table).
@@ -367,6 +367,16 @@ All metrics are presented as cards displayed horizontally across the page:
 - Manually configured agents are stored in `/app/data/manual_agents.json`.
 - All manually configured agents are automatically loaded upon starting the router.
 - When an agent is deleted, its entry is permanently removed from `manual_agents.json`.
+
+#### 2.6.9 180-Second Multi-Agent Execution Timeout
+- Router forwarding (`agent_router/router.py`) and Web UI proxying (`web_ui/app.py`) configure an extended execution timeout of 180 seconds (`timeout=180`).
+- Accommodates multi-agent loops, collaborative reflection, deep research tools, and external LLM reasoning without HTTP 504 timeouts.
+
+#### 2.6.10 External Agent Networking & Registration
+- Supports external agents across two primary topologies:
+  - **Option A (Shared Network)**: Connect external container to `agent-with-rag_default` (`docker network connect agent-with-rag_default <container>`) and access via `http://<container>:<port>`.
+  - **Option B (Host Gateway IP)**: When external container or host process runs on host network, use gateway IP `http://172.20.0.1:<port>` to route cleanly from inside Docker containers to host ports.
+- External agents expose `/health` (GET) and `/chat` or `/api/chat` (POST). Auto-registration loops on external agents can be disabled to permit strictly manual onboarding via the GUI modal.
 
 ---
 
@@ -903,9 +913,83 @@ Runs official `ollama/ollama:latest` container providing high-dimensional vector
 
 ---
 
-### 3.7 Knowledge Documents, Seed Corpus & Sample PDF Specifications
+### 3.7 Agents Router Service (`agent_router`, Port 8004)
 
-#### 3.7.1 Directory Layout (`sample_docs/`)
+#### 3.7.1 Responsibilities
+Acts as the central semantic vector gateway and registry for multi-agent routing. Computes text embeddings using Google GenAI (or deterministic local fallback in `embeddings.py`), calculates cosine similarities against registered agent capability prompts, evaluates threshold criteria (default: `> 50%` / `> 0.50`), and dispatches requests. If the score is below the threshold or the target agent is offline (`DOWN`), it safely routes to the default fallback agent (`http://agents:8002`).
+
+#### 3.7.2 Persistence & 180s Timeout
+- **Volume Mount**: `./agent_router/data:/app/data` persists manually added agents in `/app/data/manual_agents.json`.
+- **Health Daemon**: Background thread runs `check_all_health()` every 30 seconds to update live agent reachability.
+- **Workflow Timeout**: Dispatches outbound requests with an extended 180-second timeout (`timeout=180`) to accommodate deep reasoning and multi-turn loops.
+
+#### 3.7.3 Endpoints Contract
+- `GET /health` -> `{"status": "ok", "service": "agent_router", "port": 8004}`
+- `GET /api/router/agents`
+  - Returns array of registered agents with fields: `id`, `name`, `uri`, `status` (`UP`|`DOWN`), `is_default`, `registration_type` (`Hard Coded`|`API Registered`|`Manually Added`), `description`, `sample_prompts`, and `queries_handled`.
+- `POST /api/router/agents`
+  - Dynamically registers an agent. Body: `{"id": "...", "name": "...", "uri": "...", "description": "...", "sample_prompts": [...]}`. Returns `201`.
+- `PUT /api/router/agents/<id>/update`
+  - Updates configuration for manually added agents and persists changes to `/app/data/manual_agents.json`.
+- `POST /api/router/agents/<id>/status`
+  - Manually toggles status (`UP` / `DOWN`). Body: `{"status": "UP"|"DOWN"}`.
+- `DELETE /api/router/agents/<id>`
+  - Unregisters agent and permanently removes entry from `/app/data/manual_agents.json`.
+- `POST /api/router/agents/<id>/health` -> Probes target agent `/health` endpoint and updates status.
+- `POST /api/router/agents/health_check_all` -> On-demand `/health` sweep across all agents.
+- `GET /api/router/threshold` / `POST /api/router/threshold` -> Get/set active routing threshold float.
+- `POST /api/router/test_route`
+  - Body: `{"prompt": "Query text"}`. Returns `selected_agent`, `best_score`, `threshold`, `threshold_met`, `is_fallback`, `explanation`, `latency_ms`, and `ranked_agents`.
+- `POST /api/router/chat`
+  - Dispatches chat query with 180s timeout. Body: `{"message": "...", "conversation_id": "...", "jwt_token": "...", "model": "...", "temperature": 0.7, "max_turns": 5}`.
+  - Response: `{"status": "success", "response": "...", "routed_to": "...", "similarity_score": 0.74, "threshold_met": true, "is_fallback": false, "routing_explanation": "..."}`.
+
+---
+
+### 3.8 Specialized Product Technical Support Agent (`agent_tech_support`, Port 8007)
+
+#### 3.8.1 Responsibilities
+Dedicated autonomous agent specializing in technical diagnostics, container crash log analysis (e.g. Linux OOMKilled exit code 137), network disconnects, microservice health inspection, and operational DevOps troubleshooting.
+
+#### 3.8.2 Features
+- Background thread automatically registers itself with `http://agents_router:8004/api/router/agents` upon startup with seed diagnostic sample prompts.
+- Synthesizes diagnostic advice using Google GenAI (`gemini-2.5-flash` or configured model) grounded in root-cause analysis SOPs.
+
+#### 3.8.3 Endpoints Contract
+- `GET /health` -> `{"status": "ok", "service": "agent_tech_support", "port": 8007}`
+- `POST /api/chat`
+  - Body: `{"message": "Why did my container crash with exit 137?", "conversation_id": "conv_...", "jwt_token": "..."}`.
+  - Response: `{"status": "success", "response": "Exit code 137 represents SIGKILL from the OOM-killer...", "agent_type": "Specialized Tech Support Agent", "duration_ms": 1180}`.
+
+---
+
+### 3.9 External Agent Integration Contract & Networking Architecture
+
+#### 3.9.1 Topology & Networking Models
+To connect external or third-party agent containers into the Agents Router:
+- **Option A (Shared Docker Network)**:
+  - Join the external container to `agent-with-rag_default`:
+    ```bash
+    docker network connect agent-with-rag_default <external_container_name>
+    ```
+  - In the Add New Agent modal, enter the URI as:
+    `http://<external_container_name>:<port>`
+- **Option B (Host Gateway IP)**:
+  - When the external container runs on the host network or an independent Docker bridge with published ports to the host OS:
+    - Enter the URI as: `http://172.20.0.1:<port>`.
+    - **Technical Architecture Rationale**: Inside Docker containers running on Linux, `172.20.0.1` is the default bridge gateway representing the host machine. Internal container network traffic addressed to `localhost` or `127.0.0.1` stays within that container's network namespace and fails with Connection Refused (`Errno 111`). `172.20.0.1` routes cleanly out of the container to the host loopback/ports.
+
+#### 3.9.2 Protocol Contract
+- `GET /health`: Must respond with HTTP 200 `{"status": "ok"}` or `{"status": "healthy"}` for health probes.
+- `POST /chat` or `POST /api/chat`: Accepts incoming JSON with user query (`{"prompt": "...", "message": "...", "conversation_id": "...", "jwt_token": "..."}`) and returns `{"response": "...", "status": "success"}`.
+- **Manual Registration**: To enforce strictly manual onboarding via the 1080px Web UI popup, remove or disable auto-registration loops on external agents.
+- **JWT Verification**: Protected agents validate caller tokens using `jwt_auth.py` and return clear diagnostic reason strings on failure.
+
+---
+
+### 3.10 Knowledge Documents, Seed Corpus & Sample PDF Specifications
+
+#### 3.10.1 Directory Layout (`sample_docs/`)
 The `sample_docs/` directory houses the baseline reference documents utilized for RAG ingestion, tenant domain isolation testing, and system evaluation. The corpus comprises 3 markdown knowledge articles and 3 professionally formatted PDF documents:
 
 1. `agent_and_rag.md`: Foundational overview of autonomous agents, multi-turn tool calling, and RAG architectures (~3,000 words). Partitioned to tenant domain `example-a.com`.
@@ -947,7 +1031,7 @@ The `sample_docs/` directory houses the baseline reference documents utilized fo
    - `Qty 10+ Price`: Automatically calculated 10% volume discount (`Base Price * 0.90`).
    - `Qty 100+ Price`: Automatically calculated 30% volume discount (`Base Price * 0.70`).
 
-#### 3.7.2 Deterministic PDF Build Pipeline (`scripts/`)
+#### 3.10.2 Deterministic PDF Build Pipeline (`scripts/`)
 To guarantee that any independent developer or automated IDE agent can replicate this environment from scratch:
 - `scripts/build_all_sample_pdfs.py`: Master compilation script that invokes ReportLab with a two-pass `NumberedCanvas` ('Page X of Y' headers and footers), builds all 3 PDFs, and asserts that word counts and pricing discount formulas conform to specifications.
 - `scripts/nexus_profile_data.py`: Generates the complete structured text and metadata for the Nexus profile.
@@ -1014,10 +1098,27 @@ Services mount necessary persistence directories mapped to the host filesystem:
 
 ### 5.2 Inter-Container Authentication Flow
 1. When a user authenticates, `auth_service` issues an HMAC-SHA256 signed JWT token containing `email`, `role`, and tenant `domain`.
-2. The `web_ui` attaches this JWT token as `Authorization: Bearer <jwt_token>` for all outgoing microservice calls (`agents`, `doc_rag`, `tools`).
-3. When `agents` executes downstream sub-calls to `doc_rag` or `tools`, it forwards the caller's JWT token in the `Authorization: Bearer <jwt_token>` header.
-4. Each receiving service validates the JWT signature and expiration directly or via `auth_service`.
-5. If valid, the request proceeds under the verified tenant domain and role scope; otherwise `401 Unauthorized` is returned.
+2. The `web_ui` attaches this JWT token as `Authorization: Bearer <jwt_token>` for all outgoing microservice calls (`agents`, `doc_rag`, `tools`, `agents_router`).
+3. When `agents` or `agents_router` executes downstream sub-calls to `doc_rag` or `tools`, it forwards the caller's JWT token in the `Authorization: Bearer <jwt_token>` header.
+4. Each receiving service validates the JWT signature and expiration directly using the mounted `jwt_auth.py` module.
+5. If valid, the request proceeds under the verified tenant domain and role scope; otherwise `401 Unauthorized` is returned with exact reason diagnostics.
+
+### 5.3 Single Unified `jwt_auth.py` Module & Diagnostic Error Propagation
+A single top-level `jwt_auth.py` is volume-mounted into all containers (`./jwt_auth.py:/app/jwt_auth.py`), ensuring complete algorithmic parity across the cluster:
+- **`generate_jwt_token(payload, expires_in=86400)`**: Issues an HMAC-SHA256 token signed with `JWT_SECRET_KEY` (default: `agent-rag-shared-secret-jwt-key-2026`).
+- **`decode_jwt_token_with_reason(token) -> tuple[dict | None, str | None]`**:
+  - Validates token format, payload base64 encoding, expiration timestamp, and HMAC signature.
+  - Returns `(payload, None)` if valid.
+  - Returns `(None, reason)` if invalid, exposing diagnostic failure strings:
+    - `"Token missing"`: Provided token is empty or null.
+    - `"Invalid token format"`: Token does not contain exactly 3 dot-delimited segments (`header.payload.signature`).
+    - `"Token expired"`: Timestamp `exp` is in the past.
+    - `"Signature verification failed"`: Signature mismatch against shared secret.
+- **`decode_jwt_token(token) -> dict | None`**:
+  - Backward-compatible wrapper calling `decode_jwt_token_with_reason(token)[0]`.
+- **`authenticate_request(req) -> tuple[bool, dict | str]`**:
+  - Inspects `Authorization: Bearer <token>` header or `jwt_token` query parameter / JSON payload.
+  - Returns `(True, payload_dict)` on success, or `(False, error_reason_string)` on failure to return actionable diagnostic messages to clients.
 
 ---
 
@@ -1033,61 +1134,169 @@ Services mount necessary persistence directories mapped to the host filesystem:
 ```yaml
 services:
   logging:
-    build: { context: ./logging, dockerfile: Dockerfile }
+    build:
+      context: ./logging
+      dockerfile: Dockerfile
     container_name: logging-service
+    restart: unless-stopped
     ports: ["8006:8006"]
     volumes:
       - ./logging/logs:/app/logs
       - ./logging/server.py:/app/server.py
-    environment: [PORT=8006, RUNNING_IN_DOCKER=true]
+    environment:
+      - PORT=8006
+      - RUNNING_IN_DOCKER=true
 
   auth_service:
-    build: { context: ./auth_service, dockerfile: Dockerfile }
+    build:
+      context: ./auth_service
+      dockerfile: Dockerfile
     container_name: auth-service
+    restart: unless-stopped
     ports: ["8001:8001"]
-    volumes: ["./auth_service/secrets:/app/secrets"]
-    environment: [PORT=8001, RUNNING_IN_DOCKER=true, SECRETS_DIR=/app/secrets, LOGGING_SERVICE_URL=http://logging:8006/api/logs]
+    volumes:
+      - ./auth_service/secrets:/app/secrets
+      - ./auth_service/server.py:/app/server.py
+      - ./jwt_auth.py:/app/jwt_auth.py
+    environment:
+      - PORT=8001
+      - RUNNING_IN_DOCKER=true
+      - SECRETS_DIR=/app/secrets
+      - LOGGING_SERVICE_URL=http://logging:8006/api/logs
     depends_on: [logging]
 
   ollama:
     image: ollama/ollama:latest
     container_name: ollama-embedding
+    restart: unless-stopped
     ports: ["11434:11434"]
     volumes: ["/home/pi-net/.ollama:/root/.ollama"]
 
   doc_rag:
-    build: { context: ./doc_RAG, dockerfile: Dockerfile }
+    build:
+      context: ./doc_RAG
+      dockerfile: Dockerfile
     container_name: doc-rag-service
+    restart: unless-stopped
     ports: ["8003:8003"]
-    volumes: ["./doc_RAG/chroma:/app/chroma", "./doc_RAG/secrets:/app/secrets"]
-    environment: [PORT=8003, RUNNING_IN_DOCKER=true, CHROMA_DIR=/app/chroma, OLLAMA_URL=http://ollama:11434, AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key, LOGGING_SERVICE_URL=http://logging:8006/api/logs]
+    volumes:
+      - ./doc_RAG/chroma:/app/chroma
+      - ./doc_RAG/secrets:/app/secrets
+      - ./doc_RAG/server.py:/app/server.py
+      - ./jwt_auth.py:/app/jwt_auth.py
+    environment:
+      - PORT=8003
+      - RUNNING_IN_DOCKER=true
+      - SECRETS_DIR=/app/secrets
+      - OLLAMA_URL=http://ollama:11434
+      - AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key
+      - LOGGING_SERVICE_URL=http://logging:8006/api/logs
     depends_on: [logging, auth_service, ollama]
 
   tools:
-    build: { context: ./tools, dockerfile: Dockerfile }
+    build:
+      context: ./tools
+      dockerfile: Dockerfile
     container_name: tools-service
+    restart: unless-stopped
     ports: ["8005:8005"]
-    volumes: ["./tools/data:/app/data", "./tools/secrets:/app/secrets"]
-    environment: [PORT=8005, RUNNING_IN_DOCKER=true, DATA_DIR=/app/data, AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key, LOGGING_SERVICE_URL=http://logging:8006/api/logs]
+    volumes:
+      - ./tools/data:/app/data
+      - ./tools/secrets:/app/secrets
+      - ./tools/server.py:/app/server.py
+      - ./jwt_auth.py:/app/jwt_auth.py
+    environment:
+      - PORT=8005
+      - RUNNING_IN_DOCKER=true
+      - SECRETS_DIR=/app/secrets
+      - AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key
+      - LOGGING_SERVICE_URL=http://logging:8006/api/logs
     depends_on: [logging, auth_service]
 
   agents:
-    build: { context: ./agents, dockerfile: Dockerfile }
+    build:
+      context: ./agents
+      dockerfile: Dockerfile
     container_name: agents-service
+    restart: unless-stopped
     ports: ["8002:8002"]
-    volumes: ["./agents/secrets:/app/secrets", "./agents/skills:/app/skills:ro"]
-    environment: [PORT=8002, RUNNING_IN_DOCKER=true, DOC_RAG_URL=http://doc_rag:8003, TOOLS_URL=http://tools:8005, LOGGING_URL=http://logging:8006, AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key, GEMINI_API_KEY=${GEMINI_API_KEY}, GEMINI_MODEL=${GEMINI_MODEL:-gemma-4-26b-a4b-it}]
+    volumes:
+      - ./agents/secrets:/app/secrets
+      - ./agents/skills:/app/skills:ro
+      - ./agents/server.py:/app/server.py
+      - ./agents/skills_loader.py:/app/skills_loader.py
+      - ./agents/custom_agent:/app/custom_agent
+      - ./jwt_auth.py:/app/jwt_auth.py
+    environment:
+      - PORT=8002
+      - RUNNING_IN_DOCKER=true
+      - SECRETS_DIR=/app/secrets
+      - DOC_RAG_URL=http://doc_rag:8003
+      - TOOLS_URL=http://tools:8005
+      - LOGGING_URL=http://logging:8006
+      - AUTH_SERVICE_URL=http://auth_service:8001/api/auth/validate_key
+      - SKILLS_DIR=/app/skills
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemma-4-26b-a4b-it}
     depends_on: [logging, doc_rag, tools]
 
+  agents_router:
+    build:
+      context: ./agent_router
+      dockerfile: Dockerfile
+    container_name: agents-router
+    restart: unless-stopped
+    ports: ["8004:8004"]
+    volumes:
+      - ./jwt_auth.py:/app/jwt_auth.py
+      - ./agent_router/server.py:/app/server.py
+      - ./agent_router/router.py:/app/router.py
+      - ./agent_router/registry.py:/app/registry.py
+      - ./agent_router/embeddings.py:/app/embeddings.py
+      - ./agent_router/data:/app/data
+    environment:
+      - PORT=8004
+      - RUNNING_IN_DOCKER=true
+      - AGENTS_DATA_DIR=/app/data
+      - AGENTS_URL=http://agents:8002
+      - TECH_SUPPORT_URL=http://agent_tech_support:8007
+      - LOGGING_URL=http://logging:8006
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on: [logging, agents]
+
+  agent_tech_support:
+    build:
+      context: ./agent_tech_support
+      dockerfile: Dockerfile
+    container_name: agent-tech-support
+    restart: unless-stopped
+    ports: ["8007:8007"]
+    volumes:
+      - ./jwt_auth.py:/app/jwt_auth.py
+      - ./agent_tech_support/server.py:/app/server.py
+    environment:
+      - PORT=8007
+      - RUNNING_IN_DOCKER=true
+      - ROUTER_URL=http://agents_router:8004
+      - DOC_RAG_URL=http://doc_rag:8003
+      - LOGGING_SERVICE_URL=http://logging:8006/api/logs
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemma-4-26b-a4b-it}
+    depends_on: [logging, agents_router, doc_rag]
+
   web_ui:
-    build: { context: ./web_ui, dockerfile: Dockerfile }
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile
     container_name: web-ui-service
+    restart: unless-stopped
     ports: ["8000:8000"]
     volumes:
       - ./web_ui/secrets:/app/secrets
       - ./web_ui/static:/app/static
       - ./web_ui/templates:/app/templates
       - ./web_ui/app.py:/app/app.py
+      - ./jwt_auth.py:/app/jwt_auth.py
       - ./agents/secrets:/app/container_secrets/agents
       - ./doc_RAG/secrets:/app/container_secrets/doc_rag
       - ./tools/secrets:/app/container_secrets/tools
@@ -1095,16 +1304,33 @@ services:
       - ./web_ui/secrets:/app/container_secrets/web_ui
       - ./sample_docs:/app/sample_docs:ro
       - /var/run/docker.sock:/var/run/docker.sock
-    environment: [PORT=8000, RUNNING_IN_DOCKER=true, AUTH_SERVICE_URL=http://auth_service:8001, AGENTS_URL=http://agents:8002, DOC_RAG_URL=http://doc_rag:8003, TOOLS_URL=http://tools:8005, LOGGING_URL=http://logging:8006, OLLAMA_URL=http://ollama:11434]
-    depends_on: [logging, auth_service, agents, doc_rag, tools]
+    environment:
+      - PORT=8000
+      - RUNNING_IN_DOCKER=true
+      - AUTH_SERVICE_URL=http://auth_service:8001
+      - AGENTS_URL=http://agents:8002
+      - ROUTER_URL=http://agents_router:8004
+      - TECH_SUPPORT_URL=http://agent_tech_support:8007
+      - DOC_RAG_URL=http://doc_rag:8003
+      - TOOLS_URL=http://tools:8005
+      - LOGGING_URL=http://logging:8006
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      - logging
+      - auth_service
+      - agents
+      - agents_router
+      - agent_tech_support
+      - doc_rag
+      - tools
 ```
 
 ### 6.3 Startup & Build Commands
 ```bash
-# 1. Build and start all services in detached mode
+# 1. Build and start all 9 services in detached mode
 docker compose up -d --build
 
-# 2. Verify all 7 containers are healthy
+# 2. Verify all 9 containers are healthy
 docker compose ps
 
 # 3. Access web dashboard
@@ -1114,7 +1340,7 @@ open http://localhost:8000
 ### 6.4 Verification Test Suite
 Run the test suite from the repository root:
 ```bash
-PYTHONPATH=. pytest tests/test_microservices.py -v
+PYTHONPATH=. pytest tests/test_agents_router.py tests/test_microservices.py -v
 ```
 All unit and integration assertions must pass, covering:
 1. `logging` health, log ingestion, query filtering, and secret redaction.
@@ -1122,14 +1348,22 @@ All unit and integration assertions must pass, covering:
 3. `tools` procedural employee search and stock gainers/losers calculation.
 4. `doc_rag` document/skill addition, semantic querying, stats, and deletion.
 5. `agents` model catalog and skill discovery.
-6. `web_ui` route availability and authentication template rendering.
+6. `agents_router` dynamic registry, manual agents persistence, health probing, cosine similarity routing, and 180s timeout.
+7. `jwt_auth` diagnostic error reason decoding (`Token expired`, `Signature verification failed`, `Token missing`) and backward compatibility.
+8. `web_ui` route availability and authentication template rendering.
 
 ---
 
 ## 7. Compliance Checklist for Re-creation
 
 When recreating this project from this specification, verify that:
-- [x] All 7 containers build, start, and communicate without manual IP configuration.
+- [x] All 9 containers build, start, and communicate without manual IP configuration.
+- [x] "Add New Agent" popup window width is 2x current width (`max-width: 1080px; width: 95%`) with a responsive 2-column layout (Left: ID, Name, URI, Description; Right: Sample Prompts with `min-height: 220px`).
+- [x] Modal form isolates against Chrome password manager prompts (`autocomplete="off"`, `data-lpignore="true"`, explicit `type="button"`).
+- [x] Extended execution timeout (180s) configured in both router and Web UI for deep multi-agent reasoning.
+- [x] Manually added agents persist across container restarts via `./agent_router/data/manual_agents.json`.
+- [x] External agent integration is supported via Option A (Shared Docker network `agent-with-rag_default`) and Option B (Host gateway IP `http://172.20.0.1:<port>`).
+- [x] Central `jwt_auth.py` module exposes `decode_jwt_token_with_reason(token)` returning diagnostic reason strings while preserving backward-compatible `decode_jwt_token(token)`.
 - [x] On Chat & Knowledge Mgnt, Left Card and Right Card each take exactly 50% of the window width with full-width layout (`max-width: 100%`).
 - [x] On VectorDB Mgnt, Populate Vector Database card occupies 40% width and Vector Storage Status card occupies 60% width (`.vectordb-split-grid`).
 - [x] Max RAG Chunks (2, 3, 5, 7, 10), Skill Selector, and Skill Threshold are located in the Right Card.
@@ -1156,16 +1390,16 @@ When recreating this project from this specification, verify that:
 
 ### 8.2 Why the Specification is Complete & Actionable:
 1. **Deterministic Microservice Boundary Definitions**:
-   - The network topology, ports (`8000`, `8001`, `8002`, `8003`, `8005`, `8006`, `11434`), and inter-service HTTP REST contracts are explicitly declared with complete JSON request and response payloads.
+   - The network topology, ports (`8000`, `8001`, `8002`, `8003`, `8004`, `8005`, `8006`, `8007`, `11434`), and inter-service HTTP REST contracts are explicitly declared with complete JSON request and response payloads.
 2. **Explicit Data Models & Schemas**:
-   - The SQLite database schema for authentication (`auth.db`), the JSON schema for central logs (`log.json`), the ChromaDB collections (`documents`, `skills`), and the seed data for tools (`tools/data/employee_database.csv`) are documented in full.
+   - The SQLite database schema for authentication (`auth.db`), the JSON schema for central logs (`log.json`), the persistent store for manual agents (`manual_agents.json`), the ChromaDB collections (`documents`, `skills`), and the seed data for tools (`tools/data/employee_database.csv`) are documented in full.
 3. **Exact GUI Layout & Component Behavior**:
-   - Every UI tab, card split ratios (50%/50% grid width on Page 1 Chat, 40%/60% grid width on Page 2 VectorDB), default control value (Max Tokens 2048, Temperature 0.7, Max Turns 5, Chunk Size 800, Overlap 100), and interactive modal flow (Registration in locked state, bulk key deletion confirmation, shutdown confirmation) has exact specifications.
-4. **Autonomous Agent Planning Loop**:
-   - The planning and reasoning workflow (`custom_agent.py`) is specified step-by-step, including skill discovery, similarity matching, tool calling format (`{"tool": "...", "arguments": {...}}`), loop termination criteria (`max_turns`), and conditional document vector searching.
+   - Every UI tab, card split ratios (50%/50% grid width on Page 1 Chat, 40%/60% grid width on Page 2 VectorDB, 2-column 1080px grid width on Page 3 Add Agent Modal), default control value (Max Tokens 2048, Temperature 0.7, Max Turns 5, Chunk Size 800, Overlap 100), and interactive modal flow has exact specifications.
+4. **Autonomous Agent & Router Orchestration Loops**:
+   - The planning loop (`custom_agent.py`) and vector cosine similarity router (`router.py`) are specified step-by-step, including skill discovery, 50% threshold evaluation, fallback routing to `agents:8002`, and 180s execution timeout.
 5. **Security & Inter-Service Authentication**:
-   - The multi-tenant JWT token lifecycle, cryptographic signing, Bearer token propagation across services, and automatic regex-based secret redaction (`****`) are clearly detailed.
+   - The multi-tenant JWT token lifecycle, cryptographic signing, Bearer token propagation across services, reason-aware diagnostic decoding (`decode_jwt_token_with_reason`), and automatic regex-based secret redaction (`****`) are clearly detailed.
 6. **Timezone Handling**:
    - Explicit instructions for translating UTC timestamps to local client time across both chart coordinates and tabular forensic logs using client timezone offset (`tz_offset`).
 7. **Complete Docker Composition & Automated Tests**:
-   - The exact `docker-compose.yml` service blocks, environment variables, volume mounts, and `pytest tests/test_microservices.py` test suite provide a turn-key verification harness to guarantee compliance.
+   - The exact `docker-compose.yml` 9-service blocks, environment variables, volume mounts, and `pytest tests/test_agents_router.py tests/test_microservices.py` test suite provide a turn-key verification harness to guarantee compliance.

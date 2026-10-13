@@ -177,7 +177,7 @@ class VectorRouter:
         agent: AgentInfo,
         payload: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
-        timeout: int = 60,
+        timeout: int = 180,
     ) -> Dict[str, Any]:
         """Dispatches chat request to agent container over HTTP REST protocol."""
         url = f"{agent.url}/api/agent/chat"

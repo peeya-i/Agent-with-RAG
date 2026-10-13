@@ -1427,44 +1427,53 @@
 
   <!-- Modal 9: Add / View / Edit Agent Modal -->
   <div class="modal-overlay hidden" id="addAgentModal">
-    <div class="modal-box" style="max-width: 540px;">
+    <div class="modal-box" style="max-width: 1080px; width: 95%;">
       <div class="modal-header">
         <h3 id="addAgentModalTitle"><span class="modal-icon">🤖</span> Add New Agent</h3>
-        <button id="btnCloseAddAgentModalX" class="btn-close" onclick="if(window.closeAddAgentModal)window.closeAddAgentModal();">&times;</button>
+        <button type="button" id="btnCloseAddAgentModalX" class="btn-close" onclick="if(window.closeAddAgentModal)window.closeAddAgentModal();">&times;</button>
+      </div>
       <form id="formAddAgent" autocomplete="off" onsubmit="event.preventDefault(); return false;">
-        <div class="modal-body">
+        <div class="modal-body" style="padding: 1.25rem 1.5rem;">
           <div id="addAgentAlertMsg" class="modal-alert-text hidden" style="margin-bottom: 0.75rem; font-size: 0.88rem; color: #ef4444;"></div>
           <div id="modalAgentTypeNotice" class="hidden" style="margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.82rem;"></div>
           
-          <div class="form-group" style="margin-bottom: 0.85rem;">
-            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Identifier (ID) *</label>
-            <input type="text" id="inputNewAgentId" class="input-text" placeholder="e.g. agent-billing" required autocomplete="off" data-lpignore="true" style="width: 100%;">
-            <span id="agentIdHelpText" style="font-size: 0.75rem; color: #64748b;">Unique alphanumeric slug without spaces.</span>
-          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem;">
+            <!-- Left Column: Core Identity & Details -->
+            <div>
+              <div class="form-group" style="margin-bottom: 0.85rem;">
+                <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Identifier (ID) *</label>
+                <input type="text" id="inputNewAgentId" class="input-text" placeholder="e.g. agent-billing" required autocomplete="off" data-lpignore="true" style="width: 100%;">
+                <span id="agentIdHelpText" style="font-size: 0.75rem; color: #64748b;">Unique alphanumeric slug without spaces.</span>
+              </div>
 
-          <div class="form-group" style="margin-bottom: 0.85rem;">
-            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Display Name *</label>
-            <input type="text" id="inputNewAgentName" class="input-text" placeholder="e.g. Billing & Financial Specialist" required autocomplete="off" data-lpignore="true" style="width: 100%;">
-          </div>
+              <div class="form-group" style="margin-bottom: 0.85rem;">
+                <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Agent Display Name *</label>
+                <input type="text" id="inputNewAgentName" class="input-text" placeholder="e.g. Billing & Financial Specialist" required autocomplete="off" data-lpignore="true" style="width: 100%;">
+              </div>
 
-          <div class="form-group" style="margin-bottom: 0.85rem;">
-            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">URI *</label>
-            <input type="text" id="inputNewAgentUrl" class="input-text" placeholder="e.g. http://agent_billing:8008 or http://localhost:8008" required autocomplete="off" data-lpignore="true" style="width: 100%;">
-            <span style="font-size: 0.75rem; color: #64748b;">HTTP endpoint URI where the agent container listens.</span>
-          </div>
+              <div class="form-group" style="margin-bottom: 0.85rem;">
+                <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">URI *</label>
+                <input type="text" id="inputNewAgentUrl" class="input-text" placeholder="e.g. http://agent_billing:8008 or http://172.20.0.1:8008" required autocomplete="off" data-lpignore="true" style="width: 100%;">
+                <span style="font-size: 0.75rem; color: #64748b;">HTTP endpoint URI where the agent container listens.</span>
+              </div>
 
-          <div class="form-group" style="margin-bottom: 0.85rem;">
-            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Specialization & Description</label>
-            <textarea id="inputNewAgentDesc" class="input-text" rows="2" placeholder="e.g. Handles payment processing, subscriptions, invoices, and refunds." autocomplete="off" style="width: 100%; resize: vertical;"></textarea>
-          </div>
+              <div class="form-group" style="margin-bottom: 0.85rem;">
+                <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Specialization & Description</label>
+                <textarea id="inputNewAgentDesc" class="input-text" rows="3" placeholder="e.g. Handles payment processing, subscriptions, invoices, and refunds." autocomplete="off" style="width: 100%; resize: vertical;"></textarea>
+              </div>
+            </div>
 
-          <div class="form-group" style="margin-bottom: 0.85rem;">
-            <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Sample Queries / Prompts (One per line)</label>
-            <textarea id="inputNewAgentPrompts" class="input-text" rows="3" placeholder="Where is my latest invoice?&#10;How do I update credit card payment details?&#10;Process refund request for order 9872" autocomplete="off" style="width: 100%; resize: vertical;"></textarea>
-            <span style="font-size: 0.75rem; color: #64748b;">Used to compute vector embeddings for semantic routing.</span>
+            <!-- Right Column: Semantic Routing Prompts -->
+            <div>
+              <div class="form-group" style="margin-bottom: 0.85rem; height: 100%; display: flex; flex-direction: column;">
+                <label style="display: block; font-size: 0.82rem; font-weight: 600; color: #94a3b8; margin-bottom: 4px;">Sample Queries / Prompts (One per line)</label>
+                <textarea id="inputNewAgentPrompts" class="input-text" rows="10" placeholder="Where is my latest invoice?&#10;How do I update credit card payment details?&#10;Process refund request for order 9872" autocomplete="off" style="width: 100%; flex: 1; min-height: 220px; resize: vertical; font-family: monospace; font-size: 0.85rem; line-height: 1.5;"></textarea>
+                <span style="font-size: 0.75rem; color: #64748b; margin-top: 4px;">Used to compute vector embeddings for semantic routing. Enter representative queries one per line.</span>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.5rem; border-top: 1px solid #1e293b;">
           <button type="button" id="btnCancelAddAgent" class="btn-secondary" onclick="if(window.closeAddAgentModal)window.closeAddAgentModal();">Cancel</button>
           <button type="button" id="btnSubmitAddAgent" class="btn-primary" style="background: #2563eb; color: #fff;" onclick="if(window.submitAddAgentModal)window.submitAddAgentModal();">Add</button>
         </div>

@@ -18,10 +18,11 @@ An enterprise multi-container web application and autonomous AI Agent platform w
 * **Dual-Collection Vector Store (`doc_RAG`):** Powered by ChromaDB and local Ollama embeddings (`nomic-embed-text`, `bge-m3`) across two isolated collections:
   * `skill`: Semantic discovery and prompt augmentation for procedural skills.
   * `document`: High-precision chunked semantic document retrieval with tenant isolation.
-* **Semantic Vector Routing (`agents_router`):** Vector embedding engine with cosine similarity and deterministic local fallback that analyzes prompts from Web UI. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds 50% (> 0.50) and agent status is UP. Defaults to the primary `agents` container for general queries or whenever match is <= 50%.
+* **Semantic Vector Routing (`agents_router`):** Vector embedding engine with cosine similarity and deterministic local fallback that analyzes prompts from Web UI. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds 50% (> 0.50) and agent status is UP. Defaults to the primary `agents` container for general queries or whenever match is <= 50%. Enforces an extended 180-second execution timeout (`timeout=180`) to accommodate multi-agent planning loops without premature timeouts.
 * **Specialized Product Tech Support Agent (`agent_tech_support`):** Dedicated domain agent for product troubleshooting, DevOps, Docker container crash log inspection (exit 137 OOMKilled), microservice timeouts, and database connection debugging. Dynamically auto-registers with the router upon container turn-up.
 * **Agents Router Management GUI (`Agents` Tab):** Positioned between VectorDB and Telemetry, displays real-time directory of all registered agents with operational status badges (UP/DOWN), interactive semantic prompt routing simulator, and dynamic onboarding form/modal ("Add New Agent") to manually link new agent containers.
-* **Unified Single `jwt_auth.py` Architecture:** A single copy of `jwt_auth.py` is maintained at the repository root and volume-mounted into all containers via `docker-compose.yml`, eliminating code duplication while guaranteeing full host and container interoperability.
+* **Unified Single `jwt_auth.py` Architecture:** A single copy of `jwt_auth.py` is maintained at the repository root and volume-mounted into all containers via `docker-compose.yml`, eliminating code duplication while guaranteeing full host and container interoperability. Features `decode_jwt_token_with_reason(token)` returning diagnostic reason strings (`Token expired`, `Signature verification failed`, `Invalid token format`, `Token missing`) while preserving backward-compatible `decode_jwt_token(token)`.
+* **Flexible External Agent Networking:** External autonomous agent containers can be connected either via a shared Docker network (`agent-with-rag_default`) using container name URIs (`http://<container>:<port>`) or via the host OS Docker gateway IP (`http://172.20.0.1:<port>`) for agents running on host ports or separate bridge networks.
 
 ---
 
@@ -181,9 +182,19 @@ Access the Web Console at: **`http://localhost:8000`**
   * Displays Role / Type: `Hard Coded`, `API Registered`, or `Manually Added`.
   * Actions: Status toggle (Turn UP / Turn DOWN), Health ping (`🏥 Ping`), and deletion (`🗑️ Delete`).
 * **30-Second Periodic Actual Health Checking:** Actual health of all registered agents is checked every 30 seconds via a background daemon thread in `agents_router` and frontend polling, updating the live table in real time.
-* **"Add New Agent" Popup Window & Chrome Autofill Protection:** Modal collects Agent ID, Display Name, URI, Description, and Sample Prompts. The status dropdown is removed; initial status is verified immediately via an active health check ping. Form fields and buttons are isolated (`autocomplete="off"`, `type="button"`, `data-lpignore="true"`) to prevent Google Chrome from prompting to save passwords.
+* **"Add New Agent" Popup Window (2x Width & 2-Column Layout):**
+  * The popup window modal (`#addAgentModal .modal-box`) is doubled to **2 times the previous width** (`max-width: 1080px; width: 95%`, expanded from 540px) with a clean, responsive two-column grid layout:
+    * **Left Column:** Inputs for Agent ID (`#addAgentId`), Display Name (`#addAgentName`), Container URI (`#addAgentUri`), and Specialization & Description (`#addAgentDesc`).
+    * **Right Column:** Sample Queries / Prompts textarea (`#addAgentPrompts`) with expanded vertical height (`min-height: 220px; rows="10"`) and descriptive guidance.
+  * Form fields and buttons are isolated (`autocomplete="off"`, `type="button"`, `data-lpignore="true"`) to prevent Google Chrome from prompting to save passwords.
+  * The status dropdown is removed; initial status is verified immediately via an active health check ping.
 * **Volume Persistence for Manually Added Agents:** Manually added agents are stored in `./agent_router/data/manual_agents.json` mounted to `/app/data/manual_agents.json`. They are automatically loaded upon starting the router, and removed from the file when deleted.
 * **Row-Click Inspection & Editing:** Clicking any table row opens a details modal with editable fields for `Manually Added` agents and read-only details for `Hard Coded` and `API Registered` agents.
+* **180-Second Execution Timeout:** Outbound routed chat requests configure a 180-second HTTP execution timeout (`timeout=180`) in both `agents_router` and `web_ui` to guarantee long-running multi-agent reasoning, deep research, and collaborative critic loops complete without premature HTTP 504 timeouts.
+* **External Agent Networking Architecture:**
+  * **Option A (Shared Docker Network):** Attach the external container to `agent-with-rag_default` (`docker network connect agent-with-rag_default <container>`) and set URI to `http://<container>:<port>`.
+  * **Option B (Host Gateway IP):** For external agents running on the host OS or separate bridge networks publishing ports to the host, set URI to `http://172.20.0.1:<port>`. On Linux Docker, `172.20.0.1` represents the host bridge gateway, allowing containerized services to cleanly communicate with host-bound ports (whereas `localhost` or `127.0.0.1` resolves inside the container itself).
+  * **Manual Registration Only:** External agents can remove or disable auto-registration daemons to allow strictly manual onboarding through the "Add New Agent" GUI modal.
 
 ### 📊 Page 4: Telemetry
 * Accessible by all authenticated users (User, Editor, Domain Admin, Global Admin).

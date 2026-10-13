@@ -472,7 +472,7 @@ def proxy_chat():
     res_data = None
     status_code = 200
     try:
-        r = requests.post(f"{router_url}/api/router/chat", json=data, headers=headers, timeout=60)
+        r = requests.post(f"{router_url}/api/router/chat", json=data, headers=headers, timeout=180)
         res_data = r.json()
         status_code = r.status_code
     except Exception as router_err:
