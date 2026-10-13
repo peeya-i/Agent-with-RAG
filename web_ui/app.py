@@ -452,6 +452,34 @@ def proxy_chat():
     if jwt_token:
         data["jwt_token"] = jwt_token
 
+    # Check JWT validity and expiration before dispatching
+    if jwt_token:
+        try:
+            from jwt_auth import decode_jwt_token_with_reason
+            jwt_payload, jwt_reason = decode_jwt_token_with_reason(jwt_token)
+            if not jwt_payload:
+                is_expired = bool(jwt_reason and "expired" in jwt_reason.lower())
+                err_msg = "JWT token has expired. Please log in again to renew your session." if is_expired else f"Authentication Error: {jwt_reason or 'Invalid JWT token'}"
+                log_event(
+                    invoker="Web UI",
+                    recipient="Web UI",
+                    event_type="chat_error",
+                    desc=f"Chat rejected: {err_msg}",
+                    payload={"error": err_msg, "reason": jwt_reason, "is_jwt_expired": is_expired},
+                    conv_id=conv_id,
+                    status="error",
+                    user=username,
+                    domain=domain
+                )
+                return jsonify({
+                    "status": "error",
+                    "error": err_msg,
+                    "reason": jwt_reason,
+                    "is_jwt_expired": is_expired
+                }), 403
+        except Exception as jwt_check_err:
+            pass
+
     headers = {"Content-Type": "application/json"}
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
@@ -496,32 +524,40 @@ def proxy_chat():
             )
             return jsonify({"error": f"Agent service unreachable: {e}"}), 502
 
-    # Enrich response with retrieved_evidence pulled from Logging per SPECIFICATIONS.md
-    logged_ev = extract_evidence_from_logs(conv_id)
-    if logged_ev.get("skills") or logged_ev.get("documents"):
-        res_data["retrieved_evidence"] = {
-            "skills": logged_ev.get("skills", []),
-            "documents": logged_ev.get("documents", [])
-        }
-    elif not res_data.get("retrieved_evidence"):
-        res_data["retrieved_evidence"] = {"skills": [], "documents": []}
+    # If response is error or 401/403, detect if JWT expired
+    if status_code in (401, 403) or (isinstance(res_data, dict) and res_data.get("status") == "error"):
+        err_str = str(res_data.get("error", "") if isinstance(res_data, dict) else res_data)
+        reason_str = str(res_data.get("reason", "") if isinstance(res_data, dict) else "")
+        if "expired" in err_str.lower() or "expired" in reason_str.lower():
+            if isinstance(res_data, dict):
+                res_data["is_jwt_expired"] = True
+                res_data["error"] = "JWT token has expired. Please log in again to renew your session."
 
-    # Ensure user_query and conversation_id are present in res_data
+    # Enrich response with retrieved_evidence pulled from Logging per SPECIFICATIONS.md
     if isinstance(res_data, dict):
+        logged_ev = extract_evidence_from_logs(conv_id)
+        if logged_ev.get("skills") or logged_ev.get("documents"):
+            res_data["retrieved_evidence"] = {
+                "skills": logged_ev.get("skills", []),
+                "documents": logged_ev.get("documents", [])
+            }
+        elif not res_data.get("retrieved_evidence"):
+            res_data["retrieved_evidence"] = {"skills": [], "documents": []}
+
         res_data["conversation_id"] = conv_id
-    if not res_data.get("user_query") and data.get("message"):
-        res_data["user_query"] = data.get("message")
+        if not res_data.get("user_query") and data.get("message"):
+            res_data["user_query"] = data.get("message")
 
     # Log response received by Web UI
     log_event(
         invoker="agents_router",
         recipient="Web UI",
         event_type="received_chat_response",
-        desc=f"Web UI received response from agent ({res_data.get('elapsed_ms', 0)}ms)",
+        desc=f"Web UI received response from agent ({res_data.get('elapsed_ms', 0) if isinstance(res_data, dict) else 0}ms)",
         payload=res_data,
         conv_id=conv_id,
-        duration_ms=res_data.get("elapsed_ms", 0),
-        model=res_data.get("model", ""),
+        duration_ms=res_data.get("elapsed_ms", 0) if isinstance(res_data, dict) else 0,
+        model=res_data.get("model", "") if isinstance(res_data, dict) else "",
         user=username,
         domain=domain
     )

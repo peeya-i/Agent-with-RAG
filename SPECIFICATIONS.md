@@ -160,6 +160,9 @@ The Main App window should have:
   - When the user clicks on the "Show Logs" button, the detail box should expand to show the full content of the step including the logs. Use the scroll area in the bubble if the content is too long.
   - Make the "Show Logs" button toggle between expand and collapse.
   - Anchor "Show Logs" button at the top-right corner of the detail box.
+- Error Handling & Expired JWT Notification:
+  - When a chat request fails (e.g. HTTP 403, HTTP 401, server error, or network failure), the chat card must display an error card/bubble clearly communicating the failure.
+  - When a 403 or 401 error indicates that the JWT token has expired, the error message must explicitly notify the user that their JWT session has expired and prompt them to re-authenticate or renew their session, including an interactive action button to refresh and re-login.
 
 #### Right Card: "Retrieved Context Evidence"
 - Displays the Agent that was selected to process the prompt and the similarity score along with Skills and Documents if any were used:
@@ -553,6 +556,12 @@ The Custom Agent should operate as follow:
   ```
   - If the LLM determines that a procedural tool should be executed, execute the tool to obtain the needed information. Send a prompt to the LLM with the results from the tool. Repeat until the final answer is received. Limit the number of loops no more than MAX_LLM_TURNS.
   - Minimize skill-specific code in the orchestrator
+  - Last Turn Check & Prompt Adaptation:
+    - The Custom Agent must check if the current turn to the LLM is going to be the last turn (`turn >= max_turns`).
+    - If it is going to reach the last turn, adapt the prompt (both system and user prompts) so tool calls are disallowed and instruct the LLM:
+      - If it has insufficient information to answer the user query: return the exact verbatim text: `"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."`
+      - If there is enough information: respond as an expert in the prompt domain.
+    - If the model attempts to invoke a tool on the last turn or leaves the response empty, fallback to returning the required insufficient information text.
   - The last llm call should use a typical system prompt as an assistant to answer the question. The final output of the agent is the response from this last LLM call.
   - Only perform vector search for documents when the skill search result and the model direct the Agent to perform the search.
   - Minimize the number of loops to obtain the final answer. The maximum number of loops should be Max turns configured in the GUI.

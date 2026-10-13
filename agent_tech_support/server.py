@@ -23,12 +23,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [Tec
 logger = logging.getLogger("agent_tech_support")
 
 try:
-    from jwt_auth import decode_jwt_token, extract_jwt_from_request
+    from jwt_auth import decode_jwt_token, decode_jwt_token_with_reason, extract_jwt_from_request
 except ImportError:
     try:
-        from ..jwt_auth import decode_jwt_token, extract_jwt_from_request
+        from ..jwt_auth import decode_jwt_token, decode_jwt_token_with_reason, extract_jwt_from_request
     except Exception:
         decode_jwt_token = lambda t: {}
+        decode_jwt_token_with_reason = lambda t: ({}, None)
         extract_jwt_from_request = lambda r: ""
 
 app = Flask(__name__)
@@ -183,9 +184,15 @@ def process_chat():
         jwt_token = auth_header.split(" ", 1)[1].strip()
 
     if jwt_token:
-        decoded = decode_jwt_token(jwt_token)
+        decoded, reason = decode_jwt_token_with_reason(jwt_token)
         if not decoded:
-            return jsonify({"status": "error", "error": "Unauthorized: Invalid JWT token"}), 403
+            is_expired = reason and "expired" in reason.lower()
+            return jsonify({
+                "status": "error",
+                "error": f"Unauthorized: {reason or 'Invalid JWT token'}",
+                "reason": reason,
+                "is_jwt_expired": is_expired
+            }), 403
 
     logger.info(f"Processing tech support inquiry for conversation {conv_id}: '{message[:80]}'")
 

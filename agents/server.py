@@ -52,24 +52,24 @@ custom_agent = CustomAgent(doc_rag_url=DOC_RAG_URL, tools_url=TOOLS_URL, logging
 adk_agent = GoogleADKAgent(doc_rag_url=DOC_RAG_URL, tools_url=TOOLS_URL, logging_url=LOGGING_URL, gemini_api_key=GEMINI_API_KEY)
 
 try:
-    from jwt_auth import decode_jwt_token, extract_jwt_from_request
+    from jwt_auth import decode_jwt_token, decode_jwt_token_with_reason, extract_jwt_from_request
 except ImportError:
     import sys
     from pathlib import Path
     _parent = str(Path(__file__).resolve().parent.parent)
     if _parent not in sys.path:
         sys.path.insert(0, _parent)
-    from jwt_auth import decode_jwt_token, extract_jwt_from_request
+    from jwt_auth import decode_jwt_token, decode_jwt_token_with_reason, extract_jwt_from_request
 
 def validate_agent_request_auth(jwt_token, invoker="web_ui"):
     if not jwt_token:
         return True, "No token provided"
 
     # Decode and validate JWT token
-    jwt_p = decode_jwt_token(jwt_token)
+    jwt_p, reason = decode_jwt_token_with_reason(jwt_token)
     if jwt_p:
         return True, "Valid JWT"
-    return False, "Unauthorized: Invalid JWT token"
+    return False, f"Unauthorized: {reason or 'Invalid JWT token'}"
 
 # Scan skills on startup from agents/skills/
 SKILLS_DIR = os.environ.get("SKILLS_DIR", os.path.join(os.path.dirname(__file__), "skills"))
@@ -161,7 +161,13 @@ def process_chat():
     if jwt_token:
         is_valid, msg = validate_agent_request_auth(jwt_token, invoker="web_ui")
         if not is_valid:
-            return jsonify({"status": "error", "error": f"Authorization failed: {msg}"}), 403
+            is_expired = "expired" in msg.lower()
+            return jsonify({
+                "status": "error",
+                "error": f"Authorization failed: {msg}",
+                "reason": msg,
+                "is_jwt_expired": is_expired
+            }), 403
 
     runner = adk_agent if "ADK" in agent_type else custom_agent
 

@@ -454,8 +454,41 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Server error processing message.');
+      const data = await res.json().catch(() => ({}));
+
+      // Detect error status code or error response
+      if (!res.ok || data.status === 'error' || (data.error && !data.response)) {
+        let isJwtExpired = false;
+
+        // 1. Check client-side token expiration from sessionStorage
+        if (jwtToken) {
+          try {
+            const parts = jwtToken.split('.');
+            if (parts.length === 3) {
+              const payloadObj = JSON.parse(atob(parts[1]));
+              if (payloadObj.exp && (Date.now() / 1000) > payloadObj.exp) {
+                isJwtExpired = true;
+              }
+            }
+          } catch (e) {}
+        }
+
+        // 2. Check server error flags / payload
+        const errText = (data.error || data.reason || data.message || '').toString();
+        if (data.is_jwt_expired || errText.toLowerCase().includes('expired') || (res.status === 403 && (errText.toLowerCase().includes('jwt') || errText.toLowerCase().includes('token') || errText.toLowerCase().includes('authorization')))) {
+          isJwtExpired = true;
+        }
+
+        let errMsg = data.error || data.reason || data.message || `Request failed with status ${res.status}`;
+        if (isJwtExpired) {
+          errMsg = 'Your authentication JWT has expired. Please log out and log back in to renew your session.';
+        }
+
+        const err = new Error(errMsg);
+        err.isJwtExpired = isJwtExpired;
+        err.statusCode = res.status;
+        throw err;
+      }
 
       // Track assistant response in session history
       if (data.response) {
@@ -486,8 +519,41 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
     } catch (err) {
-      pendingAgentBubble.querySelector('.message-bubble').textContent = `Error: ${err.message}`;
-      pendingAgentBubble.querySelector('.message-bubble').style.borderColor = 'rgba(239, 68, 68, 0.4)';
+      const bubble = pendingAgentBubble.querySelector('.message-bubble');
+      bubble.style.borderColor = 'rgba(239, 68, 68, 0.7)';
+      bubble.style.backgroundColor = 'rgba(239, 68, 68, 0.08)';
+      bubble.style.color = '#fecaca';
+
+      if (err.isJwtExpired) {
+        bubble.innerHTML = `
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px; color:#ef4444; font-weight:600; font-size:0.95rem;">
+              <span style="font-size:1.2rem;">⚠️</span> Authentication Error (HTTP 403)
+            </div>
+            <div style="font-size:0.9rem; line-height:1.4;">
+              <strong>JWT Token Expired:</strong> Your authentication token has expired.
+            </div>
+            <div style="font-size:0.85rem; color:#fca5a5;">
+              Please log in again to renew your session and continue chatting with agents.
+            </div>
+            <div style="margin-top:4px;">
+              <button type="button" class="btn btn-sm btn-primary" onclick="window.location.reload();" style="padding:5px 14px; font-size:0.82rem; background:linear-gradient(135deg,#ef4444,#dc2626); border:none; cursor:pointer; border-radius:4px; color:#fff; font-weight:500;">
+                🔄 Refresh &amp; Re-login
+              </button>
+            </div>
+          </div>
+        `;
+      } else {
+        bubble.innerHTML = `
+          <div style="display:flex; align-items:flex-start; gap:8px;">
+            <span style="font-size:1.1rem; color:#ef4444;">⚠️</span>
+            <div>
+              <div style="color:#ef4444; font-weight:600; font-size:0.9rem;">Request Failed:</div>
+              <div style="margin-top:3px; font-size:0.88rem; line-height:1.4;">${escapeHtml(err.message)}</div>
+            </div>
+          </div>
+        `;
+      }
     } finally {
       btnSendMessage.disabled = false;
       chatInput.focus();

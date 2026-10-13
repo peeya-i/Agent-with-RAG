@@ -17,7 +17,7 @@
     "queries_handled": 0,
     "created_at": "2026-10-13T19:08:40.955903+00:00",
     "last_status_change": "2026-10-13T19:08:40.955903+00:00",
-    "last_health_check": "2026-10-13T19:18:10.973630+00:00",
+    "last_health_check": "2026-10-13T19:47:13.310333+00:00",
     "health_status": "healthy",
     "metadata": {
       "registration_type": "Manually Added"

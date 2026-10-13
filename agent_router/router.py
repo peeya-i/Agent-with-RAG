@@ -54,8 +54,8 @@ class RoutingResult:
         response_data: Optional[Dict[str, Any]] = None,
         explanation: str = "",
         routing_latency_ms: float = 0.0,
-        total_latency_ms: float = 0.0,
         threshold: float = SIMILARITY_THRESHOLD,
+        status_code: int = 200,
     ):
         self.query = query
         self.selected_agent = selected_agent
@@ -67,6 +67,7 @@ class RoutingResult:
         self.routing_latency_ms = round(routing_latency_ms, 2)
         self.total_latency_ms = round(total_latency_ms, 2)
         self.threshold = threshold
+        self.status_code = int(status_code)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -261,4 +262,5 @@ class VectorRouter:
             routing_latency_ms=route_ms,
             total_latency_ms=total_latency,
             threshold=self.threshold,
+            status_code=status_code,
         )

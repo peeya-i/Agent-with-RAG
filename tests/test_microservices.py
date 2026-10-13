@@ -572,3 +572,51 @@ def test_rbac_and_multitenancy_extensions():
     assert ingest_user_res.status_code == 403
     assert "cannot" in ingest_user_res.get_json().get("error", "").lower() or "not permitted" in ingest_user_res.get_json().get("error", "").lower()
 
+def test_custom_agent_last_turn_insufficient_info():
+    """Verify that custom agent checks if turn is last, updates prompt, and handles insufficient info."""
+    from agents.custom_agent.custom_agent import CustomAgent
+    agent = CustomAgent(doc_rag_url="http://mock:8003", tools_url="http://mock:8005", logging_url="http://mock:8006", gemini_api_key="mock_key")
+
+    captured_prompts = []
+    expected_insufficient_msg = "The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."
+
+    def mock_call_llm(prompt, sys_prompt, model, temp, max_tok, endpoint, conv_id):
+        captured_prompts.append((prompt, sys_prompt))
+        # Return insufficient info string
+        return expected_insufficient_msg, 10, 10, 5
+
+    agent.call_llm = mock_call_llm
+
+    # Run agent with max_turns=1 (meaning turn 1 is the last turn)
+    res = agent.run(
+        message="Find information about secret project X",
+        conversation_id="conv_test_last_turn",
+        max_turns=1
+    )
+
+    # Assert prompt captured on last turn contains the required text
+    last_prompt, last_sys = captured_prompts[-1]
+    assert "The there is not enough information to provide a meaningful response" in (last_prompt + last_sys)
+    assert "expert in the prompt domain" in (last_prompt + last_sys)
+    # Assert result is the insufficient info string
+    assert res["response"] == expected_insufficient_msg
+
+def test_chat_expired_jwt_error():
+    """Verify that web_ui /api/chat returns 403 with explicit expired JWT message."""
+    from jwt_auth import generate_jwt_token
+    # Generate token expired 10 seconds ago
+    expired_token = generate_jwt_token("user@example-a.com", role="User", domain="example-a.com", expires_in_seconds=-10)
+
+    web_app = load_service("test_web_ui_expired_jwt", "web_ui/app.py")
+    client = web_app.app.test_client()
+
+    resp = client.post("/api/chat", json={
+        "message": "Hello",
+        "jwt_token": expired_token
+    })
+
+    assert resp.status_code == 403
+    data = resp.get_json()
+    assert data["is_jwt_expired"] is True
+    assert "expired" in data["error"].lower()
+

@@ -349,10 +349,20 @@ class CustomAgent:
         while turn < max_turns:
             turn += 1
             loop_start = time.time()
+            is_last_turn = (turn >= max_turns)
 
             if not active_skills:
                 # No skill found: direct assistant prompt
-                sys_prompt = "You are a helpful, accurate AI assistant. Answer the user question clearly and concisely."
+                if is_last_turn:
+                    sys_prompt = (
+                        "You are an expert in the prompt domain. "
+                        "If there is insufficient information or not enough information to provide a meaningful response, "
+                        "return exactly the following text: "
+                        '"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt." '
+                        "If there is enough information, respond as an expert in the prompt domain."
+                    )
+                else:
+                    sys_prompt = "You are a helpful, accurate AI assistant. Answer the user question clearly and concisely."
                 user_prompt = f"{history_prompt}User Question: {message}"
                 res_text, _, _, dur = self.call_llm(user_prompt, sys_prompt, model, temperature, max_tokens, custom_endpoint, conversation_id)
                 final_answer = res_text
@@ -367,30 +377,48 @@ class CustomAgent:
 
             # Skills present: determine if tool should be executed
             skill_context_str = "\n\n".join([f"Skill: {s.get('skill_name', 'tool')}\n{s.get('text', '')}" for s in active_skills])
-            system_prompt = (
-                "You are an intelligent agent orchestrator with access to procedural tools.\n"
-                "Review the user query and available skills. If you need more information or if a tool should be executed, "
-                "respond ONLY with a JSON object specifying the tool and arguments. For example:\n"
-                "{\n"
-                '  "tool": "person_search.query_person_registry",\n'
-                '  "arguments": {\n'
-                '    "keywords": ["Lucas Dubois"],\n'
-                '    "field": "name"\n'
-                "  }\n"
-                "}\n"
-                "Available tools: \n"
-                "- person_search.query_person_registry (arguments: keywords [list of texts or search string], field)\n"
-                "- customer_search.query_customer_registry (arguments: keywords [list of texts or search string], field)\n"
-                "- stock_search.query_stocks (arguments: action ['gainers', 'losers', 'quote'], limit, ticker)\n"
-                "- time_weather.get_current_weather (arguments: city)\n"
-                "- doc_search.query_documents (arguments: query, limit)\n\n"
-                "If you already have enough information to answer the question completely, DO NOT output JSON. "
-                "Instead, output your complete final answer to the user."
-            )
+            if is_last_turn:
+                system_prompt = (
+                    "You are an expert in the prompt domain.\n"
+                    "This is your FINAL turn to answer the user query. Do NOT execute any more tools and do NOT output JSON.\n"
+                    "Carefully evaluate whether there is sufficient information from the query, available skills, and previous observations to provide a meaningful response.\n"
+                    "- If there is insufficient information or not enough information to provide a meaningful response, "
+                    "you MUST return exactly the following text and nothing else:\n"
+                    '"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."\n'
+                    "- If there is enough information, respond as an expert in the prompt domain providing a complete, comprehensive, and accurate answer."
+                )
+            else:
+                system_prompt = (
+                    "You are an intelligent agent orchestrator with access to procedural tools.\n"
+                    "Review the user query and available skills. If you need more information or if a tool should be executed, "
+                    "respond ONLY with a JSON object specifying the tool and arguments. For example:\n"
+                    "{\n"
+                    '  "tool": "person_search.query_person_registry",\n'
+                    '  "arguments": {\n'
+                    '    "keywords": ["Lucas Dubois"],\n'
+                    '    "field": "name"\n'
+                    "  }\n"
+                    "}\n"
+                    "Available tools: \n"
+                    "- person_search.query_person_registry (arguments: keywords [list of texts or search string], field)\n"
+                    "- customer_search.query_customer_registry (arguments: keywords [list of texts or search string], field)\n"
+                    "- stock_search.query_stocks (arguments: action ['gainers', 'losers', 'quote'], limit, ticker)\n"
+                    "- time_weather.get_current_weather (arguments: city)\n"
+                    "- doc_search.query_documents (arguments: query, limit)\n\n"
+                    "If you already have enough information to answer the question completely, DO NOT output JSON. "
+                    "Instead, output your complete final answer to the user."
+                )
 
             prompt_content = f"{history_prompt}User Query: {message}\n\nAvailable Skills:\n{skill_context_str}\n"
             if context_history:
                 prompt_content += "\nPrevious Observations:\n" + "\n".join(context_history) + "\n"
+            if is_last_turn:
+                prompt_content += (
+                    "\n[FINAL TURN NOTICE]: This is your last turn. Do NOT output JSON tool calls. "
+                    "If there is not enough information to provide a meaningful response, return exactly: "
+                    '"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt." '
+                    "Otherwise, respond as an expert in the prompt domain."
+                )
 
             llm_res, in_tok, out_tok, dur_ms = self.call_llm(
                 prompt_content, system_prompt, model, temperature, max_tokens, custom_endpoint, conversation_id
@@ -406,7 +434,7 @@ class CustomAgent:
             except Exception:
                 tool_call = None
 
-            if tool_call and "tool" in tool_call and turn < max_turns:
+            if tool_call and "tool" in tool_call and not is_last_turn:
                 t_name = tool_call["tool"]
                 t_args = tool_call.get("arguments", {})
 
@@ -536,7 +564,10 @@ class CustomAgent:
                 })
             else:
                 # LLM outputted final answer
-                final_answer = llm_res
+                if is_last_turn and tool_call and "tool" in tool_call:
+                    final_answer = "The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."
+                else:
+                    final_answer = llm_res
                 steps.append({
                     "component": "LLM",
                     "icon": "🧠",
@@ -548,9 +579,23 @@ class CustomAgent:
 
         # If loop reached max turns without breaking, make final call
         if not final_answer:
-            final_sys = "You are a helpful assistant. Synthesize the final answer based on the collected context."
-            final_p = f"{history_prompt}User Query: {message}\n\nInformation Collected:\n" + "\n".join(context_history)
+            final_sys = (
+                "You are an expert in the prompt domain.\n"
+                "This is your final turn to answer. Evaluate all information collected so far.\n"
+                "- If there is insufficient information or not enough information to provide a meaningful response, "
+                "return exactly the following text:\n"
+                '"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."\n'
+                "- If there is enough information, respond as an expert in the prompt domain providing a comprehensive answer."
+            )
+            final_p = (
+                f"{history_prompt}User Query: {message}\n\nInformation Collected:\n" + "\n".join(context_history) +
+                "\n\n[FINAL TURN NOTICE]: If there is not enough information to provide a meaningful response, return exactly: "
+                '"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt." '
+                "Otherwise, respond as an expert in the prompt domain."
+            )
             final_answer, _, _, dur_ms = self.call_llm(final_p, final_sys, model, temperature, max_tokens, custom_endpoint, conversation_id)
+            if not final_answer or '{"tool":' in final_answer:
+                final_answer = "The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."
             steps.append({
                 "component": "LLM",
                 "icon": "🧠",

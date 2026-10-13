@@ -439,8 +439,9 @@ def router_chat():
         duration_ms=routing_result.routing_latency_ms,
     )
 
-    # Return response payload directly to preserve Web UI compatibility
-    return jsonify(resp_data)
+    # Return response payload and status code to preserve Web UI compatibility
+    status_code = getattr(routing_result, "status_code", 200) or 200
+    return jsonify(resp_data), status_code
 
 if __name__ == "__main__":
     logger.info(f"Starting Agents Router service on port {PORT}...")

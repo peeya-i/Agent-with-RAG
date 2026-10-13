@@ -246,6 +246,9 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
       - `✨ Skills`: Skill vector match or rule evaluation.
       - `🧠 LLM`: Raw model prompt and response payload.
     - Toggling **Show Logs** expands full JSON payload viewer with syntax styling.
+  - **Error Display & Expired JWT Notice**:
+    - When a chat request returns an HTTP error (401, 403, 500) or an error payload, the card displays a prominent error bubble rather than a blank or broken response.
+    - Specifically for HTTP 403 / 401 with an expired JWT token (`is_jwt_expired: true`), displays a dedicated warning card informing the user: `⚠️ Authentication Error (HTTP 403) - JWT Token Expired: Your session token has expired. Please log in again to renew your session.` accompanied by a `🔄 Refresh & Re-login` action button.
 - **Footer**:
   - Auto-resizing textarea for user prompt.
   - Send button (`Enter` to submit, `Shift+Enter` for newline).
@@ -1070,14 +1073,32 @@ The Custom Agent operates as a multi-turn planning loop:
 [Append Tool Result to Prompt Context]
         │
         ▼
+[Check Turn Count: Is it the Last Turn (turn >= max_turns)?]
+ ├── YES ──────────────────► Adapt Prompt: Disable tool calling.
+ │                           Instruct LLM:
+ │                           - If insufficient information: Return verbatim:
+ │                             "The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."
+ │                           - If sufficient information: Respond as an expert in the prompt domain.
+ └── NO ───────────────────► Continue standard iterative tool planning
+        │
+        ▼
 [Loop until Answer Ready or Max Turns Reached]
         │
         ▼
-[Final LLM Synthesis Call]
+[Final LLM Synthesis Call (or Fallback if Turn Limit Exceeded)]
         │
         ▼
 [Log All Hops & Return Formatted Output + Evidence to Web UI]
 ```
+
+#### 4.1.1 Last Turn Adaptation Logic
+- At the start of each iteration, the agent checks `is_last_turn = (turn >= max_turns)`.
+- If `is_last_turn` is true:
+  1. Tool calling instructions (`TOOL CALL FORMAT`) are omitted.
+  2. The LLM is given strict final synthesis instructions:
+     - Return verbatim `"The there is not enough information to provide a meaningful response. Try to increase the maximum number of turns before retrying or retry the prompt."` if the gathered context is insufficient.
+     - Provide a complete expert response in the prompt domain if sufficient information is present.
+  3. Defensive guard: If the model still outputs a JSON tool call or empty text on the final turn, the orchestrator intercepts it and returns the insufficient information message.
 
 ### 4.2 Document RAG Integration Rule
 - Vector search for document chunks is **not** performed blindly on every query.
