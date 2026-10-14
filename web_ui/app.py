@@ -963,11 +963,13 @@ def get_vectordb_models():
 
     # 2. Get installed tags from ollama
     installed_tags = set()
+    raw_ollama_models = []
     ollama_url = resolve_url(OLLAMA_URL, "ollama", 11434)
     try:
         r = requests.get(f"{ollama_url}/api/tags", timeout=4)
         if r.ok:
-            for m in r.json().get("models", []):
+            raw_ollama_models = r.json().get("models", [])
+            for m in raw_ollama_models:
                 m_name = m.get("name", "")
                 installed_tags.add(m_name)
                 installed_tags.add(m_name.split(":")[0])
@@ -976,9 +978,13 @@ def get_vectordb_models():
 
     active_base = active_model.split(":")[0]
     result_models = []
+    known_names = set()
+
     for cat in EMBEDDING_CATALOG:
         m_name = cat["name"]
         m_short = cat["short_name"]
+        known_names.add(m_name)
+        known_names.add(m_short)
         is_installed = (m_name in installed_tags or m_short in installed_tags)
         is_active = (m_name == active_model or m_short == active_model or m_short == active_base or m_name.startswith(active_base))
         
@@ -998,6 +1004,28 @@ def get_vectordb_models():
             "is_active": is_active,
             "is_installed": is_installed
         })
+
+    # Dynamically append any additional models discovered from Ollama
+    for om in raw_ollama_models:
+        om_name = om.get("name", "")
+        if om_name and om_name not in known_names and om_name.split(":")[0] not in known_names:
+            details = om.get("details", {})
+            dim = details.get("embedding_length", "N/A")
+            ctx = details.get("context_length", "N/A")
+            size_bytes = om.get("size", 0)
+            size_str = f"{size_bytes / (1024**3):.1f}GB" if size_bytes > 1024**3 else f"{size_bytes / (1024**2):.1f}MB"
+            is_active = (om_name == active_model or om_name.split(":")[0] == active_base)
+
+            result_models.append({
+                "name": om_name,
+                "dimensions": dim,
+                "context_window": str(ctx) if ctx != "N/A" else "Unknown",
+                "size": size_str,
+                "description": f"Custom Ollama model ({details.get('family', 'general')})",
+                "status": "Installed (Active)" if is_active else "Installed",
+                "is_active": is_active,
+                "is_installed": True
+            })
 
     return jsonify({
         "status": "success",

@@ -1206,6 +1206,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Refresh Embedders button
+  const btnRefreshEmbedders = document.getElementById('btnRefreshEmbedders');
+  if (btnRefreshEmbedders) {
+    btnRefreshEmbedders.addEventListener('click', async () => {
+      btnRefreshEmbedders.style.transform = 'rotate(360deg)';
+      btnRefreshEmbedders.style.transition = 'transform 0.5s ease';
+      try {
+        await loadIngestionData();
+      } finally {
+        setTimeout(() => {
+          btnRefreshEmbedders.style.transform = '';
+          btnRefreshEmbedders.style.transition = '';
+        }, 500);
+      }
+    });
+  }
+
   // Change Embedder Model Dropdown with Stern Warning
   embedderSelect.addEventListener('change', () => {
     const targetModel = embedderSelect.value;

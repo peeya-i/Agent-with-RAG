@@ -223,7 +223,10 @@
         <div class="page-controls-area">
           <!-- Embedder Model Dropdown -->
           <div class="control-box">
-            <label for="embedderSelect"><span class="control-icon">🧬</span> Active Embedder</label>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
+              <label for="embedderSelect"><span class="control-icon">🧬</span> Active Embedder</label>
+              <button id="btnRefreshEmbedders" type="button" class="btn-icon" title="Refresh models from Ollama" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 4px; color: var(--text-muted, #94a3b8); transition: transform 0.2s ease, color 0.2s ease;">🔄</button>
+            </div>
             <select id="embedderSelect">
               <option value="bge-m3">bge-m3 (Active)</option>
               <option value="nomic-embed-text">nomic-embed-text</option>
