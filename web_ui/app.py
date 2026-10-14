@@ -1043,9 +1043,45 @@ def proxy_update_skills():
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
+_webui_ingest_progress = {
+    "active": False,
+    "percent": 0,
+    "processed": 0,
+    "total": 0,
+    "current_file": "",
+    "message": "Idle"
+}
+
+@app.route("/api/vectordb/ingest_progress", methods=["GET"])
+@app.route("/api/vectordb/progress", methods=["GET"])
+def get_vectordb_ingest_progress():
+    global _webui_ingest_progress
+    if _webui_ingest_progress.get("active"):
+        doc_rag_url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+        try:
+            r = requests.get(f"{doc_rag_url}/api/rag/progress", timeout=2)
+            if r.ok:
+                rag_prog = r.json().get("progress", {})
+                if rag_prog.get("active"):
+                    total = _webui_ingest_progress.get("total", 1)
+                    if total <= 1:
+                        _webui_ingest_progress["percent"] = rag_prog.get("percent", _webui_ingest_progress["percent"])
+                        _webui_ingest_progress["message"] = rag_prog.get("message", _webui_ingest_progress["message"])
+                    else:
+                        processed = _webui_ingest_progress.get("processed", 0)
+                        rag_pct = rag_prog.get("percent", 0)
+                        interp = int(((processed + (rag_pct / 100.0)) / total) * 100)
+                        _webui_ingest_progress["percent"] = min(99, max(interp, _webui_ingest_progress.get("percent", 0)))
+                        cur_doc = _webui_ingest_progress.get("current_file", "")
+                        _webui_ingest_progress["message"] = f"Ingesting document {processed + 1} of {total}: {cur_doc} ({_webui_ingest_progress['percent']}%)"
+        except Exception:
+            pass
+    return jsonify({"status": "success", "progress": _webui_ingest_progress})
+
 @app.route("/api/vectordb/populate", methods=["POST"])
 @app.route("/api/vectordb/ingest", methods=["POST"])
 def populate_vectordb():
+    global _webui_ingest_progress
     user = session.get("user") or {}
     if not user:
         auth_hdr = request.headers.get("Authorization", "")
@@ -1078,8 +1114,16 @@ def populate_vectordb():
     if not source:
         return jsonify({"error": "URL or local directory path required"}), 400
 
-    content = ""
-    doc_name = source
+    doc_type = data.get("type", "Documents")
+    url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    domain = user.get("domain")
+
+    headers = {"Content-Type": "application/json"}
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
+
+    doc_items = []
 
     # If web URL
     if source.startswith("http://") or source.startswith("https://"):
@@ -1091,6 +1135,8 @@ def populate_vectordb():
                 script.decompose()
             content = soup.get_text(separator="\n").strip()
             doc_name = soup.title.string.strip() if soup.title else source
+            if content:
+                doc_items.append({"name": doc_name, "content": content})
         except Exception as e:
             return jsonify({"error": f"Failed to fetch URL: {e}"}), 400
     else:
@@ -1111,6 +1157,7 @@ def populate_vectordb():
         if resolved_path and os.path.exists(resolved_path):
             try:
                 if os.path.isfile(resolved_path):
+                    content = ""
                     if resolved_path.lower().endswith(".pdf"):
                         try:
                             from pypdf import PdfReader
@@ -1122,78 +1169,106 @@ def populate_vectordb():
                         with open(resolved_path, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read()
                     doc_name = os.path.basename(resolved_path).replace(".md", "").replace(".txt", "").replace(".pdf", "")
+                    if content:
+                        doc_items.append({"name": doc_name, "content": content})
                 elif os.path.isdir(resolved_path):
-                    texts = []
                     for root, dirs, files in os.walk(resolved_path):
-                        for file in files:
+                        for file in sorted(files):
                             fl = file.lower()
                             p = os.path.join(root, file)
+                            txt = ""
                             if fl.endswith(".pdf"):
                                 try:
                                     from pypdf import PdfReader
                                     reader = PdfReader(p)
-                                    pdf_txt = "\n".join([page.extract_text() or "" for page in reader.pages])
-                                    if pdf_txt.strip():
-                                        texts.append(f"--- Document: {file} ---\n" + pdf_txt)
+                                    txt = "\n\n".join([page.extract_text() or "" for page in reader.pages])
                                 except Exception:
                                     pass
                             elif fl.endswith((".txt", ".md", ".csv")):
                                 with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                                    texts.append(f"--- Document: {file} ---\n" + f.read())
-                    content = "\n\n".join(texts)
-                    doc_name = os.path.basename(os.path.normpath(resolved_path))
+                                    txt = f.read()
+                            if txt.strip():
+                                fname = os.path.basename(file).replace(".md", "").replace(".txt", "").replace(".pdf", "").replace(".csv", "")
+                                doc_items.append({"name": fname, "content": txt})
             except Exception as e:
                 return jsonify({"error": f"Failed to read local file/dir: {e}"}), 400
         else:
             return jsonify({"error": f"Source not accessible: {source}"}), 400
 
-    if not content:
-        return jsonify({"error": "Extracted text content is empty"}), 400
+    if not doc_items:
+        return jsonify({"error": "Extracted text content is empty or no valid documents found"}), 400
 
-    user = session.get("user") or {}
-    user_role = (user.get("role") or "User").lower()
-    if user_role == "user":
-        return jsonify({"error": "Role 'User' is not permitted to load documents into the vector database. Editor or Admin role required."}), 403
+    total_docs = len(doc_items)
+    _webui_ingest_progress["active"] = True
+    _webui_ingest_progress["total"] = total_docs
+    _webui_ingest_progress["processed"] = 0
+    _webui_ingest_progress["percent"] = 0
+    _webui_ingest_progress["current_file"] = doc_items[0]["name"]
+    _webui_ingest_progress["message"] = f"Ingesting document 1 of {total_docs}: {doc_items[0]['name']} (0%)"
 
-    doc_type = data.get("type", "Documents")
-
-    url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
-    jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    domain = user.get("domain")
-
-    req_body = {
-        "name": doc_name,
-        "complete_text": content,
-        "chunk_size": chunk_size,
-        "overlap": overlap,
-        "type": doc_type
-    }
-    if domain:
-        req_body["domain"] = domain
-    if jwt_token:
-        req_body["jwt_token"] = jwt_token
-
-    headers = {"Content-Type": "application/json"}
-    if jwt_token:
-        headers["Authorization"] = f"Bearer {jwt_token}"
+    target_label = "Skill" if "skill" in doc_type.lower() else "Document"
+    total_chunks_created = 0
 
     try:
-        r = requests.post(f"{url}/api/rag/documents/add", json=req_body, headers=headers, timeout=30)
-        res_data = r.json()
-        if r.status_code == 200:
-            target_label = "Skill" if "skill" in doc_type.lower() else "Document"
-            res_data["message"] = f"Successfully ingested {target_label.lower()} '{doc_name}' into {target_label}s database ({res_data.get('chunks_created', 0)} chunks)."
+        for idx, item in enumerate(doc_items):
+            cur_pct = int((idx / total_docs) * 100)
+            _webui_ingest_progress["current_file"] = item["name"]
+            _webui_ingest_progress["processed"] = idx
+            _webui_ingest_progress["percent"] = cur_pct
+            _webui_ingest_progress["message"] = f"Ingesting document {idx + 1} of {total_docs}: {item['name']} ({cur_pct}%)"
+
+            req_body = {
+                "name": item["name"],
+                "complete_text": item["content"],
+                "chunk_size": chunk_size,
+                "overlap": overlap,
+                "type": doc_type
+            }
+            if domain:
+                req_body["domain"] = domain
+            if jwt_token:
+                req_body["jwt_token"] = jwt_token
+
+            # 3 minutes timeout (180 seconds)
+            r = requests.post(f"{url}/api/rag/documents/add", json=req_body, headers=headers, timeout=600)
+            if r.status_code != 200:
+                _webui_ingest_progress["active"] = False
+                res_err = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
+                return jsonify(res_err), r.status_code
+
+            res_doc = r.json()
+            total_chunks_created += res_doc.get("chunks_created", 0)
+
             log_event(
                 invoker="Web UI",
                 recipient="doc_rag",
                 event_type="vectordb_ingest",
-                desc=f"User {user.get('email', 'unknown')} ingested {target_label.lower()} '{doc_name}'",
-                payload={"name": doc_name, "type": doc_type, "domain": domain},
+                desc=f"User {user.get('email', 'unknown')} ingested {target_label.lower()} '{item['name']}'",
+                payload={"name": item["name"], "type": doc_type, "domain": domain},
                 user=user.get("email"),
                 domain=domain
             )
-        return jsonify(res_data), r.status_code
+
+        _webui_ingest_progress["processed"] = total_docs
+        _webui_ingest_progress["percent"] = 100
+        _webui_ingest_progress["active"] = False
+        _webui_ingest_progress["message"] = f"Successfully ingested {total_docs} document(s) (100%)"
+
+        if total_docs == 1:
+            success_msg = f"Successfully ingested {target_label.lower()} '{doc_items[0]['name']}' into {target_label}s database ({total_chunks_created} chunks)."
+        else:
+            success_msg = f"Successfully ingested {total_docs} documents into {target_label}s database ({total_chunks_created} total chunks)."
+
+        return jsonify({
+            "status": "success",
+            "message": success_msg,
+            "chunks_created": total_chunks_created,
+            "documents_count": total_docs
+        }), 200
+
     except Exception as e:
+        _webui_ingest_progress["active"] = False
+        _webui_ingest_progress["message"] = f"Ingestion error: {e}"
         return jsonify({"error": f"Vector store unreachable: {e}"}), 502
 
 @app.route("/api/vectordb/document", methods=["DELETE"])

@@ -170,6 +170,10 @@ Access the Web Console at: **`http://localhost:8000`**
   * **Protection of Global Entries**: Admin and Editor roles for a specific organization **cannot make changes to Global entries**. They cannot overwrite, mutate, or ingest items whose names match existing Global entries (the backend verifies existing records and returns HTTP 403 Forbidden). Organization users also cannot ingest entries assigned to other organizations.
   * **Global Admin**: Only Global Admin (`admin` / no domain) can ingest entries assigned to Global scope (`Global (All)`) or across all organizations.
 * **Real-time Statistics:** Monitor total ingested document chunks, unique files, and vector DB size in MB scoped to your tenant domain.
+* **3-Minute Ingestion Timeout & Live Progress Status:**
+  * Configures a **3-minute HTTP timeout** (180 seconds, `timeout=180`) on ingestion calls to `doc_RAG` to prevent read timeouts on large files or multi-document directory imports.
+  * Displays **real-time progress status showing the % of documents that had been ingested** in the Vector Storage Status banner and ingestion spinner (e.g., `⏳ Ingesting document 3 of 6: financial_report (50%)`) accompanied by an animated progress bar.
+  * When ingesting a directory (e.g. `sample_docs/`), each file is ingested and indexed as an individual document in ChromaDB with live progress updates.
 * **Storage Status & Reset:** Inspect active document records with their authorized **Tenant Domain** (identifying the organization that stored and retains access to each document, e.g. `example-a.com`, `sample-b.com`, or `All Tenants (Admin)` / `Global (All)`).
 * **Reset Database (Global Admin Only):** Only the Global Admin is permitted to reset the document vector database or delete all records. For non-global admins, the Reset DB button is disabled, and API calls to `/api/vectordb/reset` or `/api/rag/reset` return HTTP 403 Forbidden.
 * **Deletion Permissions & Scoping:**

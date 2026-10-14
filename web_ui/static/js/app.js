@@ -1151,7 +1151,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnPopulateDb.disabled = true;
     ingestSpinner.classList.remove('hidden');
-    storageStatusBanner.innerHTML = '<span class="status-indicator-busy">⏳ Ingestion in progress...</span>';
+    ingestSpinner.innerHTML = '<span class="spinner-icon">⏳</span> Ingesting content... 0%';
+    storageStatusBanner.innerHTML = `
+      <div class="ingest-progress-container">
+        <div class="ingest-progress-header">
+          <span class="status-indicator-busy">⏳ Ingestion in progress: 0%</span>
+          <span class="ingest-pct-badge" style="color: #38bdf8;">0%</span>
+        </div>
+        <div class="ingest-progress-bar">
+          <div class="ingest-progress-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+    `;
+
+    // Poll ingestion progress every 500ms
+    let progressTimer = setInterval(async () => {
+      try {
+        const pRes = await fetch('/api/vectordb/ingest_progress');
+        if (pRes.ok) {
+          const pData = await pRes.json();
+          const p = pData.progress || {};
+          if (p.active) {
+            const pct = Math.min(100, Math.max(0, p.percent || 0));
+            const msg = p.message || `Ingesting documents: ${pct}%`;
+            ingestSpinner.innerHTML = `<span class="spinner-icon">⏳</span> Ingesting... ${pct}%`;
+            storageStatusBanner.innerHTML = `
+              <div class="ingest-progress-container">
+                <div class="ingest-progress-header">
+                  <span class="status-indicator-busy">⏳ ${escapeHtml(msg)}</span>
+                  <span class="ingest-pct-badge" style="color: #38bdf8;">${pct}%</span>
+                </div>
+                <div class="ingest-progress-bar">
+                  <div class="ingest-progress-fill" style="width: ${pct}%;"></div>
+                </div>
+              </div>
+            `;
+          }
+        }
+      } catch (e) {
+        // ignore polling error
+      }
+    }, 500);
 
     try {
       const res = await fetch('/api/vectordb/ingest', {
@@ -1168,15 +1208,33 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Ingestion failed');
 
+      clearInterval(progressTimer);
+      storageStatusBanner.innerHTML = `
+        <div class="ingest-progress-container">
+          <div class="ingest-progress-header">
+            <span class="status-indicator-idle" style="color: #4ade80;">✅ Ingestion complete: 100%</span>
+            <span class="ingest-pct-badge" style="color: #4ade80;">100%</span>
+          </div>
+          <div class="ingest-progress-bar">
+            <div class="ingest-progress-fill" style="width: 100%; background: #4ade80;"></div>
+          </div>
+        </div>
+      `;
+
       alert(data.message || 'Ingestion complete!');
       ingestSourceInput.value = '';
       loadIngestionData();
+      setTimeout(() => {
+        storageStatusBanner.innerHTML = '<span class="status-indicator-idle">Idle (Ready)</span>';
+      }, 2500);
     } catch (err) {
+      clearInterval(progressTimer);
       alert(`Ingestion error: ${err.message}`);
+      storageStatusBanner.innerHTML = '<span class="status-indicator-idle">Idle (Ready)</span>';
     } finally {
+      clearInterval(progressTimer);
       btnPopulateDb.disabled = false;
       ingestSpinner.classList.add('hidden');
-      storageStatusBanner.innerHTML = '<span class="status-indicator-idle">Idle (Ready)</span>';
     }
   });
 

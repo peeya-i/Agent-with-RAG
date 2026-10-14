@@ -62,6 +62,19 @@ chroma_client = chromadb.PersistentClient(path=CHROMA_DIR, settings=Settings(ano
 doc_collection = chroma_client.get_or_create_collection(name="documents", metadata={"hnsw:space": "cosine"})
 skill_collection = chroma_client.get_or_create_collection(name="skills", metadata={"hnsw:space": "cosine"})
 
+_rag_ingest_progress = {
+    "active": False,
+    "percent": 0,
+    "current_doc": "",
+    "chunks_done": 0,
+    "total_chunks": 0,
+    "message": "Idle"
+}
+
+@app.route("/api/rag/progress", methods=["GET"])
+def get_rag_progress():
+    return jsonify({"status": "success", "progress": _rag_ingest_progress})
+
 def resolve_url(url, default_host, default_port):
     if not os.environ.get("RUNNING_IN_DOCKER") and f"{default_host}:{default_port}" in url:
         return url.replace(f"{default_host}:{default_port}", f"127.0.0.1:{default_port}")
@@ -566,6 +579,13 @@ def add_document_or_skill():
         else:
             doc_domain = data.get("domain") or "Global (All)"
 
+        _rag_ingest_progress["active"] = True
+        _rag_ingest_progress["current_doc"] = name
+        _rag_ingest_progress["total_chunks"] = len(chunks)
+        _rag_ingest_progress["chunks_done"] = 0
+        _rag_ingest_progress["percent"] = 0
+        _rag_ingest_progress["message"] = f"Ingesting skill '{name}': 0% (0/{len(chunks)} chunks)"
+
         for idx, c in enumerate(chunks):
             skill_id = f"skill_{hashlib.md5((name + str(idx) + c[:50]).encode('utf-8')).hexdigest()}"
             vec = get_embedding(c, user_id=user_id)
@@ -583,6 +603,11 @@ def add_document_or_skill():
                 "chunk_size": len(c),
                 "vector_text": c
             })
+            _rag_ingest_progress["chunks_done"] = idx + 1
+            _rag_ingest_progress["percent"] = int(((idx + 1) / len(chunks)) * 100)
+            _rag_ingest_progress["message"] = f"Ingesting skill '{name}': {_rag_ingest_progress['percent']}% ({idx + 1}/{len(chunks)} chunks)"
+
+        _rag_ingest_progress["active"] = False
 
         try:
             skill_collection.upsert(
@@ -656,6 +681,13 @@ def add_document_or_skill():
                 else:
                     doc_domain = "All Tenants (Admin)"
 
+        _rag_ingest_progress["active"] = True
+        _rag_ingest_progress["current_doc"] = name
+        _rag_ingest_progress["total_chunks"] = len(chunks)
+        _rag_ingest_progress["chunks_done"] = 0
+        _rag_ingest_progress["percent"] = 0
+        _rag_ingest_progress["message"] = f"Ingesting document '{name}': 0% (0/{len(chunks)} chunks)"
+
         for idx, c in enumerate(chunks):
             c_id = f"doc_{hashlib.md5((name + str(idx) + c[:50]).encode('utf-8')).hexdigest()}"
             vec = get_embedding(c, user_id=user_id)
@@ -673,6 +705,11 @@ def add_document_or_skill():
                 "chunk_size": len(c),
                 "vector_text": c
             })
+            _rag_ingest_progress["chunks_done"] = idx + 1
+            _rag_ingest_progress["percent"] = int(((idx + 1) / len(chunks)) * 100)
+            _rag_ingest_progress["message"] = f"Ingesting document '{name}': {_rag_ingest_progress['percent']}% ({idx + 1}/{len(chunks)} chunks)"
+
+        _rag_ingest_progress["active"] = False
 
         try:
             doc_collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)

@@ -292,7 +292,7 @@ The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the
 - Collapsible **Advanced Chunking Parameters** sub-card:
   - `Chunk Size`: Character count per chunk (Default: `800`, Min: `100`, Max: `5000`).
   - `Chunk Overlap`: Character overlap between adjacent chunks (Default: `100`, Min: `0`, Max: `1000`).
-- **Populate Vector Database** submit button: Dispatches ingestion job to `/api/vectordb/ingest`. Shows progress spinner and chunk creation summary upon completion.
+- **Populate Vector Database** submit button: Dispatches ingestion job to `/api/vectordb/ingest`. Configured with a 3-minute HTTP execution timeout (`timeout=180`) to ensure reliability on multi-document directories and large files. Shows real-time progress status with the exact percentage of documents ingested (e.g. `⏳ Ingesting document 3 of 6: financial_report (50%)`) and an animated progress bar.
 - Card width: Exactly 40% of the horizontal grid container width (`4fr` column in `.vectordb-split-grid`).
 - **Access Control Enforcement & Organization Scoping**:
   - Role "User" has read-only access and cannot load documents or skills; the Populate button and source input are disabled, displaying an informational warning notice (`#userIngestNotice`).
@@ -303,7 +303,7 @@ The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the
 #### 2.5.2 Right Card: "Vector Storage Status" (60% Width)
 - Header includes **Reset DB** button:
   - **Global Admin Only**: Only Global Admin is permitted to reset the document vector database or delete all records. For non-global admins, the Reset DB button is disabled and API calls to `/api/vectordb/reset` or `/api/rag/reset` return HTTP 403 Forbidden.
-- Ingestion status banner indicating whether indexing is active or idle.
+- Ingestion status banner indicating whether indexing is active or idle, displaying live `%` progress of documents and chunks ingested alongside an animated progress bar.
 - Ingested Documents Table:
   - Columns: `Type` (Badge: Document or Skill), `Document / Skill Name`, `Tenant Domain` (Badge indicating the domain name of the organization that stored and has access to the document, e.g. `example-a.com`, `sample-b.com`, or `All Tenants (Admin)` / `Global (All)`), `Chunks`, `Characters`, and `Actions` (`Delete` button).
   - **Deletion Permissions & Scoping**:

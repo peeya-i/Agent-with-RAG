@@ -216,6 +216,9 @@ The Main App window should have:
   - Add the button at the bottom to populate vector database
   - When loading the database, make sure there is no duplicated chunk
   - The card should be 40% of the page width
+  - **3-Minute Ingestion Timeout & Progress Status Display**:
+    - Configures a 3-minute HTTP execution timeout (180 seconds, `timeout=180`) on ingestion requests dispatched to `doc_RAG` to ensure long-running multi-document directories and large files ingest reliably without read timeouts.
+    - Displays real-time progress status showing the **% of documents that had been ingested** in the Vector Storage Status banner and ingestion spinner (e.g. `⏳ Ingesting document 3 of 6: financial_report (50%)` with an animated progress bar).
   - **Access Control & Organization Ingestion Scoping**:
     - Role "User" has read-only access and cannot load documents or skills; the Populate button, source input, and Reset DB button are disabled with an informational read-only notice banner.
     - Role "Admin" and "Editor" for a specific organization are authorized to populate documents and skills for their organization's tenant domain.
@@ -225,7 +228,7 @@ The Main App window should have:
 #### Right Card: “Vector Storage Status”.
 - At the right side of the box put a button to allow the user to Reset the DB:
   - **Global Admin Only**: Only Global Admin is permitted to reset the document vector database or delete all records. For non-global admins, the Reset DB button is disabled and API calls to `/api/vectordb/reset` or `/api/rag/reset` return HTTP 403 Forbidden.
-- The card should show if the ingestion is in progress
+- The card displays active ingestion status with live percentage of documents ingested (e.g. `⏳ Ingestion in progress: 50%` with an animated progress bar) and shows chunk and document progress in real time.
 - It should also list the name of the document ingested, the tenant domain name of the organization that stored and has access to the document (e.g., `example-a.com`, `sample-b.com`, or `All Tenants (Admin)` / `Global (All)`), the number of chunks created, and the total number of characters
 - Allow the user to scroll through the list of ingested documents
 - **Deletion Permissions & Scoping**:
@@ -846,8 +849,10 @@ All container-to-container communications must record the complete, untruncated 
 - `GET /api/vectordb/models` & `GET /api/vectordb/ollama_models`
   - Returns embedding models catalog (name, dimensions, context window, size, description, status, is_active, is_installed) based on Ollama tags and active embedder.
 - `POST /api/vectordb/ingest` & `POST /api/vectordb/populate`
-  - Ingests content from a URL or local file/directory path into doc_RAG with configurable chunk size and overlap parameters.
+  - Ingests content from a URL or local file/directory path into doc_RAG with configurable chunk size and overlap parameters. Configured with a 3-minute HTTP execution timeout (`timeout=180`) to ensure reliability on multi-document directories and large files.
   - **Access & Scoping**: Role "User" cannot ingest (returns HTTP 403). Roles "Editor" and "Admin" can ingest entries scoped to their organization domain. Attempting to ingest or overwrite an entry whose name matches an existing Global entry returns HTTP 403 Forbidden. Only Global Admin can ingest items assigned to Global scope.
+- `GET /api/vectordb/ingest_progress` & `GET /api/vectordb/progress`
+  - Returns real-time ingestion progress with fields: `active` (boolean), `percent` (integer 0-100), `processed` (count of documents completed), `total` (total count of documents), `current_file` (name of file being processed), and `message`.
 - `DELETE /api/vectordb/document` & `DELETE /api/vectordb/delete/<name>` & `DELETE /api/rag/documents/<name>`
   - Deletes all chunks associated with a specific document or all documents from the vector database.
   - **Access & Scoping**: Only Global Admin can delete entries from the Global Vector DB (including default skills and Global tenant documents) or delete all records (`name="ALL"`). Organization Admins and Editors can delete entries imported by their organization only. Attempting to delete Global entries or entries of other organizations returns HTTP 403 Forbidden. Role "User" has read-only access (returns HTTP 403).
