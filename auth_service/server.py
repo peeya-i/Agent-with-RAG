@@ -684,11 +684,21 @@ def bulk_delete_users():
     if not user_ids:
         return jsonify({"error": "No user IDs provided"}), 400
 
+    creator_domain = request.args.get("domain") or data.get("creator_domain")
+    creator_role = request.args.get("role") or data.get("creator_role")
+
     conn = get_db()
     cursor = conn.cursor()
     placeholders = ",".join("?" for _ in user_ids)
-    cursor.execute(f"SELECT id, email FROM users WHERE id IN ({placeholders})", user_ids)
+    cursor.execute(f"SELECT id, email, domain FROM users WHERE id IN ({placeholders})", user_ids)
     users_to_delete = cursor.fetchall()
+
+    if creator_role == "Admin" and creator_domain:
+        for u in users_to_delete:
+            if u["domain"] != creator_domain:
+                conn.close()
+                return jsonify({"error": "Unauthorized: Cannot delete users outside your domain"}), 403
+
     now_iso = datetime.now(timezone.utc).isoformat()
     for u in users_to_delete:
         cursor.execute(

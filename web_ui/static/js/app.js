@@ -509,15 +509,14 @@ document.addEventListener('DOMContentLoaded', () => {
   window.activeChatConversationId = activeChatConversationId;
   window.currentActiveConversationId = activeChatConversationId;
 
-  // New Session button to clear context and start new chat
-  const btnNewChatSession = document.getElementById('btnNewChatSession');
-  if (btnNewChatSession) {
-    btnNewChatSession.addEventListener('click', () => {
-      chatSessionHistory = [];
-      lastRouterMetadata = null;
-      activeChatConversationId = 'conv_' + Date.now();
-      window.activeChatConversationId = activeChatConversationId;
-      window.currentActiveConversationId = activeChatConversationId;
+  // Helper to start fresh chat session
+  function startNewChatSession() {
+    chatSessionHistory = [];
+    lastRouterMetadata = null;
+    activeChatConversationId = 'conv_' + Date.now();
+    window.activeChatConversationId = activeChatConversationId;
+    window.currentActiveConversationId = activeChatConversationId;
+    if (chatMessages) {
       chatMessages.innerHTML = `
         <div class="chat-welcome">
           <div class="welcome-icon">💡</div>
@@ -533,13 +532,37 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
       chatMessages.querySelectorAll('.btn-chip').forEach(btn => {
         btn.addEventListener('click', () => {
-          chatInput.value = btn.getAttribute('data-prompt');
+          if (chatInput) chatInput.value = btn.getAttribute('data-prompt');
           sendMessage();
         });
       });
+    }
+    if (typeof renderEvidence === 'function') {
       renderEvidence({}, null);
+    }
+    if (chatInput) {
       chatInput.value = '';
-      chatInput.focus();
+    }
+  }
+  window.startNewChatSession = startNewChatSession;
+
+  function clearTestSemanticPrompts() {
+    const testInput = document.getElementById('testRouteInput');
+    const testResults = document.getElementById('testRouteResults');
+    if (testInput) testInput.value = '';
+    if (testResults) {
+      testResults.innerHTML = '';
+      testResults.style.display = 'none';
+    }
+  }
+  window.clearTestSemanticPrompts = clearTestSemanticPrompts;
+
+  // New Session button to clear context and start new chat
+  const btnNewChatSession = document.getElementById('btnNewChatSession');
+  if (btnNewChatSession) {
+    btnNewChatSession.addEventListener('click', () => {
+      startNewChatSession();
+      if (chatInput) chatInput.focus();
     });
   }
 
@@ -984,6 +1007,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (docs.length === 0) {
           ingestedDocsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No documents or skills ingested.</td></tr>`;
         } else {
+          const isGlobalAdmin = (currentUser && currentUser.role === 'Admin' && (!currentUser.domain || currentUser.domain === 'Global'));
+          const userDomain = (currentUser && currentUser.domain) ? currentUser.domain.trim().toLowerCase() : '';
+          const userRole = currentUser ? (currentUser.role || 'User') : 'User';
+          const isOrgAdminOrEditor = (currentUser && (currentUser.role === 'Admin' || currentUser.role === 'Editor') && !!currentUser.domain);
+
           ingestedDocsTbody.innerHTML = docs.map(d => {
             const name = typeof d === 'string' ? d : (d.doc_name || d.name || 'Unknown');
             const type = (typeof d === 'object' && d.type) ? d.type : (name.endsWith('-skill') ? 'Skill' : 'Document');
@@ -1000,6 +1028,27 @@ document.addEventListener('DOMContentLoaded', () => {
               : (domain === 'sample-b.com'
                 ? `<span class="badge" style="background:#0f172a;border:1px solid #a855f7;color:#c084fc;font-size:0.75rem;padding:2px 8px;border-radius:4px;font-family:monospace;">${escapeHtml(domain)}</span>`
                 : `<span class="badge" style="background:#0f172a;border:1px solid #10b981;color:#34d399;font-size:0.75rem;padding:2px 8px;border-radius:4px;font-family:monospace;">${escapeHtml(domain)}</span>`);
+
+            const isEntryGlobal = (!domain || domain === 'Global (All)' || domain === 'All Tenants (Admin)' || domain.toLowerCase() === 'global');
+            let canDeleteThis = false;
+            let deleteTitle = '';
+
+            if (isGlobalAdmin) {
+              canDeleteThis = true;
+              deleteTitle = `Delete ${type} '${escapeHtml(name)}'`;
+            } else if (isEntryGlobal) {
+              canDeleteThis = false;
+              deleteTitle = 'Only Global Admin can delete entries from Global Vector DB';
+            } else {
+              if (isOrgAdminOrEditor && userDomain === (domain || '').trim().toLowerCase()) {
+                canDeleteThis = true;
+                deleteTitle = `Delete organization ${type} '${escapeHtml(name)}'`;
+              } else {
+                canDeleteThis = false;
+                deleteTitle = 'Only Admin and Editor roles for this organization can delete this entry';
+              }
+            }
+
             return `
             <tr>
               <td>${typeBadge}</td>
@@ -1008,7 +1057,10 @@ document.addEventListener('DOMContentLoaded', () => {
               <td>${chunks}</td>
               <td>${chars.toLocaleString()}</td>
               <td>
-                <button class="btn-table-delete" data-doc="${escapeHtml(name)}" data-type="${escapeHtml(type.toLowerCase())}">Delete</button>
+                <button class="btn-table-delete" data-doc="${escapeHtml(name)}" data-type="${escapeHtml(type.toLowerCase())}"
+                  ${!canDeleteThis ? 'disabled' : ''}
+                  title="${escapeHtml(deleteTitle)}"
+                  style="${!canDeleteThis ? 'opacity:0.35; cursor:not-allowed;' : ''}">Delete</button>
               </td>
             </tr>
           `;
@@ -1017,10 +1069,19 @@ document.addEventListener('DOMContentLoaded', () => {
           // Bind delete buttons
           ingestedDocsTbody.querySelectorAll('.btn-table-delete').forEach(btn => {
             btn.addEventListener('click', async () => {
+              if (btn.disabled) return;
               const docName = btn.getAttribute('data-doc');
               const docType = btn.getAttribute('data-type') || 'document';
               if (confirm(`Delete ${docType} '${docName}' from vector store?`)) {
-                await fetch(`/api/vectordb/document?doc_name=${encodeURIComponent(docName)}&type=${encodeURIComponent(docType)}`, { method: 'DELETE' });
+                try {
+                  const delRes = await fetch(`/api/vectordb/document?doc_name=${encodeURIComponent(docName)}&type=${encodeURIComponent(docType)}`, { method: 'DELETE' });
+                  if (!delRes.ok) {
+                    const errJson = await delRes.json().catch(() => ({}));
+                    alert(errJson.error || `Failed to delete ${docType} '${docName}'`);
+                  }
+                } catch (e) {
+                  alert('Error deleting document: ' + e.message);
+                }
                 loadIngestionData();
               }
             });
@@ -1945,9 +2006,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (ingestSourceInput) ingestSourceInput.disabled = false;
       if (userNotice) userNotice.classList.add('hidden');
       if (btnResetDb) {
-        btnResetDb.disabled = (role !== 'admin');
-        btnResetDb.style.opacity = (role !== 'admin') ? '0.5' : '';
-        btnResetDb.style.cursor = (role !== 'admin') ? 'not-allowed' : '';
+        btnResetDb.disabled = !isGlobalAdmin;
+        btnResetDb.style.opacity = !isGlobalAdmin ? '0.5' : '';
+        btnResetDb.style.cursor = !isGlobalAdmin ? 'not-allowed' : '';
+        btnResetDb.title = !isGlobalAdmin ? 'Only Global Admin can reset the Vector DB' : '';
       }
     }
   }
@@ -1986,6 +2048,9 @@ document.addEventListener('DOMContentLoaded', () => {
         loginModal.style.display = 'none';
         applyRolePermissions(currentUser);
         updateJwtDisplay(currentUser, currentJwt);
+        // Clear all prompts in chat and start new session, and clear Test Semantic Prompts in Agent page
+        startNewChatSession();
+        clearTestSemanticPrompts();
         logPageView('Chat & Knowledge Mgnt');
         loadIngestionData();
         await loadUserPreferencesForUser(currentUser.email, data.preferences);
@@ -2421,6 +2486,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </td>
           <td>
             <button class="btn-secondary" style="padding:2px 8px; font-size:0.75rem;" ${!isAdmin ? 'disabled' : ''} onclick="resetUserPassword(${u.id})">Reset Pass</button>
+            <button class="btn-secondary" style="padding:2px 8px; font-size:0.75rem; margin-left:4px; color:#ef4444; border-color:rgba(239,68,68,0.4);" ${!isAdmin ? 'disabled' : ''} onclick="deleteSingleUser(${u.id}, '${escapeHtml(u.email)}')">Delete</button>
           </td>
         `;
         usersTbody.appendChild(tr);
@@ -2568,6 +2634,31 @@ document.addEventListener('DOMContentLoaded', () => {
       alert('Password updated.');
     }
     loadUserActivity();
+  };
+
+  window.deleteSingleUser = async (uid, email) => {
+    const isAdmin = (currentUser && currentUser.role === 'Admin');
+    if (!isAdmin) {
+      alert('Only users with Admin access can delete user accounts.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to permanently delete user account '${email}'?`)) {
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && (data.status === 'success' || !data.error)) {
+        alert(data.message || `Deleted user ${email}`);
+        selectedUserIds.delete(uid);
+        loadUsers();
+        loadUserActivity();
+      } else {
+        alert(data.error || 'Failed to delete user.');
+      }
+    } catch (e) {
+      alert('Error deleting user: ' + e.message);
+    }
   };
 
   // Create New User Popup Window

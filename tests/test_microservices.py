@@ -154,6 +154,49 @@ def test_auth_service():
     assert bulk_del.status_code == 200
     assert bulk_del.get_json()["deleted_count"] == 1
 
+    # Test Organization Admin user scoping:
+    # 1. Org Admin can view only their organization's accounts
+    org_users_res = client.get("/api/users?domain=example-a.com&role=Admin")
+    assert org_users_res.status_code == 200
+    org_users = org_users_res.get_json()["users"]
+    assert all(u["domain"] == "example-a.com" for u in org_users)
+
+    # 2. Org Admin creates an account for their organization
+    org_user_email = f"org_worker_{int(time.time() * 1000)}@example-a.com"
+    org_create = client.post("/api/users?domain=example-a.com&role=Admin", json={
+        "username": org_user_email,
+        "password": "password123",
+        "role": "User",
+        "status": "Active"
+    })
+    assert org_create.status_code == 201
+    org_user_id = org_create.get_json()["user_id"]
+
+    # 3. Org Admin modifies status and role for their user
+    mod_status = client.put(f"/api/users/{org_user_id}/status?domain=example-a.com&role=Admin", json={"status": "Locked"})
+    assert mod_status.status_code == 200
+    mod_role = client.put(f"/api/users/{org_user_id}/role?domain=example-a.com&role=Admin", json={"role": "Editor"})
+    assert mod_role.status_code == 200
+
+    # 4. Org Admin cannot modify or delete user from another organization (sample-b.com)
+    b_user_res = client.get("/api/users?domain=sample-b.com&role=Admin")
+    b_users = b_user_res.get_json()["users"]
+    if b_users:
+        b_target_id = b_users[0]["id"]
+        # Unauthorized status update
+        bad_status = client.put(f"/api/users/{b_target_id}/status?domain=example-a.com&role=Admin", json={"status": "Locked"})
+        assert bad_status.status_code == 403
+        # Unauthorized single delete
+        bad_del = client.delete(f"/api/users/{b_target_id}?domain=example-a.com&role=Admin")
+        assert bad_del.status_code == 403
+        # Unauthorized bulk delete
+        bad_bulk = client.post("/api/users/bulk_delete?domain=example-a.com&role=Admin", json={"user_ids": [b_target_id]})
+        assert bad_bulk.status_code == 403
+
+    # 5. Org Admin deletes their own organization's user
+    org_del = client.delete(f"/api/users/{org_user_id}?domain=example-a.com&role=Admin")
+    assert org_del.status_code == 200
+
 # 3. Test Tools Service
 def test_tools_service():
     import tools.server as tools_srv
@@ -238,8 +281,9 @@ def test_doc_rag_service():
     client = doc_rag_srv.app.test_client()
 
     from jwt_auth import generate_jwt_token
-    token_a = generate_jwt_token(email="user@example-a.com", role="User", domain="example-a.com")
-    token_b = generate_jwt_token(email="user@sample-b.com", role="User", domain="sample-b.com")
+    token_user_a = generate_jwt_token(email="user@example-a.com", role="User", domain="example-a.com")
+    token_editor_a = generate_jwt_token(email="editor@example-a.com", role="Editor", domain="example-a.com")
+    token_editor_b = generate_jwt_token(email="editor@sample-b.com", role="Editor", domain="sample-b.com")
     token_admin = generate_jwt_token(email="admin", role="Admin", domain=None)
 
     # Health check
@@ -247,13 +291,22 @@ def test_doc_rag_service():
     assert res.status_code == 200
     assert res.get_json()["port"] == 8003
 
-    # 1. Add Documents with domain tags
+    # 1. Role "User" cannot add entries to Vector DB (must fail with 403)
+    user_add_fail = client.post("/api/rag/add", json={
+        "type": "document",
+        "name": "unauthorized_user_doc",
+        "text": "This should be rejected because user is not Admin or Editor.",
+        "domain": "example-a.com"
+    }, headers={"Authorization": f"Bearer {token_user_a}"})
+    assert user_add_fail.status_code == 403
+
+    # 2. Add Documents with domain tags by Organization Editors
     add_a = client.post("/api/rag/add", json={
         "type": "document",
         "name": "example_a_roadmap",
         "text": "Secret product roadmap for example-a.com tenant.",
         "domain": "example-a.com"
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
     assert add_a.status_code == 200
 
     add_b = client.post("/api/rag/add", json={
@@ -261,16 +314,16 @@ def test_doc_rag_service():
         "name": "sample_b_financials",
         "text": "Confidential financial statements for sample-b.com tenant.",
         "domain": "sample-b.com"
-    }, headers={"Authorization": f"Bearer {token_b}"})
+    }, headers={"Authorization": f"Bearer {token_editor_b}"})
     assert add_b.status_code == 200
 
-    # 2. List Documents filtered by tenant domain
-    list_a = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_a}"}).get_json()
+    # 3. List Documents filtered by tenant domain
+    list_a = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_editor_a}"}).get_json()
     doc_names_a = [d["doc_name"] for d in list_a.get("documents", [])]
     assert "example_a_roadmap" in doc_names_a
     assert "sample_b_financials" not in doc_names_a
 
-    list_b = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_b}"}).get_json()
+    list_b = client.get("/api/rag/list", headers={"Authorization": f"Bearer {token_editor_b}"}).get_json()
     doc_names_b = [d["doc_name"] for d in list_b.get("documents", [])]
     assert "sample_b_financials" in doc_names_b
     assert "example_a_roadmap" not in doc_names_b
@@ -280,34 +333,75 @@ def test_doc_rag_service():
     assert "example_a_roadmap" in doc_names_admin
     assert "sample_b_financials" in doc_names_admin
 
-    # 3. Add New Skill
+    # 4. Add New Global Skill (by Global Admin)
     add_skill_res = client.post("/api/rag/add", json={
-        "user_id": "test_admin",
+        "user_id": "admin",
         "type": "skill",
         "name": "spec_test_skill",
         "text": "A skill to analyze system logs and telemetry.",
         "vector_text": "analyze system logs and telemetry"
-    })
+    }, headers={"Authorization": f"Bearer {token_admin}"})
     assert add_skill_res.status_code == 200
     assert add_skill_res.get_json()["status"] == "success"
 
-    # 4. Query Documents with tenant filtering
+    # 5. Org Editor cannot overwrite/modify existing Global entry
+    fail_mod_global = client.post("/api/rag/add", json={
+        "type": "skill",
+        "name": "spec_test_skill",
+        "text": "Attempted overwrite of global skill by org editor.",
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert fail_mod_global.status_code == 403
+
+    # 6. Query Documents with tenant filtering
     q_a = client.post("/api/rag/query", json={
         "type": "document",
         "query": "roadmap financials",
         "threshold": 0.0
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
     assert q_a.status_code == 200
     res_a_names = [item.get("document_name") for item in q_a.get_json().get("results", [])]
     assert "sample_b_financials" not in res_a_names
 
-    # 5. Delete Document
-    del_res = client.post("/api/rag/delete", json={
-        "user_id": "test_admin",
+    # 7. Non-global admin cannot delete entries from Global Vector DB
+    del_global_fail = client.post("/api/rag/delete", json={
+        "type": "skill",
+        "name": "spec_test_skill"
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert del_global_fail.status_code == 403
+
+    # 8. Non-global admin cannot delete ALL entries
+    del_all_fail = client.post("/api/rag/delete", json={
+        "name": "ALL"
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert del_all_fail.status_code == 403
+
+    # 9. Org Editor cannot delete entries of another organization
+    del_other_org_fail = client.post("/api/rag/delete", json={
+        "type": "document",
+        "name": "sample_b_financials"
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert del_other_org_fail.status_code == 403
+
+    # 10. Org Editor CAN delete entries imported by their organization
+    del_org_success = client.post("/api/rag/delete", json={
         "type": "document",
         "name": "example_a_roadmap"
+    }, headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert del_org_success.status_code == 200
+
+    # 11. Only Global Admin can delete Global entries
+    del_global_success = client.post("/api/rag/delete", json={
+        "type": "skill",
+        "name": "spec_test_skill"
     }, headers={"Authorization": f"Bearer {token_admin}"})
-    assert del_res.status_code == 200
+    assert del_global_success.status_code == 200
+
+    # 12. Non-global admin cannot reset database; Global Admin CAN reset
+    reset_fail = client.post("/api/rag/reset", headers={"Authorization": f"Bearer {token_editor_a}"})
+    assert reset_fail.status_code == 403
+
+    reset_ok = client.post("/api/rag/reset", headers={"Authorization": f"Bearer {token_admin}"})
+    assert reset_ok.status_code == 200
 
 
 # 5. Test Agents Service

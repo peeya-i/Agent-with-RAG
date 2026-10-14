@@ -234,8 +234,13 @@ def proxy_update_user_status(uid):
     if user and user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can modify user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
+    params = {}
+    if user and user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user and user.get("role"):
+        params["role"] = user.get("role")
     try:
-        r = requests.put(f"{url}/api/users/{uid}/status", json=request.get_json(silent=True), timeout=5)
+        r = requests.put(f"{url}/api/users/{uid}/status", json=request.get_json(silent=True), params=params, timeout=5)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "failed", "error": str(e)}), 502
@@ -292,8 +297,13 @@ def proxy_bulk_delete_users():
     if user.get("role") != "Admin":
         return jsonify({"status": "failed", "error": "Only users with Admin access can delete user accounts"}), 403
     url = resolve_url(AUTH_URL, "auth_service", 8001)
+    params = {}
+    if user.get("domain"):
+        params["domain"] = user.get("domain")
+    if user.get("role"):
+        params["role"] = user.get("role")
     try:
-        r = requests.post(f"{url}/api/users/bulk_delete", json=request.get_json(silent=True), timeout=5)
+        r = requests.post(f"{url}/api/users/bulk_delete", json=request.get_json(silent=True), params=params, timeout=5)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "failed", "error": str(e)}), 502
@@ -1172,13 +1182,14 @@ def proxy_delete_doc(doc_name=None):
         return jsonify({"error": "Document name required"}), 400
 
     name = urllib.parse.unquote(raw_name)
+    doc_type = request.args.get("type") or (request.get_json(silent=True) or {}).get("type") or "document"
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
     jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     headers = {}
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
     try:
-        r = requests.delete(f"{url}/api/rag/documents/{urllib.parse.quote(name)}", headers=headers, timeout=5)
+        r = requests.delete(f"{url}/api/rag/documents/{urllib.parse.quote(name)}", params={"type": doc_type}, headers=headers, timeout=5)
         user = session.get("user") or {}
         if r.status_code == 200:
             log_event(
@@ -1186,7 +1197,7 @@ def proxy_delete_doc(doc_name=None):
                 recipient="doc_rag",
                 event_type="vectordb_delete",
                 desc=f"User {user.get('email', 'unknown')} deleted document '{name}'",
-                payload={"name": name},
+                payload={"name": name, "type": doc_type},
                 user=user.get("email"),
                 domain=user.get("domain")
             )
@@ -1196,6 +1207,10 @@ def proxy_delete_doc(doc_name=None):
 
 @app.route("/api/vectordb/reset", methods=["POST"])
 def proxy_reset_db():
+    user = session.get("user") or {}
+    is_global_admin = (user.get("role") == "Admin" and not user.get("domain"))
+    if not is_global_admin:
+        return jsonify({"error": "Permission denied: Only Global Admin can reset the Vector DB"}), 403
     url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
     jwt_token = session.get("jwt_token") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     headers = {}

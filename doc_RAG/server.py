@@ -87,6 +87,52 @@ def log_event(invoker, recipient, event_type, short_desc, req_payload, resp_payl
     except Exception:
         pass
 
+def is_global_domain(domain_val) -> bool:
+    if not domain_val:
+        return True
+    d = str(domain_val).strip().lower()
+    return d in ["", "none", "global", "global (all)", "all tenants (admin)", "all tenants", "tenant-all", "system"]
+
+def find_existing_entry_info(name: str):
+    """Returns (exists: bool, domain: Optional[str], collection_type: Optional[str])"""
+    raw_name = (name or "").strip()
+    if not raw_name:
+        return False, None, None
+
+    # Check skill_collection
+    try:
+        s_data = skill_collection.get(include=["metadatas"])
+        if s_data.get("metadatas"):
+            for m in s_data["metadatas"]:
+                m = m or {}
+                m_name = m.get("skill_name") or m.get("name") or m.get("document_name") or ""
+                if m_name == raw_name or m_name.lower() == raw_name.lower():
+                    return True, m.get("domain") or "Global (All)", "skill"
+    except Exception:
+        pass
+
+    # Check doc_collection
+    try:
+        d_data = doc_collection.get(include=["metadatas"])
+        if d_data.get("metadatas"):
+            for m in d_data["metadatas"]:
+                m = m or {}
+                m_name = m.get("document_name") or m.get("name") or ""
+                if m_name == raw_name or m_name.lower() == raw_name.lower():
+                    doc_dom = m.get("domain")
+                    if not doc_dom:
+                        if any(k in m_name.lower() for k in ["marketing", "agent", "nexus", "product"]):
+                            doc_dom = "example-a.com"
+                        elif any(k in m_name.lower() for k in ["financial", "vanguard"]):
+                            doc_dom = "sample-b.com"
+                        else:
+                            doc_dom = "All Tenants (Admin)"
+                    return True, doc_dom, "document"
+    except Exception:
+        pass
+
+    return False, None, None
+
 def get_rag_auth_context(req):
     """Extract and decode JWT token to determine user identity and tenant domain."""
     token = extract_jwt_from_request(req)
@@ -99,52 +145,62 @@ def get_rag_auth_context(req):
         # Also check domain parameter for tenant scoping
         q_domain = req.args.get("domain") or req.headers.get("X-Tenant-Domain")
         if q_domain:
-            return {"authenticated": True, "domain": q_domain.strip().lower(), "role": "User", "is_admin": False}
-        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False}
+            return {"authenticated": True, "domain": q_domain.strip().lower(), "role": "User", "is_admin": False, "is_global_admin": False, "email": None}
+        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False, "is_global_admin": False}
 
     payload = decode_jwt_token(token)
     if not payload:
-        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False}
+        return {"authenticated": False, "domain": None, "role": None, "email": None, "is_admin": False, "is_global_admin": False}
 
     role = payload.get("role", "User")
     domain = payload.get("domain")
-    is_admin = (role == "Admin" or domain is None)
+    email = payload.get("email") or payload.get("sub") or ""
+
+    # Global Admin has role Admin and no domain (or domain is global/empty), or email is admin
+    is_global_admin = False
+    if email.lower() == "admin" and (not domain or is_global_domain(domain)):
+        is_global_admin = True
+    elif role == "Admin" and (not domain or is_global_domain(domain)):
+        is_global_admin = True
+
+    is_admin = is_global_admin or (role == "Admin")
 
     return {
         "authenticated": True,
-        "email": payload.get("email"),
+        "email": email,
         "domain": domain,
         "role": role,
-        "is_admin": is_admin
+        "is_admin": is_admin,
+        "is_global_admin": is_global_admin
     }
 
 def can_access_document(doc_metadata: dict, auth_ctx: dict) -> bool:
     """Determine whether the current caller can access a RAG document.
-    - Admin (no domain or role Admin): can access ALL RAG documents!
-    - example-a.com: can access documents assigned to example-a.com.
-    - sample-b.com: can access documents assigned to sample-b.com.
+    - Global Admin (no domain): can access ALL RAG documents!
+    - Organization users (Admin/Editor/User): can access their organization's documents AND Global documents.
     """
     if not auth_ctx.get("authenticated"):
         return True  # Internal default
 
-    # Admin with no domain (or role Admin) can access all RAG documents
-    if auth_ctx.get("is_admin") or auth_ctx.get("role") == "Admin" or auth_ctx.get("domain") is None:
+    # Global Admin (or no domain) can access all RAG documents
+    if auth_ctx.get("is_global_admin") or auth_ctx.get("domain") is None:
         return True
 
     user_domain = (auth_ctx.get("domain") or "").strip().lower()
     doc_domain = (doc_metadata.get("domain") or "").strip().lower()
+
+    if is_global_domain(doc_domain):
+        return True
 
     if doc_domain and doc_domain == user_domain:
         return True
 
     # If document has no explicit domain in metadata, map by standard test document names
     doc_name = (doc_metadata.get("name") or doc_metadata.get("document_name") or doc_metadata.get("doc_name") or "").lower()
-    if "marketing" in doc_name:
+    if any(k in doc_name for k in ["marketing", "agent", "nexus", "product"]):
         return user_domain == "example-a.com"
-    if "financial" in doc_name:
+    if any(k in doc_name for k in ["financial", "vanguard"]):
         return user_domain == "sample-b.com"
-    if "agent" in doc_name:
-        return user_domain == "example-a.com"
 
     return False
 
@@ -470,6 +526,27 @@ def add_document_or_skill():
     if not name or not complete_text:
         return jsonify({"error": "Document name and complete text required"}), 400
 
+    auth_ctx = get_rag_auth_context(request)
+    is_global_admin = auth_ctx.get("is_global_admin", False)
+    user_role = auth_ctx.get("role", "User")
+    user_domain = (auth_ctx.get("domain") or "").strip().lower() if auth_ctx.get("domain") else None
+
+    # Role and organization enforcement:
+    # Admin and Editor roles for specific organization can add entries to the Vector DB imported by the organization.
+    # They should not be able to make changes to Global entries.
+    if auth_ctx.get("authenticated"):
+        if not is_global_admin:
+            if user_role not in ["Admin", "Editor"]:
+                return jsonify({"error": "Unauthorized: Only Admin and Editor roles can add entries to the Vector DB"}), 403
+
+            # Check if entry already exists and is Global or from another tenant
+            exists, existing_domain, col_type = find_existing_entry_info(name)
+            if exists:
+                if is_global_domain(existing_domain):
+                    return jsonify({"error": "Permission denied: Organization users cannot make changes to Global entries"}), 403
+                if user_domain and existing_domain and existing_domain.strip().lower() != user_domain:
+                    return jsonify({"error": "Permission denied: Cannot modify entries belonging to another organization"}), 403
+
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if doc_type in ["skill", "skills"]:
@@ -482,8 +559,12 @@ def add_document_or_skill():
         metadatas = []
         documents = []
 
-        auth_ctx = get_rag_auth_context(request)
-        doc_domain = data.get("domain") or auth_ctx.get("domain") or "Global (All)"
+        if is_global_admin:
+            doc_domain = data.get("domain") or "Global (All)"
+        elif user_domain:
+            doc_domain = user_domain
+        else:
+            doc_domain = data.get("domain") or "Global (All)"
 
         for idx, c in enumerate(chunks):
             skill_id = f"skill_{hashlib.md5((name + str(idx) + c[:50]).encode('utf-8')).hexdigest()}"
@@ -561,15 +642,19 @@ def add_document_or_skill():
         metadatas = []
         documents = []
 
-        auth_ctx = get_rag_auth_context(request)
-        doc_domain = data.get("domain") or auth_ctx.get("domain")
-        if not doc_domain:
-            if "marketing" in name.lower():
-                doc_domain = "example-a.com"
-            elif "financial" in name.lower():
-                doc_domain = "sample-b.com"
-            elif "agent" in name.lower():
-                doc_domain = "example-a.com"
+        if is_global_admin:
+            doc_domain = data.get("domain") or "All Tenants (Admin)"
+        elif user_domain:
+            doc_domain = user_domain
+        else:
+            doc_domain = data.get("domain")
+            if not doc_domain:
+                if any(k in name.lower() for k in ["marketing", "agent", "nexus", "product"]):
+                    doc_domain = "example-a.com"
+                elif any(k in name.lower() for k in ["financial", "vanguard"]):
+                    doc_domain = "sample-b.com"
+                else:
+                    doc_domain = "All Tenants (Admin)"
 
         for idx, c in enumerate(chunks):
             c_id = f"doc_{hashlib.md5((name + str(idx) + c[:50]).encode('utf-8')).hexdigest()}"
@@ -654,6 +739,30 @@ def delete_document_or_skill(doc_name=None):
 
     if not name:
         return jsonify({"error": "Document name or ALL required"}), 400
+
+    auth_ctx = get_rag_auth_context(request)
+    is_global_admin = auth_ctx.get("is_global_admin", False)
+    user_role = auth_ctx.get("role", "User")
+    user_domain = (auth_ctx.get("domain") or "").strip().lower() if auth_ctx.get("domain") else None
+
+    # Global Admin only for deleting ALL entries
+    if name.upper() == "ALL":
+        if auth_ctx.get("authenticated") and not is_global_admin:
+            return jsonify({"error": "Permission denied: Only Global Admin can delete entries from the Global Vector DB"}), 403
+    else:
+        # Check permissions on the target entry
+        exists, existing_domain, col_type = find_existing_entry_info(name)
+        if exists and auth_ctx.get("authenticated"):
+            if is_global_domain(existing_domain):
+                if not is_global_admin:
+                    return jsonify({"error": "Permission denied: Only Global Admin can delete entries from Global Vector DB"}), 403
+            else:
+                # Organization entry
+                if not is_global_admin:
+                    if user_role not in ["Admin", "Editor"]:
+                        return jsonify({"error": "Unauthorized: Only Admin and Editor roles can delete entries for their organization"}), 403
+                    if not user_domain or user_domain != existing_domain.strip().lower():
+                        return jsonify({"error": "Permission denied: Cannot delete entries belonging to another organization"}), 403
 
     now_iso = datetime.now(timezone.utc).isoformat()
     deleted_count = 0
@@ -842,6 +951,10 @@ def reset_database():
     is_valid, msg = check_auth(api_key, "admin", invoker="web_ui")
     if not is_valid:
         return jsonify({"error": msg}), 403
+
+    auth_ctx = get_rag_auth_context(request)
+    if auth_ctx.get("authenticated") and not auth_ctx.get("is_global_admin"):
+        return jsonify({"error": "Permission denied: Only Global Admin can reset the Vector DB"}), 403
 
     global doc_collection
     try:
