@@ -104,20 +104,18 @@ The system enforces strict role-based access control and tenant isolation across
 The Main App window should have:
   - If the static/images folder have a file called tab-icon.gif, use it as the icon for the tab
   - If the static/images folder have a file called app-icon.gif, put it on the left side of the App name at the top left of the window
-  - Seven tabs with appropriate icon to the left of each tab name:
+  - Eight tabs with appropriate icon to the left of each tab name:
     1. Chat & Knowledge Mgnt
     2. VectorDB Mgnt
     3. Agents (Agents Router interface)
-    4. Telemetry
-    5. Log Viewer
-    6. Container Mgr (Visible only to Global Admin)
-    7. Password Mgnt & JWT
+    4. Semantic Lab (Prompt, Embedding & Routing Experimentation)
+    5. Telemetry
+    6. Log Viewer
+    7. Container Mgr (Visible only to Global Admin)
+    8. Password Mgnt & JWT
   - Add a button to the right of the tabs called "Logout"
     - When the user clicks this button, close the current tab and go to the login window.
-  - On the right side of the screen, put a button in the light red color “Shutdown” button
-    - When the user clicks this button, open a dialog box warning the user that this will shutdown the app and all the services. All the users will be affected by this action. Confirm by typing “Shutdown the services” in the text box.
-    - Show two buttons in the dialog box: Cancel, and Confirm. The confirm box should be disabled until the user typed the exact word in the text box.
-    - When the user clicks “Confirm” shutdown all the services started by the app. If some of the supporting services were running before the app started, do not shut them down.
+  - Top Header: Displays user email and user role badge (Admin / Editor / User). The top header "Shutdown" button has been removed to prevent accidental service shutdowns; system container control is managed via the Container Mgr tab.
   
 ### 🗣️ First Page: "Chat & Knowledge Mgnt"
 - Put a drop down box showing the currently selected model at the right side of the page title.
@@ -308,7 +306,46 @@ The **Agents Router Interface** manages semantic vector routing, dynamic registr
     - `POST /chat` or `POST /api/chat`: Accepts JSON with user query (`{"prompt": "...", "message": "...", "conversation_id": "...", "model": "..."}`) and returns `{"response": "...", "status": "success"}`.
     - **JWT Authentication**: Protected external agents validate caller JWT tokens using the shared `jwt_auth.py` module, returning diagnostic error strings on failure.
 
-### 📊 The fourth page: “Telemetry”
+### 🧪 The fourth page: “Semantic Lab” (Prompt, Embedding & Routing Experimentation)
+The **Semantic Lab** provides an interactive experimentation playground allowing developers, admins, and evaluators to benchmark and test prompts against different embedding models, agent definitions, and skills with real-time vector similarity scoring and vectorizer explainability.
+
+- **Placement**: Located between **Agents** (Tab 3) and **Telemetry** (Tab 5).
+- **Header & Global Controls**:
+  - **Mode Selector**:
+    - `🚀 Full Pipeline (Agents + Skills)`: Runs combined routing and skill vector matching.
+    - `🤖 Agent Routing Only`: Evaluates only agent vector classification.
+    - `⚡ Skill Selection Only`: Evaluates only skill vector matching in ChromaDB.
+  - **Active Embedder Selector**: Dropdown showing available embedding models (Ollama, Gemini, Local hash embedder).
+  - **Reload Lab Button**: Refreshes agents, skills, and model catalogs.
+  - **Run Evaluation Button**: Executes the test suite against the selected mode and parameters.
+- **Top Metric Summary Tiles**:
+  - Displays **Evaluation Latency** (in ms), **Selected Agent**, **Activated Skill(s)**, and **Routing Decision** (e.g. `Specialized Routed` vs `Fallback Default`).
+- **Configuration Cards**:
+  - **Left Card: Test Prompts & Thresholds**:
+    - Mode Switcher: **Single Prompt** vs **Batch Suite** (multi-line textarea, up to 20 prompts).
+    - **Quick Preset Chips**: Clickable buttons that automatically load typical test prompts (Docker Crash, 504 Timeout, Tokyo Weather, NVDA Stock, Customer Lookup, Math Formula) and run evaluation.
+    - **Agent Min Threshold Slider**: Dynamic slider (`0.0` - `1.0`, step `0.05`, default `0.50`) to test threshold sensitivity.
+    - **Skill Min Threshold Slider**: Dynamic slider (`0.0` - `1.0`, step `0.05`, default `0.20`) to test skill activation sensitivity.
+  - **Right Card: "What-If" Live Draft Sandbox**:
+    - **Agent Sandbox Tab**:
+      - Select an existing registered agent to load as a template, or create a new test variant.
+      - Edit Display Name, Specialization & Description, and Sample Prompts on the fly.
+      - **"Include Draft Agent in Evaluation"** checkbox: Injects the draft agent into evaluation runs ephemerally without registering it or corrupting production agents.
+    - **Skill Inspector Tab**:
+      - Select loaded skills (`customer-information-skill`, `time-weather-skill`, etc.) to view their exact `SKILL.md` markdown content, chunk counts, frontmatter triggers, and SOP tool execution rules.
+- **Results Cards & Explainability**:
+  - **Agent Routing Results Card**:
+    - Winner callout banner displaying winning agent name, score, and explanation.
+    - Ranked progress bars for all candidate agents with color-coding (green for specialized match, blue for fallback, red for offline).
+    - **Vectorizer Explainability Inspector**: Accordion drawer revealing the exact user query string and the exact concatenated text string (`Agent Name: ... Description: ... Capabilities: ...`) sent to the embedding engine for every candidate agent.
+  - **Skill Vector Search Results Card**:
+    - Displays retrieved skills from ChromaDB with similarity score percentages.
+    - Indicates which top skills exceed threshold and are activated for LLM prompt injection.
+    - Preview of matched chunk text and SOP tool execution instructions.
+  - **Batch Evaluation Table** (for Batch Suite runs):
+    - Table displaying Prompt, Winning Agent, Agent Score, Top Skill, Skill Score, and Decision Status for all evaluated prompts.
+
+### 📊 The fifth page: “Telemetry”
 - The Web UI queries the Logging container's statistics and query API to compute and display the telemetry counters and timeline graphs.
 - Accessible by all authenticated roles (User, Editor, Domain Admin, Global Admin).
 - On the right side of the page, put the button called “Refresh Telemetry” to allow the user to manually refresh the page.

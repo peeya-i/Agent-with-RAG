@@ -34,6 +34,10 @@
         <span class="tab-icon">🤖</span>
         <span class="tab-label">Agents</span>
       </button>
+      <button class="nav-tab" data-target="page-semantic-lab" id="tabSemanticLab">
+        <span class="tab-icon">🧪</span>
+        <span class="tab-label">Semantic Lab</span>
+      </button>
       <button class="nav-tab" data-target="page-telemetry">
         <span class="tab-icon">📊</span>
         <span class="tab-label">Telemetry</span>
@@ -62,9 +66,6 @@
         <span class="user-email-text" id="headerUserEmail">admin</span>
         <span class="user-profile-badge badge-admin" id="headerUserRole">Admin</span>
       </div>
-      <button id="btnShutdown" class="btn-shutdown btn-shutdown-lightred" title="Shutdown the app and all the services">
-        <span class="icon">🛑</span> Shutdown
-      </button>
     </div>
   </header>
 
@@ -507,6 +508,327 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- PAGE 3.5: Semantic Lab (Prompt & Embedding Experimentation)        -->
+    <!-- ================================================================= -->
+    <section id="page-semantic-lab" class="page-view">
+      <div class="page-subheader">
+        <div class="page-title-area">
+          <h2 class="page-heading"><span class="heading-icon">🧪</span> Semantic Lab — Prompt, Embedding & Routing Experimentation</h2>
+          <div class="page-subtitle text-muted" style="font-size: 0.82rem; margin-top: 3px;">
+            Benchmark test prompts against embedding models, active/draft agent definitions, and skills with real-time vector similarity scoring and vectorizer explainability.
+          </div>
+        </div>
+        <div class="page-controls-area">
+          <div class="control-box" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px;">
+            <label for="semLabPipelineMode" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
+              <span class="control-icon">⚙️</span> Mode:
+            </label>
+            <select id="semLabPipelineMode" style="padding: 4px 8px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 4px; color: #38bdf8; font-weight: 600; font-size: 0.8rem;">
+              <option value="full" selected>🚀 Full Pipeline (Agents + Skills)</option>
+              <option value="agents">🤖 Agent Routing Only</option>
+              <option value="skills">⚡ Skill Selection Only</option>
+            </select>
+          </div>
+
+          <div class="control-box" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px;">
+            <label for="semLabEmbedderSelect" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
+              <span class="control-icon">🧬</span> Embedder:
+            </label>
+            <select id="semLabEmbedderSelect" style="padding: 4px 8px; background: #0f172a; border: 1px solid #60a5fa; border-radius: 4px; color: #60a5fa; font-size: 0.8rem; max-width: 220px;">
+              <option value="default">Active Embedder (Auto)</option>
+            </select>
+          </div>
+
+          <button id="btnRefreshSemLab" class="btn-secondary" title="Reload active agents and skills" onclick="if(window.loadSemanticLabData)window.loadSemanticLabData();">
+            <span class="icon">🔄</span> Reload Lab
+          </button>
+          <button id="btnRunSemLab" class="btn-primary" style="background: linear-gradient(135deg, #2563eb, #7c3aed); border: 1px solid #818cf8; font-weight: 700;" onclick="if(window.runSemanticLabEvaluation)window.runSemanticLabEvaluation();">
+            <span class="icon">🚀</span> Run Evaluation
+          </button>
+        </div>
+      </div>
+
+      <!-- High-Level Metric Tiles for Last Run -->
+      <div class="metric-tiles-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.15rem; margin-top: 1rem; margin-bottom: 1.25rem;">
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2rem;">⏱️</div>
+          <div>
+            <div class="metric-label">Evaluation Latency</div>
+            <div class="metric-value" id="semLabMetricLatency" style="color: #38bdf8;">0 ms</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2rem;">🎯</div>
+          <div>
+            <div class="metric-label">Selected Agent</div>
+            <div class="metric-value" id="semLabMetricAgent" style="font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;">None</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2rem;">⚡</div>
+          <div>
+            <div class="metric-label">Activated Skill(s)</div>
+            <div class="metric-value" id="semLabMetricSkill" style="font-size: 1.05rem; color: #34d399; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;">None</div>
+          </div>
+        </div>
+        <div class="metric-tile" style="display: flex; align-items: center; gap: 1rem;">
+          <div style="font-size: 2rem;">📊</div>
+          <div>
+            <div class="metric-label">Routing Decision</div>
+            <div class="metric-value" id="semLabMetricStatus" style="font-size: 1.05rem; color: #a78bfa;">Awaiting Test</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Row: Test Prompt Configuration (Left) & What-If Sandbox (Right) -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.25rem;">
+        
+        <!-- Left Card: Test Prompts & Presets -->
+        <div class="glass-card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-title">
+              <span class="card-icon">📝</span> Test Prompts & Thresholds
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn-secondary active" id="btnSemLabModeSingle" style="padding: 3px 10px; font-size: 0.75rem;">Single Prompt</button>
+              <button class="btn-secondary" id="btnSemLabModeBatch" style="padding: 3px 10px; font-size: 0.75rem;">Batch Suite</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- Single Prompt Input Container -->
+            <div id="semLabSinglePromptBox" style="margin-bottom: 12px;">
+              <label for="semLabSingleInput" style="font-size: 0.82rem; color: #cbd5e1; font-weight: 600; margin-bottom: 4px; display: block;">
+                Enter Test Prompt:
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="semLabSingleInput" class="input-field" placeholder="e.g. Docker container crashed with code 137 OOMKilled" value="Docker container crashed with code 137 OOMKilled" style="flex: 1; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff; font-size: 0.88rem;" />
+              </div>
+            </div>
+
+            <!-- Batch Prompts Input Container (Hidden by default) -->
+            <div id="semLabBatchPromptBox" style="display: none; margin-bottom: 12px;">
+              <label for="semLabBatchInput" style="font-size: 0.82rem; color: #cbd5e1; font-weight: 600; margin-bottom: 4px; display: block;">
+                Batch Test Prompts (one prompt per line):
+              </label>
+              <textarea id="semLabBatchInput" rows="5" class="input-field" style="width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff; font-family: monospace; font-size: 0.82rem;" placeholder="Docker container crashed with code 137 OOMKilled&#10;What is the weather and current time in Tokyo?&#10;Our microservice is throwing HTTP 504 Gateway Timeout&#10;Find customer records for Liam Gallagher in Dublin&#10;Check current stock price of NVDA&#10;Calculate 145 multiplied by 82 minus 300">Docker container crashed with code 137 OOMKilled
+What is the weather and current time in Tokyo?
+Our microservice is throwing HTTP 504 Gateway Timeout on PostgreSQL queries
+Find customer records for Liam Gallagher in Dublin
+Check current stock price and valuation of NVDA
+Calculate 145 multiplied by 82 minus 300</textarea>
+            </div>
+
+            <!-- Quick Preset Chips -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-size: 0.75rem; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">⚡ Quick Presets (Click to load):</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="Docker container crashed with code 137 OOMKilled on startup">🐳 Docker Crash</button>
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="Our microservice is throwing HTTP 504 Gateway Timeout on PostgreSQL queries">🌐 504 Timeout</button>
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="What is the weather and current time in Tokyo?">🌦️ Tokyo Weather</button>
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="Check current stock price and valuation of NVDA">📈 NVDA Stock</button>
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="Find customer records for Liam Gallagher in Dublin">👤 Customer Lookup</button>
+                <button type="button" class="btn-secondary sem-preset-btn" style="padding: 3px 8px; font-size: 0.72rem; border-radius: 12px;" data-prompt="Calculate 145 multiplied by 82 minus 300">➕ Math Formula</button>
+              </div>
+            </div>
+
+            <!-- Threshold Sliders Grid -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: rgba(15, 23, 42, 0.6); padding: 12px; border: 1px solid #334155; border-radius: 8px;">
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 4px;">
+                  <span style="color: #94a3b8;">🎯 Agent Min Threshold:</span>
+                  <span id="semLabAgentThresholdVal" style="color: #38bdf8; font-weight: 700;">0.50</span>
+                </div>
+                <input type="range" id="semLabAgentThreshold" min="0.0" max="1.0" step="0.05" value="0.50" style="width: 100%; accent-color: #38bdf8;" />
+                <div style="font-size: 0.7rem; color: #64748b;">Specialized vs Default Fallback</div>
+              </div>
+
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 4px;">
+                  <span style="color: #94a3b8;">⚡ Skill Min Threshold:</span>
+                  <span id="semLabSkillThresholdVal" style="color: #34d399; font-weight: 700;">0.20</span>
+                </div>
+                <input type="range" id="semLabSkillThreshold" min="0.0" max="1.0" step="0.05" value="0.20" style="width: 100%; accent-color: #34d399;" />
+                <div style="font-size: 0.7rem; color: #64748b;">Trigger SOP context injection</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Card: "What-If" Draft Sandbox (Agents & Skills) -->
+        <div class="glass-card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-title">
+              <span class="card-icon">🔬</span> "What-If" Sandbox (Live Draft Overrides)
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn-secondary active" id="btnSemLabTabAgentDraft" style="padding: 3px 10px; font-size: 0.75rem;">🤖 Agent Sandbox</button>
+              <button class="btn-secondary" id="btnSemLabTabSkillDraft" style="padding: 3px 10px; font-size: 0.75rem;">⚡ Skill Inspector</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- Agent Sandbox Content -->
+            <div id="semLabAgentDraftBox">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 0.8rem; color: #cbd5e1; font-weight: 600;">Candidate Agent to Simulate / Override:</label>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <input type="checkbox" id="semLabEnableDraftAgent" style="accent-color: #a855f7; cursor: pointer;" />
+                  <label for="semLabEnableDraftAgent" style="font-size: 0.78rem; color: #c084fc; font-weight: 700; cursor: pointer; margin: 0;">Include Draft Agent in Evaluation</label>
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                <div>
+                  <label for="semLabDraftTemplateSelect" style="font-size: 0.73rem; color: #94a3b8;">Load from existing:</label>
+                  <select id="semLabDraftTemplateSelect" style="width: 100%; padding: 4px 8px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #cbd5e1; font-size: 0.78rem;">
+                    <option value="">-- Choose template or create new --</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="semLabDraftAgentName" style="font-size: 0.73rem; color: #94a3b8;">Agent Display Name:</label>
+                  <input type="text" id="semLabDraftAgentName" class="input-field" placeholder="e.g. Database Reliability Specialist" value="Database Reliability Specialist" style="width: 100%; padding: 4px 8px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #fff; font-size: 0.78rem;" />
+                </div>
+              </div>
+
+              <div style="margin-bottom: 8px;">
+                <label for="semLabDraftAgentDesc" style="font-size: 0.73rem; color: #94a3b8; display: block; margin-bottom: 2px;">Specialization & Description:</label>
+                <textarea id="semLabDraftAgentDesc" rows="2" class="input-field" style="width: 100%; padding: 6px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #fff; font-size: 0.76rem;" placeholder="PostgreSQL connection pools, database deadlocks, slow index queries, replica lag, transaction rollbacks.">PostgreSQL connection pools, database deadlocks, slow index queries, replica lag, transaction rollbacks, SQL optimization.</textarea>
+              </div>
+
+              <div>
+                <label for="semLabDraftAgentSamples" style="font-size: 0.73rem; color: #94a3b8; display: block; margin-bottom: 2px;">Sample Prompts (one per line):</label>
+                <textarea id="semLabDraftAgentSamples" rows="3" class="input-field" style="width: 100%; padding: 6px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #fff; font-family: monospace; font-size: 0.74rem;" placeholder="Postgres query timed out after 30 seconds&#10;How do I debug connection pool exhaustion?&#10;Deadlock detected on table users update">Postgres query timed out after 30 seconds
+How do I debug connection pool exhaustion?
+Deadlock detected on table users update
+Database replica is 5 minutes behind master</textarea>
+              </div>
+            </div>
+
+            <!-- Skill Inspector Content (Hidden by default) -->
+            <div id="semLabSkillDraftBox" style="display: none;">
+              <div style="margin-bottom: 8px;">
+                <label for="semLabSkillSelect" style="font-size: 0.8rem; color: #cbd5e1; font-weight: 600; display: block; margin-bottom: 4px;">Inspect Loaded Skill Definition:</label>
+                <select id="semLabSkillSelect" style="width: 100%; padding: 6px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #cbd5e1; font-size: 0.82rem;">
+                  <option value="">-- Select a Skill --</option>
+                </select>
+              </div>
+
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.73rem; color: #94a3b8; margin-bottom: 2px;">
+                  <span>Skill Markdown Content (SKILL.md) <span style="font-size: 0.68rem; color: #34d399; margin-left: 4px;">✏️ Editable Sandbox</span>:</span>
+                  <span id="semLabSkillChunkCount" style="color: #38bdf8;">0 Chunks</span>
+                </div>
+                <textarea id="semLabSkillRawContent" rows="7" class="input-field" style="width: 100%; padding: 6px 10px; background: #0a0f1d; border: 1px solid #334155; border-radius: 4px; color: #cbd5e1; font-family: monospace; font-size: 0.72rem;" placeholder="Select a skill from the dropdown above to inspect or edit its exact markdown content, frontmatter triggers, and SOP tool execution rules..."></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Bottom Results Grid: Split Cards (Agent Routing & Skill Vector Matches) -->
+      <div id="semLabResultsContainer" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+        
+        <!-- Left Result Card: Agent Routing Evaluation -->
+        <div class="glass-card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-title">
+              <span class="card-icon">🎯</span> Agent Routing Match & Ranking
+            </div>
+            <span id="semLabAgentBadge" class="status-badge" style="background: #1e293b; color: #94a3b8;">Awaiting Evaluation</span>
+          </div>
+          <div class="card-body">
+            <!-- Winner Callout Banner -->
+            <div id="semLabWinnerBanner" style="padding: 12px 14px; border-radius: 8px; background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; margin-bottom: 14px;">
+              <div id="semLabWinnerLabel" style="font-size: 0.8rem; color: #94a3b8;">Top Candidate Agent:</div>
+              <div id="semLabWinnerName" style="font-size: 1.15rem; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
+              <div id="semLabWinnerReason" style="font-size: 0.8rem; color: #cbd5e1; margin-top: 4px;">Run an evaluation to observe routing results.</div>
+            </div>
+
+            <!-- Ranked Scores Bars -->
+            <div style="font-size: 0.78rem; font-weight: 700; color: #94a3b8; margin-bottom: 8px;">ALL CANDIDATE AGENTS BY SIMILARITY:</div>
+            <div id="semLabRankedAgentsList" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;">
+              <div class="text-muted" style="font-size: 0.8rem; text-align: center; padding: 20px;">No evaluation data yet.</div>
+            </div>
+
+            <!-- Vectorizer Explainability Accordion -->
+            <details style="background: #0a0f1d; border: 1px solid #334155; border-radius: 6px; padding: 8px 12px;">
+              <summary style="font-size: 0.78rem; color: #38bdf8; font-weight: 700; cursor: pointer;">
+                🔍 Vectorizer Explainability Inspector (Exact Text Sent to Model)
+              </summary>
+              <div id="semLabAgentExplainBox" style="margin-top: 8px; font-size: 0.75rem; color: #94a3b8;">
+                <p>Select or run a prompt to view the exact text constructed and sent to the vectorizer.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <!-- Right Result Card: Skill Vector Matches -->
+        <div class="glass-card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-title">
+              <span class="card-icon">⚡</span> Skill Vector Search Matches (ChromaDB)
+            </div>
+            <span id="semLabSkillBadge" class="status-badge" style="background: #1e293b; color: #94a3b8;">Awaiting Evaluation</span>
+          </div>
+          <div class="card-body">
+            <!-- Activated Skills Notice -->
+            <div id="semLabSkillNotice" style="padding: 12px 14px; border-radius: 8px; background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; margin-bottom: 14px;">
+              <div style="font-size: 0.8rem; color: #94a3b8;">Activated Skills in LLM System Prompt:</div>
+              <div id="semLabActivatedSkillsText" style="font-size: 1.05rem; font-weight: 700; color: #34d399; margin-top: 2px;">—</div>
+              <div id="semLabSkillMatchSummary" style="font-size: 0.8rem; color: #cbd5e1; margin-top: 4px;">Skills exceeding the threshold are provided to the agent as available SOPs.</div>
+            </div>
+
+            <!-- Matched Skills List -->
+            <div style="font-size: 0.78rem; font-weight: 700; color: #94a3b8; margin-bottom: 8px;">RETRIEVED SKILLS FROM VECTOR STORE:</div>
+            <div id="semLabMatchedSkillsList" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;">
+              <div class="text-muted" style="font-size: 0.8rem; text-align: center; padding: 20px;">No skill search results yet.</div>
+            </div>
+
+            <!-- Skills Explainability Inspector -->
+            <details style="background: #0a0f1d; border: 1px solid #334155; border-radius: 6px; padding: 8px 12px;">
+              <summary style="font-size: 0.78rem; color: #34d399; font-weight: 700; cursor: pointer;">
+                🔍 Skill Context & SOP Chunk Inspector
+              </summary>
+              <div id="semLabSkillExplainBox" style="margin-top: 8px; font-size: 0.75rem; color: #94a3b8;">
+                <p>Run a prompt to inspect the matched skill chunks and SOP tool execution payloads.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Batch Results Card (Shown when Batch Suite was executed) -->
+      <div id="semLabBatchResultsCard" class="glass-card full-width-card" style="display: none; margin-top: 1.25rem;">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">📋</span> Batch Evaluation Benchmark Results Table
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-container">
+            <table class="data-table" id="semLabBatchTable">
+              <thead>
+                <tr>
+                  <th style="width: 28%;">Test Prompt</th>
+                  <th style="width: 22%;">Winning Agent</th>
+                  <th style="width: 10%; text-align: center;">Agent Score</th>
+                  <th style="width: 20%;">Top Matched Skill</th>
+                  <th style="width: 10%; text-align: center;">Skill Score</th>
+                  <th style="width: 10%; text-align: center;">Status</th>
+                </tr>
+              </thead>
+              <tbody id="semLabBatchTbody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <!-- ================================================================= -->

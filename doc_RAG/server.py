@@ -61,6 +61,7 @@ def load_rag_keys():
 chroma_client = chromadb.PersistentClient(path=CHROMA_DIR, settings=Settings(anonymized_telemetry=False))
 doc_collection = chroma_client.get_or_create_collection(name="documents", metadata={"hnsw:space": "cosine"})
 skill_collection = chroma_client.get_or_create_collection(name="skills", metadata={"hnsw:space": "cosine"})
+_DYNAMIC_SKILL_CACHE = {}
 
 _rag_ingest_progress = {
     "active": False,
@@ -265,13 +266,18 @@ def is_ollama_available(url):
 
 def get_embedding(text, model=None, conv_id=None, user_id=None):
     """Retrieve vector embedding from Ollama Embedding service with logging."""
+    if model == "default":
+        model = None
     m = model or CURRENT_EMBED_MODEL
     url = resolve_url(OLLAMA_URL, "ollama", 11434)
     start_time = time.time()
     vec = []
     if is_ollama_available(url):
         try:
-            resp = requests.post(f"{url}/api/embeddings", json={"model": m, "prompt": text}, timeout=4)
+            resp = requests.post(f"{url}/api/embeddings", json={"model": m, "prompt": text}, timeout=15)
+            # If Ollama returns error due to input length exceeding context window (e.g. all-minilm 512 tokens), retry truncated
+            if resp.status_code != 200 and len(text) > 800:
+                resp = requests.post(f"{url}/api/embeddings", json={"model": m, "prompt": text[:800]}, timeout=15)
             dur_ms = int((time.time() - start_time) * 1000)
             if resp.status_code == 200:
                 vec = resp.json().get("embedding", [])
@@ -303,7 +309,13 @@ def get_embedding(text, model=None, conv_id=None, user_id=None):
     # Deterministic fallback vector in case Ollama model is downloading
     h = hashlib.sha256(text.encode("utf-8")).digest()
     fallback_dim = 1024
-    vector = [(float(b) / 255.0 * 2.0 - 1.0) for b in (h * 32)[:fallback_dim]]
+    if "minilm" in str(m).lower():
+        fallback_dim = 384
+    elif "nomic" in str(m).lower():
+        fallback_dim = 768
+    elif "qwen3" in str(m).lower():
+        fallback_dim = 4096
+    vector = [(float(b) / 255.0 * 2.0 - 1.0) for b in (h * 128)[:fallback_dim]]
     return vector
 
 def chunk_text(text, chunk_size=800, overlap=100):
@@ -749,6 +761,45 @@ def add_document_or_skill():
             "total_characters": len(complete_text)
         })
 
+@app.route("/api/rag/skills/list", methods=["GET"])
+@app.route("/api/rag/skills", methods=["GET"])
+def get_skills_list():
+    """Returns all unique skills with their markdown content and metadata from ChromaDB."""
+    try:
+        all_skill_meta = skill_collection.get(include=["metadatas", "documents"])
+        s_metas = all_skill_meta.get("metadatas") or []
+        s_texts = all_skill_meta.get("documents") or []
+        
+        skills_dict = {}
+        for sm, stxt in zip(s_metas, s_texts):
+            sm = sm or {}
+            s_name = sm.get("skill_name") or sm.get("name") or "Unknown Skill"
+            if s_name not in skills_dict:
+                desc = sm.get("description", "")
+                triggers = []
+                fm_match = re.search(r"^---\s*\n(.*?)\n---\s*\n(.*)$", stxt, re.DOTALL)
+                if fm_match:
+                    fm_text = fm_match.group(1)
+                    d_match = re.search(r"^description:\s*(.+)$", fm_text, re.MULTILINE)
+                    if d_match:
+                        desc = d_match.group(1).strip()
+                    t_matches = re.findall(r"^\s*-\s*(.+)$", fm_text, re.MULTILINE)
+                    if t_matches:
+                        triggers = [t.strip() for t in t_matches]
+                skills_dict[s_name] = {
+                    "name": s_name,
+                    "folder": s_name,
+                    "description": desc,
+                    "triggers": triggers,
+                    "raw_content": stxt
+                }
+            else:
+                if "---" in stxt and "---" not in skills_dict[s_name]["raw_content"]:
+                    skills_dict[s_name]["raw_content"] = stxt
+        return jsonify({"status": "success", "skills": list(skills_dict.values())})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e), "skills": []}), 500
+
 # Compatibility for /api/rag/skills/add
 @app.route("/api/rag/skills/add", methods=["POST"])
 def legacy_add_skill():
@@ -908,41 +959,122 @@ def query_documents():
     if not query_string:
         return jsonify({"status": "success", "results": [], "count": 0})
 
-    q_vector = get_embedding(query_string, conv_id=conv_id, user_id=user_id)
+    model = (data.get("model") or data.get("embedder_model") or "").strip() or None
+    if model == "default":
+        model = None
+    q_vector = get_embedding(query_string, model=model, conv_id=conv_id, user_id=user_id)
     col = skill_collection if "skill" in doc_type else doc_collection
 
     matches = []
-    if col.count() > 0:
-        results = col.query(
-            query_embeddings=[q_vector],
-            n_results=min(k * 2, max(col.count(), 1)),
-            include=["documents", "metadatas", "distances"]
-        )
-        docs = results["documents"][0] if results.get("documents") else []
-        metas = results["metadatas"][0] if results.get("metadatas") else []
-        dists = results["distances"][0] if results.get("distances") else []
+    use_dynamic_eval = ("skill" in doc_type and model and model != CURRENT_EMBED_MODEL)
 
-        for d, m, dist in zip(docs, metas, dists):
-            similarity = round(max(0.0, 1.0 - dist), 4)
-            if similarity >= threshold:
-                item_name = m.get("name") or m.get("document_name") or m.get("skill_name") or "unknown"
-                matches.append({
-                    "name": item_name,
-                    "document_name": item_name,
-                    "skill_name": item_name,
-                    "similarity_score": similarity,
-                    "chunk_text": d,
-                    "text": d,
-                    "metadata": m
-                })
+    if not use_dynamic_eval and col.count() > 0:
+        try:
+            results = col.query(
+                query_embeddings=[q_vector],
+                n_results=min(k * 2, max(col.count(), 1)),
+                include=["documents", "metadatas", "distances"]
+            )
+            docs = results["documents"][0] if results.get("documents") else []
+            metas = results["metadatas"][0] if results.get("metadatas") else []
+            dists = results["distances"][0] if results.get("distances") else []
 
-        # Apply multi-tenant domain authorization filter for RAG documents
-        auth_ctx = get_rag_auth_context(request)
-        if "skill" not in doc_type and auth_ctx.get("authenticated") and not auth_ctx.get("is_admin"):
-            matches = [m for m in matches if can_access_document(m.get("metadata", {}), auth_ctx)]
+            for d, m, dist in zip(docs, metas, dists):
+                similarity = round(max(0.0, 1.0 - dist), 4)
+                if similarity >= threshold:
+                    item_name = m.get("name") or m.get("document_name") or m.get("skill_name") or "unknown"
+                    matches.append({
+                        "name": item_name,
+                        "document_name": item_name,
+                        "skill_name": item_name,
+                        "similarity_score": similarity,
+                        "chunk_text": d,
+                        "text": d,
+                        "metadata": m
+                    })
+        except Exception as e:
+            logger.warning(f"ChromaDB query error for {doc_type}: {e}; using dynamic model evaluation")
+            if "skill" in doc_type:
+                use_dynamic_eval = True
 
-        matches.sort(key=lambda x: x["similarity_score"], reverse=True)
-        matches = matches[:k]
+    if use_dynamic_eval and "skill" in doc_type:
+        import numpy as np
+        skills_data = skill_collection.get(include=["metadatas", "documents"])
+        s_docs = skills_data.get("documents") or []
+        s_metas = skills_data.get("metadatas") or []
+
+        qv_np = np.array(q_vector, dtype=np.float32)
+        norm_q = np.linalg.norm(qv_np)
+
+        for d, m in zip(s_docs, s_metas):
+            m = m or {}
+            trunc_text = d[:800] if len(d) > 800 else d
+            cache_key = (str(model), trunc_text[:120])
+            if cache_key in _DYNAMIC_SKILL_CACHE:
+                sv = _DYNAMIC_SKILL_CACHE[cache_key]
+            else:
+                sv = get_embedding(trunc_text, model=model)
+                _DYNAMIC_SKILL_CACHE[cache_key] = sv
+
+            sv_np = np.array(sv, dtype=np.float32)
+            norm_s = np.linalg.norm(sv_np)
+            if norm_q > 0 and norm_s > 0 and qv_np.shape == sv_np.shape:
+                sim = float(np.dot(qv_np, sv_np) / (norm_q * norm_s))
+                sim = round(max(0.0, sim), 4)
+                if sim >= threshold:
+                    item_name = m.get("name") or m.get("document_name") or m.get("skill_name") or "unknown"
+                    matches.append({
+                        "name": item_name,
+                        "document_name": item_name,
+                        "skill_name": item_name,
+                        "similarity_score": sim,
+                        "chunk_text": d,
+                        "text": d,
+                        "metadata": m
+                    })
+
+    # Evaluate draft skill variant if provided from Sandbox
+    draft_skill = data.get("draft_skill")
+    if "skill" in doc_type and draft_skill and isinstance(draft_skill, dict):
+        d_content = (draft_skill.get("content") or "").strip()
+        d_name = (draft_skill.get("name") or "Draft Skill Variant").strip()
+        if d_content:
+            import numpy as np
+            qv_np = np.array(q_vector, dtype=np.float32)
+            norm_q = np.linalg.norm(qv_np)
+            d_trunc = d_content[:800]
+            d_sv = get_embedding(d_trunc, model=model)
+            d_sv_np = np.array(d_sv, dtype=np.float32)
+            d_norm = np.linalg.norm(d_sv_np)
+            if norm_q > 0 and d_norm > 0 and qv_np.shape == d_sv_np.shape:
+                d_sim = round(max(0.0, float(np.dot(qv_np, d_sv_np) / (norm_q * d_norm))), 4)
+                if d_sim >= threshold:
+                    matches.append({
+                        "name": f"{d_name} (Draft Variant)",
+                        "document_name": f"{d_name} (Draft Variant)",
+                        "skill_name": f"{d_name} (Draft Variant)",
+                        "similarity_score": d_sim,
+                        "chunk_text": d_content,
+                        "text": d_content,
+                        "metadata": {"type": "skill", "variant": "draft"}
+                    })
+
+    # Apply multi-tenant domain authorization filter for RAG documents
+    auth_ctx = get_rag_auth_context(request)
+    if "skill" not in doc_type and auth_ctx.get("authenticated") and not auth_ctx.get("is_admin"):
+        matches = [m for m in matches if can_access_document(m.get("metadata", {}), auth_ctx)]
+
+    # Deduplicate skills by skill name so each distinct skill appears once with its highest-scoring chunk
+    if "skill" in doc_type:
+        dedup = {}
+        for m in matches:
+            name_key = (m.get("name") or "").strip().lower()
+            if name_key not in dedup or m["similarity_score"] > dedup[name_key]["similarity_score"]:
+                dedup[name_key] = m
+        matches = list(dedup.values())
+
+    matches.sort(key=lambda x: x["similarity_score"], reverse=True)
+    matches = matches[:k]
 
     # Log 2: Query Response (Include FULL chunk text and query details)
     log_event(

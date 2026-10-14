@@ -376,19 +376,62 @@ def test_route():
     if not query.strip():
         return jsonify({"status": "error", "message": "Query cannot be empty"}), 400
 
-    target_agent, top_score, ranked, is_fallback, explanation, route_ms = router.decide_route(query)
+    threshold = data.get("threshold")
+    threshold_val = float(threshold) if threshold is not None else None
+    embedder_model = data.get("embedder_model") or data.get("model")
+    if embedder_model == "default":
+        embedder_model = None
+
+    # Optional ephemeral draft agents for What-If sandbox evaluation:
+    # Start with all registered agents so none are lost!
+    candidate_agents = list(registry.list_all_agents())
+    draft_agents_data = data.get("draft_agents")
+    if draft_agents_data and isinstance(draft_agents_data, list):
+        for d in draft_agents_data:
+            try:
+                draft_obj = AgentInfo.from_dict(d)
+                candidate_agents = [a for a in candidate_agents if a.id != draft_obj.id]
+                candidate_agents.append(draft_obj)
+            except Exception as e:
+                logger.warning(f"Error parsing draft agent: {e}")
+
+    target_agent, top_score, ranked, is_fallback, explanation, route_ms = router.decide_route(
+        query, threshold=threshold_val, candidate_agents=candidate_agents, model=embedder_model
+    )
+
+    effective_thresh = threshold_val if threshold_val is not None else router.threshold
+
+    # Find top specialized candidate for clarity
+    spec_ranked = [s for s in ranked if not s.is_default]
+    top_spec = spec_ranked[0] if spec_ranked else None
+
+    # Enrich ranked results with embedding_text and sample_prompts for inspector
+    ranked_dicts = []
+    for s in ranked:
+        s_dict = s.to_dict()
+        agent_obj = next((a for a in candidate_agents if a.id == s.agent_id), None)
+        if not agent_obj:
+            agent_obj = registry.get_agent(s.agent_id)
+        if agent_obj:
+            s_dict["embedding_text"] = agent_obj.get_embedding_text()
+            s_dict["sample_prompts"] = agent_obj.sample_prompts
+            s_dict["description"] = agent_obj.description
+        ranked_dicts.append(s_dict)
 
     return jsonify({
         "status": "success",
         "query": query,
+        "model_used": embedder_model or getattr(embedding_engine, "model", "default"),
         "selected_agent": target_agent.to_dict() if target_agent else None,
         "similarity_score": round(top_score, 4),
         "similarity_percent": f"{round(top_score * 100, 1)}%",
-        "threshold": round(router.threshold, 4),
+        "top_specialized_agent": top_spec.to_dict() if top_spec else None,
+        "top_specialized_score": round(top_spec.score, 4) if top_spec else 0.0,
+        "threshold": round(effective_thresh, 4),
         "is_default_fallback": is_fallback,
         "explanation": explanation,
         "routing_latency_ms": round(route_ms, 2),
-        "ranked_scores": [s.to_dict() for s in ranked]
+        "ranked_scores": ranked_dicts
     })
 
 @app.route("/api/router/chat", methods=["POST"])

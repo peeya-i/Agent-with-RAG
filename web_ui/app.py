@@ -693,7 +693,7 @@ def router_test_route():
     router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
     data = request.get_json(silent=True) or {}
     try:
-        r = requests.post(f"{router_url}/api/router/test_route", json=data, timeout=5)
+        r = requests.post(f"{router_url}/api/router/test_route", json=data, timeout=30)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
@@ -710,6 +710,229 @@ def router_get_or_set_threshold():
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "error", "message": f"Agents router unreachable: {e}", "threshold": 0.50}), 502
+
+# ==============================================================================
+# Semantic Lab Endpoints
+# ==============================================================================
+
+@app.route("/api/semantic_lab/context", methods=["GET"])
+def get_semantic_lab_context():
+    """Returns available models, registered agents, and loaded skills for Semantic Lab."""
+    # 1. Fetch agents from router
+    agents = []
+    threshold = 0.50
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        r_agents = requests.get(f"{router_url}/api/router/agents", timeout=5)
+        if r_agents.ok:
+            agents_data = r_agents.json()
+            agents = agents_data.get("agents", [])
+            threshold = agents_data.get("threshold", 0.50)
+    except Exception as e:
+        app.logger.warning(f"Error fetching agents for semantic lab: {e}")
+
+    # 2. Fetch skills directly and parse SKILL.md files
+    skills = []
+    candidate_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "skills"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents", "skills"),
+        os.path.join(os.getcwd(), "agents", "skills"),
+        "/app/agents/skills",
+        "/home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/agents/skills"
+    ]
+    for p in candidate_paths:
+        if os.path.exists(p) and os.path.isdir(p):
+            for entry in os.scandir(p):
+                if entry.is_dir():
+                    md_path = os.path.join(entry.path, "SKILL.md")
+                    if os.path.exists(md_path):
+                        try:
+                            with open(md_path, "r", encoding="utf-8") as f:
+                                raw_content = f.read()
+                            name = entry.name
+                            desc = ""
+                            triggers = []
+                            # parse frontmatter
+                            fm_match = re.search(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_content, re.DOTALL)
+                            if fm_match:
+                                fm_text = fm_match.group(1)
+                                n_match = re.search(r"^name:\s*(.+)$", fm_text, re.MULTILINE)
+                                if n_match:
+                                    name = n_match.group(1).strip()
+                                d_match = re.search(r"^description:\s*(.+)$", fm_text, re.MULTILINE)
+                                if d_match:
+                                    desc = d_match.group(1).strip()
+                                t_matches = re.findall(r"^\s*-\s*(.+)$", fm_text, re.MULTILINE)
+                                if t_matches:
+                                    triggers = [t.strip() for t in t_matches]
+                            skills.append({
+                                "name": name,
+                                "folder": entry.name,
+                                "description": desc,
+                                "triggers": triggers,
+                                "raw_content": raw_content
+                            })
+                        except Exception as e:
+                            app.logger.warning(f"Error reading skill {entry.name}: {e}")
+            if skills:
+                break
+
+    # Fallback to doc_rag skills API if local folder is empty/unmounted
+    if not skills:
+        doc_rag_url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+        try:
+            r_skills = requests.get(f"{doc_rag_url}/api/rag/skills/list", timeout=5)
+            if r_skills.ok:
+                skills = r_skills.json().get("skills", [])
+        except Exception as e:
+            app.logger.warning(f"Error fetching skills from doc_rag fallback: {e}")
+
+    # 3. Models
+    models = []
+    active_model = "bge-large:latest"
+    try:
+        m_resp = get_vectordb_models()
+        if hasattr(m_resp, "get_json"):
+            m_data = m_resp.get_json()
+            models = m_data.get("models", [])
+            active_model = m_data.get("active_model", active_model)
+    except Exception as e:
+        app.logger.warning(f"Error getting models for semantic lab: {e}")
+
+    return jsonify({
+        "status": "success",
+        "agents": agents,
+        "agent_threshold": threshold,
+        "skills": skills,
+        "models": models,
+        "active_model": active_model
+    })
+
+@app.route("/api/semantic_lab/test_skills", methods=["POST"])
+def semantic_lab_test_skills():
+    """Queries doc_RAG for skill vector matches given a prompt and threshold."""
+    data = request.get_json(silent=True) or {}
+    query = (data.get("query") or data.get("message") or "").strip()
+    threshold = float(data.get("threshold", 0.20))
+    limit = int(data.get("limit", 4))
+    draft_skill = data.get("draft_skill")
+
+    if not query:
+        return jsonify({"status": "error", "message": "Query cannot be empty"}), 400
+
+    doc_rag_url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    embedder_model = (data.get("embedder_model") or data.get("model") or "").strip() or None
+    if embedder_model == "default":
+        embedder_model = None
+    try:
+        req_payload = {
+            "db_type": "skill",
+            "query": query,
+            "threshold": threshold,
+            "k": limit,
+            "model": embedder_model,
+            "embedder_model": embedder_model,
+            "invoker": "Semantic Lab"
+        }
+        if draft_skill:
+            req_payload["draft_skill"] = draft_skill
+        r = requests.post(f"{doc_rag_url}/api/rag/query", json=req_payload, timeout=30)
+        if r.ok:
+            res_json = r.json()
+            results = res_json.get("results", [])
+            return jsonify({
+                "status": "success",
+                "query": query,
+                "threshold": threshold,
+                "matches": results,
+                "match_count": len(results)
+            })
+        else:
+            return jsonify({"status": "error", "message": f"Doc RAG returned {r.status_code}"}), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Error querying skills: {e}"}), 502
+
+@app.route("/api/semantic_lab/batch_eval", methods=["POST"])
+def semantic_lab_batch_eval():
+    """Runs batch evaluation of multiple prompts against agents and skills."""
+    data = request.get_json(silent=True) or {}
+    prompts = data.get("prompts", [])
+    if isinstance(prompts, str):
+        prompts = [p.strip() for p in prompts.split("\n") if p.strip()]
+
+    agent_threshold = float(data.get("agent_threshold", 0.50))
+    skill_threshold = float(data.get("skill_threshold", 0.20))
+    embedder_model = (data.get("embedder_model") or data.get("model") or "").strip() or None
+    draft_agents = data.get("draft_agents")
+    pipeline_mode = data.get("mode", "full")
+
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    doc_rag_url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+
+    results = []
+    start_all = time.time()
+
+    for p in prompts[:20]:  # Cap at 20 prompts
+        p_res = {
+            "prompt": p,
+            "selected_agent": "None",
+            "agent_score": 0.0,
+            "is_fallback": False,
+            "agent_status": "N/A",
+            "top_skill": "None",
+            "skill_score": 0.0,
+            "decision": "OK"
+        }
+
+        # 1. Agent evaluation
+        if pipeline_mode in ["full", "agents"]:
+            try:
+                ar = requests.post(f"{router_url}/api/router/test_route", json={
+                    "query": p,
+                    "threshold": agent_threshold,
+                    "embedder_model": embedder_model,
+                    "draft_agents": draft_agents
+                }, timeout=30)
+                if ar.ok:
+                    aj = ar.json()
+                    sel = aj.get("selected_agent") or {}
+                    p_res["selected_agent"] = sel.get("name", "Unknown")
+                    p_res["agent_score"] = aj.get("similarity_score", 0.0)
+                    p_res["is_fallback"] = aj.get("is_default_fallback", False)
+                    p_res["agent_status"] = "Fallback" if p_res["is_fallback"] else "Specialized"
+            except Exception:
+                p_res["agent_status"] = "Error"
+
+        # 2. Skill evaluation
+        if pipeline_mode in ["full", "skills"]:
+            try:
+                sr = requests.post(f"{doc_rag_url}/api/rag/query", json={
+                    "db_type": "skill",
+                    "query": p,
+                    "threshold": skill_threshold,
+                    "k": 2,
+                    "model": embedder_model,
+                    "embedder_model": embedder_model,
+                    "invoker": "Semantic Lab"
+                }, timeout=30)
+                if sr.ok:
+                    sj = sr.json()
+                    matches = sj.get("results", [])
+                    if matches:
+                        p_res["top_skill"] = matches[0].get("name", "None")
+                        p_res["skill_score"] = matches[0].get("similarity_score", 0.0)
+            except Exception:
+                p_res["top_skill"] = "Error"
+
+        results.append(p_res)
+
+    total_time_ms = round((time.time() - start_all) * 1000, 2)
+    return jsonify({
+        "status": "success",
+        "results": results,
+        "total_prompts": len(results),
+        "total_latency_ms": total_time_ms
+    })
 
 def extract_evidence_from_logs(conv_id):
     """Pulls logs for a conversation from the Logging container and extracts skills and documents evidence."""

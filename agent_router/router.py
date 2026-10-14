@@ -103,13 +103,20 @@ class VectorRouter:
         self.embedding_engine = embedding_engine or registry.embedding_engine
         self.threshold = threshold
 
-    def decide_route(self, query: str) -> (AgentInfo, float, List[AgentMatchScore], bool, str, float):
+    def decide_route(
+        self,
+        query: str,
+        threshold: Optional[float] = None,
+        candidate_agents: Optional[List[AgentInfo]] = None,
+        model: Optional[str] = None
+    ) -> (AgentInfo, float, List[AgentMatchScore], bool, str, float):
         """Calculates embeddings, scores active agents, and selects either a specialized agent or fallback."""
         start_time = time.time()
-        query_vec = self.embedding_engine.embed_text(query)
+        effective_threshold = threshold if threshold is not None else self.threshold
+        query_vec = self.embedding_engine.embed_text(query, model=model)
 
-        all_agents = self.registry.list_all_agents()
-        default_agent = self.registry.get_default_agent()
+        all_agents = candidate_agents if candidate_agents is not None else self.registry.list_all_agents()
+        default_agent = next((a for a in all_agents if a.is_default), None) or self.registry.get_default_agent()
 
         if not all_agents:
             routing_latency = (time.time() - start_time) * 1000.0
@@ -117,15 +124,13 @@ class VectorRouter:
 
         scored: List[AgentMatchScore] = []
 
-        # Score every registered agent
+        # Score every candidate agent
         for agent in all_agents:
-            if agent.embedding is None:
-                agent.embedding = self.embedding_engine.embed_text(agent.get_embedding_text())
-            if not getattr(agent, "sample_embeddings", None) and agent.sample_prompts:
-                agent.sample_embeddings = [self.embedding_engine.embed_text(p) for p in agent.sample_prompts]
+            agent_vec = agent.get_embedding_for_model(self.embedding_engine, model=model)
+            sample_vecs = agent.get_sample_embeddings_for_model(self.embedding_engine, model=model)
 
-            sims = [self.embedding_engine.compute_similarity(query_vec, agent.embedding)]
-            for s_emb in getattr(agent, "sample_embeddings", []):
+            sims = [self.embedding_engine.compute_similarity(query_vec, agent_vec)]
+            for s_emb in sample_vecs:
                 sims.append(self.embedding_engine.compute_similarity(query_vec, s_emb))
             sim = max(sims) if sims else 0.0
 
@@ -138,6 +143,9 @@ class VectorRouter:
                 is_default=agent.is_default,
             ))
 
+        # Sort all scored agents descending by similarity score
+        scored.sort(key=lambda x: x.score, reverse=True)
+
         # Sort specialized agents descending by similarity
         specialized_scored = [s for s in scored if not s.is_default]
         specialized_scored.sort(key=lambda x: x.score, reverse=True)
@@ -147,12 +155,13 @@ class VectorRouter:
         # Check if we have a specialized candidate
         if specialized_scored:
             top_match = specialized_scored[0]
-            # Rule: Match must be HIGHER than 50% (0.50)
-            if top_match.score > self.threshold:
+            # Rule: Match must be HIGHER than threshold
+            default_score = next((s.score for s in scored if s.is_default), 0.0)
+            if top_match.score > effective_threshold:
                 if top_match.is_available:
-                    target_agent = self.registry.get_agent(top_match.agent_id)
+                    target_agent = next((a for a in all_agents if a.id == top_match.agent_id), None) or self.registry.get_agent(top_match.agent_id)
                     explanation = (
-                        f"Specialized match '{top_match.agent_name}' exceeded {int(self.threshold * 100)}% threshold "
+                        f"Specialized match '{top_match.agent_name}' exceeded {int(effective_threshold * 100)}% threshold "
                         f"with score {top_match.score:.4f} ({top_match.score * 100:.1f}%)."
                     )
                     return target_agent, top_match.score, scored, False, explanation, routing_latency
@@ -161,18 +170,20 @@ class VectorRouter:
                         f"Top specialized agent '{top_match.agent_name}' matched at {top_match.score * 100:.1f}%, "
                         f"but status is DOWN. Falling back to default agents container."
                     )
-                    return default_agent, top_match.score, scored, True, explanation, routing_latency
+                    return default_agent, default_score, scored, True, explanation, routing_latency
             else:
+                default_score = next((s.score for s in scored if s.is_default), 0.0)
                 explanation = (
-                    f"No specialized agent matched above {int(self.threshold * 100)}% threshold "
+                    f"No specialized agent matched above {int(effective_threshold * 100)}% threshold "
                     f"(best candidate '{top_match.agent_name}' scored {top_match.score * 100:.1f}%). "
                     f"Defaulting to primary agents container."
                 )
-                return default_agent, top_match.score, scored, True, explanation, routing_latency
+                return default_agent, default_score, scored, True, explanation, routing_latency
 
         # If no specialized agent is registered, use default
+        default_score = next((s.score for s in scored if s.is_default), 0.0)
         explanation = "No specialized agents registered. Defaulting to primary agents container."
-        return default_agent, 0.0, scored, True, explanation, routing_latency
+        return default_agent, default_score, scored, True, explanation, routing_latency
 
     def forward_request(
         self,

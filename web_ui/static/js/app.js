@@ -169,6 +169,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof loadIngestionStats === 'function') loadIngestionStats();
       } else if (targetId === 'page-agents') {
         if (typeof loadAgentsData === 'function') loadAgentsData();
+      } else if (targetId === 'page-semantic-lab') {
+        if (typeof loadSemanticLabData === 'function') loadSemanticLabData();
       } else if (targetId === 'page-containers') {
         if (typeof loadContainers === 'function') loadContainers();
       } else if (targetId === 'page-auth') {
@@ -220,12 +222,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   // Shutdown Confirmation Flow
   // ---------------------------------------------------------------------------
-  btnShutdown.addEventListener('click', () => {
-    shutdownConfirmInput.value = '';
-    btnConfirmShutdown.disabled = true;
-    shutdownModal.classList.remove('hidden');
-    shutdownConfirmInput.focus();
-  });
+  if (btnShutdown) {
+    btnShutdown.addEventListener('click', () => {
+      shutdownConfirmInput.value = '';
+      btnConfirmShutdown.disabled = true;
+      shutdownModal.classList.remove('hidden');
+      shutdownConfirmInput.focus();
+    });
+  }
 
   shutdownConfirmInput.addEventListener('input', () => {
     btnConfirmShutdown.disabled = (shutdownConfirmInput.value.trim() !== 'Shutdown the services');
@@ -3803,10 +3807,688 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // SEMANTIC LAB CONTROLLER (Prompts, Embeddings, Agents & Skills Lab)
+  // ---------------------------------------------------------------------------
+  let semLabCachedAgents = [];
+  let semLabCachedSkills = [];
+  let semLabCachedModels = [];
+  let semLabCurrentInputMode = 'single'; // 'single' | 'batch'
+
+  const semLabSinglePromptBox = document.getElementById('semLabSinglePromptBox');
+  const semLabBatchPromptBox = document.getElementById('semLabBatchPromptBox');
+  const btnSemLabModeSingle = document.getElementById('btnSemLabModeSingle');
+  const btnSemLabModeBatch = document.getElementById('btnSemLabModeBatch');
+  const semLabSingleInput = document.getElementById('semLabSingleInput');
+  const semLabBatchInput = document.getElementById('semLabBatchInput');
+
+  const btnSemLabTabAgentDraft = document.getElementById('btnSemLabTabAgentDraft');
+  const btnSemLabTabSkillDraft = document.getElementById('btnSemLabTabSkillDraft');
+  const semLabAgentDraftBox = document.getElementById('semLabAgentDraftBox');
+  const semLabSkillDraftBox = document.getElementById('semLabSkillDraftBox');
+
+  const semLabAgentThreshold = document.getElementById('semLabAgentThreshold');
+  const semLabAgentThresholdVal = document.getElementById('semLabAgentThresholdVal');
+  const semLabSkillThreshold = document.getElementById('semLabSkillThreshold');
+  const semLabSkillThresholdVal = document.getElementById('semLabSkillThresholdVal');
+
+  const semLabPipelineMode = document.getElementById('semLabPipelineMode');
+  const semLabEmbedderSelect = document.getElementById('semLabEmbedderSelect');
+  const semLabDraftTemplateSelect = document.getElementById('semLabDraftTemplateSelect');
+  const semLabDraftAgentName = document.getElementById('semLabDraftAgentName');
+  const semLabDraftAgentDesc = document.getElementById('semLabDraftAgentDesc');
+  const semLabDraftAgentSamples = document.getElementById('semLabDraftAgentSamples');
+  const semLabEnableDraftAgent = document.getElementById('semLabEnableDraftAgent');
+
+  const semLabSkillSelect = document.getElementById('semLabSkillSelect');
+  const semLabSkillRawContent = document.getElementById('semLabSkillRawContent');
+  const semLabSkillChunkCount = document.getElementById('semLabSkillChunkCount');
+
+  // Sliders
+  if (semLabAgentThreshold && semLabAgentThresholdVal) {
+    semLabAgentThreshold.addEventListener('input', () => {
+      semLabAgentThresholdVal.textContent = parseFloat(semLabAgentThreshold.value).toFixed(2);
+    });
+  }
+  if (semLabSkillThreshold && semLabSkillThresholdVal) {
+    semLabSkillThreshold.addEventListener('input', () => {
+      semLabSkillThresholdVal.textContent = parseFloat(semLabSkillThreshold.value).toFixed(2);
+    });
+  }
+
+  // Mode Switchers
+  if (btnSemLabModeSingle && btnSemLabModeBatch) {
+    btnSemLabModeSingle.addEventListener('click', () => {
+      semLabCurrentInputMode = 'single';
+      btnSemLabModeSingle.classList.add('active');
+      btnSemLabModeBatch.classList.remove('active');
+      if (semLabSinglePromptBox) semLabSinglePromptBox.style.display = 'block';
+      if (semLabBatchPromptBox) semLabBatchPromptBox.style.display = 'none';
+      const batchCard = document.getElementById('semLabBatchResultsCard');
+      if (batchCard) batchCard.style.display = 'none';
+    });
+
+    btnSemLabModeBatch.addEventListener('click', () => {
+      semLabCurrentInputMode = 'batch';
+      btnSemLabModeBatch.classList.add('active');
+      btnSemLabModeSingle.classList.remove('active');
+      if (semLabSinglePromptBox) semLabSinglePromptBox.style.display = 'none';
+      if (semLabBatchPromptBox) semLabBatchPromptBox.style.display = 'block';
+    });
+  }
+
+  // Sandbox Tab Switchers
+  if (btnSemLabTabAgentDraft && btnSemLabTabSkillDraft) {
+    btnSemLabTabAgentDraft.addEventListener('click', () => {
+      btnSemLabTabAgentDraft.classList.add('active');
+      btnSemLabTabSkillDraft.classList.remove('active');
+      if (semLabAgentDraftBox) semLabAgentDraftBox.style.display = 'block';
+      if (semLabSkillDraftBox) semLabSkillDraftBox.style.display = 'none';
+    });
+
+    btnSemLabTabSkillDraft.addEventListener('click', () => {
+      btnSemLabTabSkillDraft.classList.add('active');
+      btnSemLabTabAgentDraft.classList.remove('active');
+      if (semLabAgentDraftBox) semLabAgentDraftBox.style.display = 'none';
+      if (semLabSkillDraftBox) semLabSkillDraftBox.style.display = 'block';
+    });
+  }
+
+  // Preset Chips
+  document.querySelectorAll('.sem-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = btn.getAttribute('data-prompt');
+      if (p) {
+        if (semLabCurrentInputMode !== 'single' && btnSemLabModeSingle) {
+          btnSemLabModeSingle.click();
+        }
+        if (semLabSingleInput) semLabSingleInput.value = p;
+        runSemanticLabEvaluation();
+      }
+    });
+  });
+
+  // Single Input Enter key
+  if (semLabSingleInput) {
+    semLabSingleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runSemanticLabEvaluation();
+    });
+  }
+
+  // Embedder Select change: Auto re-evaluate if prompt exists
+  if (semLabEmbedderSelect) {
+    semLabEmbedderSelect.addEventListener('change', () => {
+      if (semLabSingleInput && semLabSingleInput.value.trim() && semLabCurrentInputMode === 'single') {
+        runSemanticLabEvaluation();
+      }
+    });
+  }
+
+  // Template select populate
+  if (semLabDraftTemplateSelect) {
+    semLabDraftTemplateSelect.addEventListener('change', () => {
+      const aId = semLabDraftTemplateSelect.value;
+      const target = semLabCachedAgents.find(a => a.id === aId);
+      if (target) {
+        if (semLabDraftAgentName) semLabDraftAgentName.value = target.name + ' (Draft Variant)';
+        if (semLabDraftAgentDesc) semLabDraftAgentDesc.value = target.description || '';
+        if (semLabDraftAgentSamples) semLabDraftAgentSamples.value = (target.sample_prompts || []).join('\n');
+        if (semLabEnableDraftAgent) semLabEnableDraftAgent.checked = true;
+      }
+    });
+  }
+
+  // Skill select populate
+  if (semLabSkillSelect) {
+    semLabSkillSelect.addEventListener('change', () => {
+      const sName = semLabSkillSelect.value;
+      const sObj = semLabCachedSkills.find(s => s.name === sName);
+      if (sObj) {
+        if (semLabSkillRawContent) semLabSkillRawContent.value = sObj.raw_content || '';
+        if (semLabSkillChunkCount) {
+          const charLen = (sObj.raw_content || '').length;
+          const chunksEst = Math.max(1, Math.ceil(charLen / 1000));
+          semLabSkillChunkCount.textContent = `${charLen} chars (~${chunksEst} chunks)`;
+        }
+      } else {
+        if (semLabSkillRawContent) semLabSkillRawContent.value = '';
+        if (semLabSkillChunkCount) semLabSkillChunkCount.textContent = '0 Chunks';
+      }
+    });
+  }
+
+  if (semLabSkillRawContent) {
+    semLabSkillRawContent.addEventListener('input', () => {
+      if (semLabSkillChunkCount) {
+        const charLen = semLabSkillRawContent.value.length;
+        const chunksEst = Math.max(1, Math.ceil(charLen / 1000));
+        semLabSkillChunkCount.textContent = `${charLen} chars (~${chunksEst} chunks, edited)`;
+      }
+    });
+  }
+
+  // Load Semantic Lab Context Data
+  async function loadSemanticLabData() {
+    try {
+      const res = await fetch('/api/semantic_lab/context');
+      if (!res.ok) return;
+      const data = await res.json();
+
+      semLabCachedAgents = data.agents || [];
+      semLabCachedSkills = data.skills || [];
+      semLabCachedModels = data.models || [];
+
+      // 1. Update embedder dropdown
+      if (semLabEmbedderSelect) {
+        semLabEmbedderSelect.innerHTML = `<option value="default">Active Embedder (${escapeHtml(data.active_model || 'Auto')})</option>`;
+        semLabCachedModels.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.name;
+          opt.textContent = `${m.name} (${m.status})`;
+          semLabEmbedderSelect.appendChild(opt);
+        });
+      }
+
+      // 2. Update draft template select
+      if (semLabDraftTemplateSelect) {
+        semLabDraftTemplateSelect.innerHTML = '<option value="">-- Choose template or create new --</option>';
+        semLabCachedAgents.forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = `${a.name} [${a.status.toUpperCase()}]`;
+          semLabDraftTemplateSelect.appendChild(opt);
+        });
+      }
+
+      // 3. Update skill select
+      if (semLabSkillSelect) {
+        semLabSkillSelect.innerHTML = '<option value="">-- Select a Skill to Inspect --</option>';
+        semLabCachedSkills.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s.name;
+          opt.textContent = `${s.name} (${(s.triggers || []).length} triggers)`;
+          semLabSkillSelect.appendChild(opt);
+        });
+        if (semLabCachedSkills.length > 0) {
+          semLabSkillSelect.value = semLabCachedSkills[0].name;
+          semLabSkillSelect.dispatchEvent(new Event('change'));
+        }
+      }
+
+      // 4. Default thresholds
+      if (semLabAgentThreshold && !semLabAgentThreshold.hasAttribute('data-touched')) {
+        semLabAgentThreshold.value = data.agent_threshold || 0.50;
+        if (semLabAgentThresholdVal) semLabAgentThresholdVal.textContent = parseFloat(semLabAgentThreshold.value).toFixed(2);
+      }
+    } catch (e) {
+      console.warn('Error loading semantic lab context:', e);
+    }
+  }
+
+  // Run Semantic Lab Evaluation
+  async function runSemanticLabEvaluation() {
+    const btnRun = document.getElementById('btnRunSemLab');
+    const oldBtnText = btnRun ? btnRun.innerHTML : '';
+    if (btnRun) {
+      btnRun.disabled = true;
+      btnRun.innerHTML = '<span class="icon">⏳</span> Evaluating...';
+    }
+
+    const mode = (semLabPipelineMode ? semLabPipelineMode.value : 'full');
+    const agentThresh = parseFloat(semLabAgentThreshold ? semLabAgentThreshold.value : 0.50);
+    const skillThresh = parseFloat(semLabSkillThreshold ? semLabSkillThreshold.value : 0.20);
+    const embedderModel = (semLabEmbedderSelect && semLabEmbedderSelect.value) ? semLabEmbedderSelect.value : 'default';
+
+    // Build draft agent if enabled
+    let draftAgents = null;
+    if (semLabEnableDraftAgent && semLabEnableDraftAgent.checked) {
+      const dName = (semLabDraftAgentName ? semLabDraftAgentName.value : '').trim() || 'Draft Specialist Agent';
+      const dDesc = (semLabDraftAgentDesc ? semLabDraftAgentDesc.value : '').trim();
+      const dSamplesRaw = (semLabDraftAgentSamples ? semLabDraftAgentSamples.value : '').trim();
+      const dSamples = dSamplesRaw ? dSamplesRaw.split('\n').map(s => s.trim()).filter(s => s.length > 0) : [];
+      
+      draftAgents = [
+        ...semLabCachedAgents.map(a => ({
+          id: a.id,
+          name: a.name,
+          description: a.description,
+          url: a.url,
+          sample_prompts: a.sample_prompts,
+          status: a.status,
+          is_default: a.is_default
+        })),
+        {
+          id: 'draft-sandbox-agent',
+          name: dName,
+          description: dDesc,
+          url: 'http://draft_agent:8000',
+          sample_prompts: dSamples,
+          status: 'up',
+          is_default: false,
+          metadata: { registration_type: 'Draft Sandbox' }
+        }
+      ];
+    }
+
+    const tStart = performance.now();
+
+    try {
+      if (semLabCurrentInputMode === 'single') {
+        const query = (semLabSingleInput ? semLabSingleInput.value : '').trim();
+        if (!query) {
+          alert('Please enter a test prompt.');
+          return;
+        }
+
+        // Parallel execution for single prompt
+        const promises = [];
+        if (mode === 'full' || mode === 'agents') {
+          promises.push(
+            fetch('/api/router/test_route', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query: query,
+                threshold: agentThresh,
+                embedder_model: embedderModel,
+                draft_agents: draftAgents
+              })
+            }).then(r => r.json()).catch(err => ({ status: 'error', message: err.message }))
+          );
+        } else {
+          promises.push(Promise.resolve(null));
+        }
+
+        if (mode === 'full' || mode === 'skills') {
+          let draftSkill = null;
+          const skillContent = (semLabSkillRawContent ? semLabSkillRawContent.value : '').trim();
+          const selectedSkill = (semLabSkillSelect ? semLabSkillSelect.value : '');
+          if (skillContent && selectedSkill) {
+            const cachedOrig = (semLabCachedSkills || []).find(s => s.name === selectedSkill);
+            if (!cachedOrig || cachedOrig.raw_content !== skillContent) {
+              draftSkill = {
+                name: selectedSkill,
+                content: skillContent
+              };
+            }
+          }
+
+          promises.push(
+            fetch('/api/semantic_lab/test_skills', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query: query,
+                threshold: skillThresh,
+                embedder_model: embedderModel,
+                limit: 5,
+                draft_skill: draftSkill
+              })
+            }).then(r => r.json()).catch(err => ({ status: 'error', message: err.message }))
+          );
+        } else {
+          promises.push(Promise.resolve(null));
+        }
+
+        const [agentRes, skillRes] = await Promise.all(promises);
+        const elapsed = Math.round(performance.now() - tStart);
+
+        renderSemanticLabSingleResults(query, agentRes, skillRes, elapsed, agentThresh, skillThresh, mode);
+      } else {
+        // Batch Mode
+        const batchRaw = (semLabBatchInput ? semLabBatchInput.value : '').trim();
+        const prompts = batchRaw.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+        if (prompts.length === 0) {
+          alert('Please enter at least one test prompt in the batch suite.');
+          return;
+        }
+
+        const res = await fetch('/api/semantic_lab/batch_eval', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompts: prompts,
+            agent_threshold: agentThresh,
+            skill_threshold: skillThresh,
+            embedder_model: embedderModel,
+            mode: mode,
+            draft_agents: draftAgents
+          })
+        });
+        const data = await res.json();
+        const elapsed = Math.round(performance.now() - tStart);
+
+        renderSemanticLabBatchResults(data, elapsed);
+      }
+    } catch (e) {
+      alert('Error running semantic lab evaluation: ' + e.message);
+    } finally {
+      if (btnRun) {
+        btnRun.disabled = false;
+        btnRun.innerHTML = oldBtnText;
+      }
+    }
+  }
+
+  // Render Single Results
+  function renderSemanticLabSingleResults(query, agentRes, skillRes, latencyMs, agentThresh, skillThresh, mode = 'full') {
+    // 1. Metric tiles
+    const latEl = document.getElementById('semLabMetricLatency');
+    const agentEl = document.getElementById('semLabMetricAgent');
+    const skillEl = document.getElementById('semLabMetricSkill');
+    const statusEl = document.getElementById('semLabMetricStatus');
+
+    if (latEl) latEl.textContent = `${latencyMs} ms`;
+
+    // 2. Agent Card Rendering
+    const winnerNameEl = document.getElementById('semLabWinnerName');
+    const winnerReasonEl = document.getElementById('semLabWinnerReason');
+    const rankedListEl = document.getElementById('semLabRankedAgentsList');
+    const agentBadgeEl = document.getElementById('semLabAgentBadge');
+    const agentExplainEl = document.getElementById('semLabAgentExplainBox');
+
+    if (agentRes && agentRes.status === 'success') {
+      const selected = agentRes.selected_agent;
+      const isFallback = agentRes.is_default_fallback;
+      const topScore = agentRes.similarity_score;
+      const topScorePct = agentRes.similarity_percent || `${Math.round(topScore * 100)}%`;
+      const topSpec = agentRes.top_specialized_agent;
+      const topSpecScore = agentRes.top_specialized_score !== undefined ? agentRes.top_specialized_score : (topSpec ? topSpec.score : 0);
+
+      if (agentEl) {
+        agentEl.textContent = selected ? `${selected.name}${isFallback ? ' (Fallback)' : ` (${topScorePct})`}` : 'None';
+      }
+      if (statusEl) {
+        statusEl.textContent = isFallback ? '🛡️ Fallback Default' : '🎯 Specialized Routed';
+        statusEl.style.color = isFallback ? '#fbbf24' : '#34d399';
+      }
+
+      if (agentBadgeEl) {
+        agentBadgeEl.textContent = isFallback ? 'Default Fallback' : 'Specialized Match';
+        agentBadgeEl.className = 'status-badge ' + (isFallback ? 'offline' : 'active');
+      }
+
+      const winnerLabelEl = document.getElementById('semLabWinnerLabel');
+      if (winnerLabelEl) {
+        winnerLabelEl.textContent = isFallback
+          ? 'Routed Destination (Default Fallback):'
+          : 'Winning Candidate Agent (Specialized Match):';
+      }
+
+      if (winnerNameEl) {
+        if (isFallback) {
+          winnerNameEl.innerHTML = `
+            <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+              <span style="color: #fbbf24;">🛡️ ${selected ? escapeHtml(selected.name) : 'Default Fallback Agent'}</span>
+              <span style="font-size: 0.85rem; color: #fbbf24; font-weight: 700;">(${topScorePct})</span>
+              <span style="font-size: 0.72rem; background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); padding: 2px 7px; border-radius: 4px;">FALLBACK ROUTED</span>
+            </div>
+          `;
+        } else {
+          winnerNameEl.innerHTML = `
+            <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+              <span style="color: #34d399;">🎯 ${selected ? escapeHtml(selected.name) : 'Specialized Agent'}</span>
+              <span style="font-size: 0.85rem; color: #34d399; font-weight: 700;">(${topScorePct})</span>
+              <span style="font-size: 0.72rem; background: rgba(52, 211, 153, 0.15); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.3); padding: 2px 7px; border-radius: 4px;">SPECIALIZED ROUTED</span>
+            </div>
+          `;
+        }
+      }
+
+      if (winnerReasonEl) {
+        let reasonHtml = `<div style="margin-top: 4px; line-height: 1.4;">${escapeHtml(agentRes.explanation || '')}</div>`;
+        if (isFallback && topSpec) {
+          const specPct = Math.round(topSpecScore * 100);
+          reasonHtml += `<div style="margin-top: 6px; font-size: 0.78rem; color: #94a3b8;">Highest specialized candidate: <strong style="color: #f1f5f9;">${escapeHtml(topSpec.name || topSpec.agent_name)}</strong> scored <strong style="color: #fbbf24;">${specPct}% (${topSpecScore.toFixed(4)})</strong> — below the required ${Math.round(agentThresh * 100)}% minimum threshold.</div>`;
+        }
+        if (agentRes.model_used) {
+          reasonHtml += `<div style="font-size: 0.72rem; color: #64748b; margin-top: 4px;">Model Used: <code style="color: #38bdf8;">${escapeHtml(agentRes.model_used)}</code></div>`;
+        }
+        winnerReasonEl.innerHTML = reasonHtml;
+      }
+
+      // Ranked progress bars (sorted descending)
+      if (rankedListEl) {
+        const ranked = (agentRes.ranked_scores || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+        if (ranked.length === 0) {
+          rankedListEl.innerHTML = `<div class="text-muted" style="text-align: center; padding: 20px;">No candidate agents registered.</div>`;
+        } else {
+          rankedListEl.innerHTML = ranked.map(r => {
+            const score = r.score || 0;
+            const pct = Math.min(100, Math.round(score * 100));
+            const isWinner = selected && selected.id === r.agent_id;
+            const exceeds = score > agentThresh;
+            let barColor = exceeds ? '#10b981' : '#64748b';
+            if (r.is_default) barColor = '#3b82f6';
+            if (r.status === 'down') barColor = '#ef4444';
+
+            return `
+              <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${isWinner ? '#38bdf8' : '#334155'}; border-radius: 6px; padding: 8px 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <div style="font-weight: 700; font-size: 0.82rem; color: ${isWinner ? '#38bdf8' : '#f1f5f9'};">
+                    ${isWinner ? '👑 ' : ''}${escapeHtml(r.agent_name)}
+                    ${r.is_default ? '<span style="font-size: 0.68rem; color: #94a3b8; font-weight: normal; margin-left: 4px;">(Default Fallback)</span>' : ''}
+                    ${r.agent_id === 'draft-sandbox-agent' ? '<span style="font-size: 0.68rem; background: #7c3aed; color: #fff; padding: 1px 5px; border-radius: 3px; margin-left: 4px;">DRAFT VARIANT</span>' : ''}
+                  </div>
+                  <div style="font-weight: 700; font-size: 0.82rem; color: ${barColor};">
+                    ${pct}% <span style="font-size: 0.72rem; color: #94a3b8;">(${score.toFixed(4)})</span>
+                  </div>
+                </div>
+                <div style="height: 6px; width: 100%; background: #1e293b; border-radius: 3px; overflow: hidden;">
+                  <div style="height: 100%; width: ${pct}%; background: ${barColor}; transition: width 0.4s ease;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #94a3b8; margin-top: 4px;">
+                  <span>Status: <strong style="color: ${r.status === 'up' ? '#34d399' : '#f87171'}">${(r.status || 'up').toUpperCase()}</strong></span>
+                  <span>${exceeds ? '✅ Exceeds ' + Math.round(agentThresh * 100) + '% min' : '⚠️ Below ' + Math.round(agentThresh * 100) + '% min'}</span>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      // Explainability details
+      if (agentExplainEl) {
+        const ranked = agentRes.ranked_scores || [];
+        agentExplainEl.innerHTML = `
+          <div style="margin-bottom: 8px;">
+            <strong style="color: #cbd5e1;">Query Vectorized:</strong>
+            <pre style="background: #0f172a; padding: 6px 10px; border-radius: 4px; color: #38bdf8; margin: 4px 0;">"${escapeHtml(query)}"</pre>
+          </div>
+          <div style="margin-top: 6px;">
+            <strong style="color: #cbd5e1;">Agent Text Representations Sent to Vectorizer:</strong>
+            ${ranked.map(r => `
+              <div style="margin-top: 6px; padding: 6px; background: #0f172a; border-left: 3px solid #38bdf8; border-radius: 2px;">
+                <div style="font-weight: 700; color: #f1f5f9; font-size: 0.75rem;">${escapeHtml(r.agent_name)} (${r.agent_id}):</div>
+                <pre style="font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; margin: 4px 0;">${escapeHtml(r.embedding_text || 'No representation cached')}</pre>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+    } else if (agentRes && agentRes.status === 'error') {
+      if (agentEl) agentEl.textContent = 'Error';
+      if (statusEl) {
+        statusEl.textContent = '❌ Evaluation Error';
+        statusEl.style.color = '#ef4444';
+      }
+      if (agentBadgeEl) {
+        agentBadgeEl.textContent = 'Error';
+        agentBadgeEl.className = 'status-badge offline';
+      }
+      if (winnerNameEl) winnerNameEl.innerHTML = '<span style="color: #ef4444;">Evaluation Error</span>';
+      if (winnerReasonEl) winnerReasonEl.textContent = agentRes.message || 'Error communicating with agents router';
+      if (rankedListEl) rankedListEl.innerHTML = `<div style="color: #f87171; padding: 12px; font-size: 0.8rem;">${escapeHtml(agentRes.message || 'Error communicating with agents router')}</div>`;
+    } else if (mode === 'skills') {
+      if (agentBadgeEl) {
+        agentBadgeEl.textContent = 'Skipped (Skills Mode)';
+        agentBadgeEl.className = 'status-badge offline';
+      }
+      if (winnerNameEl) winnerNameEl.textContent = 'Skipped in Skills Mode';
+      if (winnerReasonEl) winnerReasonEl.textContent = 'Pipeline mode is currently set to "Skills Search Only".';
+      if (rankedListEl) rankedListEl.innerHTML = '<div class="text-muted" style="text-align: center; padding: 14px; font-size: 0.8rem;">Agent routing evaluation skipped.</div>';
+    }
+
+    // 3. Skills Card Rendering
+    const matchedSkillsListEl = document.getElementById('semLabMatchedSkillsList');
+    const skillBadgeEl = document.getElementById('semLabSkillBadge');
+    const activatedSkillsTextEl = document.getElementById('semLabActivatedSkillsText');
+    const skillExplainEl = document.getElementById('semLabSkillExplainBox');
+
+    if (skillRes && skillRes.status === 'success') {
+      const rawMatches = skillRes.matches || [];
+      // Deduplicate skills by unique name, keeping highest scoring match
+      const seenSkills = new Set();
+      const matches = [];
+      for (const m of rawMatches) {
+        const k = (m.name || m.skill_name || '').trim().toLowerCase();
+        if (k && !seenSkills.has(k)) {
+          seenSkills.add(k);
+          matches.push(m);
+        }
+      }
+
+      const activatedSkills = matches.slice(0, 2); // Top 2 unique skills pass to prompt
+
+      if (skillEl) {
+        skillEl.textContent = activatedSkills.length > 0 ? activatedSkills.map(s => s.name).join(', ') : 'None';
+      }
+
+      if (activatedSkillsTextEl) {
+        activatedSkillsTextEl.textContent = activatedSkills.length > 0
+          ? activatedSkills.map(s => `${s.name} (${Math.round((s.similarity_score || 0) * 100)}%)`).join(', ')
+          : 'None (Scores below ' + Math.round(skillThresh * 100) + '% threshold)';
+      }
+
+      if (skillBadgeEl) {
+        skillBadgeEl.textContent = `${matches.length} Skill Match(es)`;
+        skillBadgeEl.className = 'status-badge ' + (matches.length > 0 ? 'active' : 'offline');
+      }
+
+      if (matchedSkillsListEl) {
+        if (matches.length === 0) {
+          matchedSkillsListEl.innerHTML = `<div class="text-muted" style="font-size: 0.8rem; text-align: center; padding: 20px;">No skills met the ${Math.round(skillThresh * 100)}% minimum similarity threshold for this query.</div>`;
+        } else {
+          matchedSkillsListEl.innerHTML = matches.map((s, idx) => {
+            const score = s.similarity_score || 0;
+            const pct = Math.min(100, Math.round(score * 100));
+            const isActivated = idx < 2;
+
+            return `
+              <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${isActivated ? '#10b981' : '#334155'}; border-radius: 6px; padding: 8px 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <div style="font-weight: 700; font-size: 0.82rem; color: ${isActivated ? '#34d399' : '#f1f5f9'};">
+                    ${isActivated ? '⚡ ' : ''}${escapeHtml(s.name)}
+                    ${isActivated ? '<span style="font-size: 0.68rem; background: #065f46; color: #a7f3d0; padding: 1px 6px; border-radius: 3px; margin-left: 6px;">INJECTED IN LLM</span>' : ''}
+                  </div>
+                  <div style="font-weight: 700; font-size: 0.82rem; color: #34d399;">
+                    ${pct}% <span style="font-size: 0.72rem; color: #94a3b8;">(${score.toFixed(4)})</span>
+                  </div>
+                </div>
+                <div style="height: 6px; width: 100%; background: #1e293b; border-radius: 3px; overflow: hidden;">
+                  <div style="height: 100%; width: ${pct}%; background: #10b981; transition: width 0.4s ease;"></div>
+                </div>
+                <div style="font-size: 0.72rem; color: #cbd5e1; margin-top: 6px; font-style: italic; background: #0f172a; padding: 4px 8px; border-radius: 4px;">
+                  "${escapeHtml((s.chunk_text || s.text || '').substring(0, 150))}..."
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      if (skillExplainEl) {
+        skillExplainEl.innerHTML = `
+          <div style="margin-bottom: 6px;">
+            <strong style="color: #cbd5e1;">Query Vectorized:</strong>
+            <pre style="background: #0f172a; padding: 6px 10px; border-radius: 4px; color: #34d399; margin: 4px 0;">"${escapeHtml(query)}"</pre>
+          </div>
+          ${matches.map(s => `
+            <div style="margin-top: 6px; padding: 6px; background: #0f172a; border-left: 3px solid #10b981; border-radius: 2px;">
+              <div style="font-weight: 700; color: #34d399; font-size: 0.75rem;">Matched Skill: ${escapeHtml(s.name)} (Cosine Distance: ${(1.0 - (s.similarity_score || 0)).toFixed(4)}):</div>
+              <pre style="font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; margin: 4px 0;">${escapeHtml(s.chunk_text || s.text || '')}</pre>
+            </div>
+          `).join('')}
+        `;
+      }
+    } else if (skillRes && skillRes.status === 'error') {
+      if (skillEl) skillEl.textContent = 'Error';
+      if (skillBadgeEl) {
+        skillBadgeEl.textContent = 'Error';
+        skillBadgeEl.className = 'status-badge offline';
+      }
+      if (activatedSkillsTextEl) activatedSkillsTextEl.innerHTML = '<span style="color: #ef4444;">Query Error</span>';
+      if (matchedSkillsListEl) matchedSkillsListEl.innerHTML = `<div style="color: #f87171; padding: 12px; font-size: 0.8rem;">${escapeHtml(skillRes.message || 'Error querying skills')}</div>`;
+    } else if (mode === 'agents') {
+      if (skillBadgeEl) {
+        skillBadgeEl.textContent = 'Skipped (Agents Mode)';
+        skillBadgeEl.className = 'status-badge offline';
+      }
+      if (activatedSkillsTextEl) activatedSkillsTextEl.textContent = 'Skipped in Agents Mode';
+      if (matchedSkillsListEl) matchedSkillsListEl.innerHTML = '<div class="text-muted" style="text-align: center; padding: 14px; font-size: 0.8rem;">Skill vector query skipped.</div>';
+    }
+  }
+
+  // Render Batch Results
+  function renderSemanticLabBatchResults(data, elapsedMs) {
+    const batchCard = document.getElementById('semLabBatchResultsCard');
+    const tbody = document.getElementById('semLabBatchTbody');
+    const latEl = document.getElementById('semLabMetricLatency');
+    const statusEl = document.getElementById('semLabMetricStatus');
+
+    if (latEl) latEl.textContent = `${data.total_latency_ms || elapsedMs} ms`;
+    if (statusEl) {
+      statusEl.textContent = `Batch (${(data.results || []).length} Prompts)`;
+      statusEl.style.color = '#38bdf8';
+    }
+
+    if (batchCard) batchCard.style.display = 'block';
+
+    if (tbody) {
+      const results = data.results || [];
+      tbody.innerHTML = results.map(r => {
+        const isFallback = r.is_fallback;
+        const agentScorePct = Math.round((r.agent_score || 0) * 100);
+        const skillScorePct = Math.round((r.skill_score || 0) * 100);
+
+        return `
+          <tr>
+            <td><strong style="color: #f1f5f9;">${escapeHtml(r.prompt)}</strong></td>
+            <td>
+              <span style="color: ${isFallback ? '#fbbf24' : '#38bdf8'}; font-weight: 600;">
+                ${escapeHtml(r.selected_agent)}
+              </span>
+            </td>
+            <td style="text-align: center; font-weight: 700; color: ${agentScorePct > 50 ? '#34d399' : '#94a3b8'};">
+              ${agentScorePct}%
+            </td>
+            <td>
+              <span style="color: #a78bfa; font-weight: 600;">
+                ${escapeHtml(r.top_skill)}
+              </span>
+            </td>
+            <td style="text-align: center; font-weight: 700; color: ${skillScorePct > 20 ? '#34d399' : '#94a3b8'};">
+              ${skillScorePct}%
+            </td>
+            <td style="text-align: center;">
+              <span class="status-badge ${isFallback ? 'offline' : 'active'}" style="font-size: 0.72rem;">
+                ${isFallback ? 'Fallback' : 'Specialized'}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
+
+  window.loadSemanticLabData = loadSemanticLabData;
+  window.runSemanticLabEvaluation = runSemanticLabEvaluation;
+
   // Initial Data Load
   loadModelsAndSkills();
   loadContainers();
   loadAgentsData();
+  loadSemanticLabData();
   // Immediate health check ping on startup
   fetch('/api/router/agents/health_check_all', { method: 'POST' }).then(() => loadAgentsData()).catch(() => {});
 

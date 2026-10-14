@@ -2,18 +2,23 @@ import os
 import logging
 import math
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict
 import numpy as np
+import requests
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingEngine:
-    """Vector embedding engine supporting Google GenAI and local semantic fallback."""
+    """Vector embedding engine supporting Ollama models, Google GenAI, and local semantic fallback."""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, ollama_url: Optional[str] = None):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
-        self.model = model or os.environ.get("DEFAULT_EMBEDDING_MODEL", "gemini-embedding-001")
+        self.model = model or os.environ.get("DEFAULT_EMBEDDING_MODEL", "bge-large")
+        self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://ollama:11434")
+        if not os.environ.get("RUNNING_IN_DOCKER") and "ollama:11434" in self.ollama_url:
+            self.ollama_url = self.ollama_url.replace("ollama:11434", "127.0.0.1:11434")
         self._genai_client = None
+        self._cache: Dict[str, np.ndarray] = {}
         self._init_client()
 
     def _init_client(self):
@@ -21,37 +26,77 @@ class EmbeddingEngine:
             try:
                 from google import genai
                 self._genai_client = genai.Client(api_key=self.api_key)
-                logger.info(f"Initialized Google GenAI embedding client with model {self.model}")
+                logger.info("Initialized Google GenAI embedding client")
             except Exception as e:
-                logger.warning(f"Failed to initialize Google GenAI client: {e}. Falling back to local embeddings.")
+                logger.warning(f"Failed to initialize Google GenAI client: {e}.")
                 self._genai_client = None
         else:
-            logger.info("No Gemini API key provided. Using deterministic local semantic embedding engine.")
+            logger.info("No Gemini API key provided. Using Ollama / deterministic local semantic embedding engine.")
 
-    def embed_text(self, text: str) -> np.ndarray:
-        """Compute normalized embedding vector for a single text."""
+    def embed_text(self, text: str, model: Optional[str] = None) -> np.ndarray:
+        """Compute normalized embedding vector for a single text using specified or default model."""
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             cleaned_text = "empty"
 
-        if self._genai_client:
+        target_model = (model or self.model or "bge-large").strip()
+        # Normalize model aliases if necessary (e.g. bge-large:latest -> bge-large)
+        cache_key = f"{target_model}@@{cleaned_text}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        # 1. Try Ollama embedding if target_model is not Google GenAI model
+        is_gemini_model = any(target_model.lower().startswith(p) for p in ["gemini", "text-embedding"])
+        if not is_gemini_model and self.ollama_url:
             try:
+                # Try with exact name, and if it fails with stripped tag
+                resp = requests.post(
+                    f"{self.ollama_url}/api/embeddings",
+                    json={"model": target_model, "prompt": cleaned_text},
+                    timeout=10
+                )
+                if resp.status_code != 200 and ":" in target_model:
+                    resp = requests.post(
+                        f"{self.ollama_url}/api/embeddings",
+                        json={"model": target_model.split(":")[0], "prompt": cleaned_text},
+                        timeout=10
+                    )
+                if resp.status_code == 200:
+                    emb = resp.json().get("embedding", [])
+                    if emb:
+                        vec = np.array(emb, dtype=np.float32)
+                        norm = np.linalg.norm(vec)
+                        res = vec / norm if norm > 0 else vec
+                        self._cache[cache_key] = res
+                        return res
+            except Exception as e:
+                logger.debug(f"Ollama embedding ({target_model}) error: {e}")
+
+        # 2. Try Google GenAI
+        if self._genai_client and (is_gemini_model or not self.ollama_url):
+            try:
+                g_model = target_model if is_gemini_model else "gemini-embedding-001"
                 response = self._genai_client.models.embed_content(
-                    model=self.model,
+                    model=g_model,
                     contents=cleaned_text
                 )
                 if response.embeddings and len(response.embeddings) > 0:
                     vec = np.array(response.embeddings[0].values, dtype=np.float32)
                     norm = np.linalg.norm(vec)
-                    return vec / norm if norm > 0 else vec
+                    res = vec / norm if norm > 0 else vec
+                    self._cache[cache_key] = res
+                    return res
             except Exception as e:
                 logger.warning(f"Google GenAI embedding failed ({e}); falling back to local semantic embedding.")
 
-        return self._local_embed(cleaned_text)
+        # 3. Deterministic local semantic embedding fallback
+        res = self._local_embed(cleaned_text)
+        self._cache[cache_key] = res
+        return res
 
-    def embed_batch(self, texts: List[str]) -> List[np.ndarray]:
+    def embed_batch(self, texts: List[str], model: Optional[str] = None) -> List[np.ndarray]:
         """Compute normalized embedding vectors for multiple texts."""
-        return [self.embed_text(t) for t in texts]
+        return [self.embed_text(t, model=model) for t in texts]
 
     def _local_embed(self, text: str, dim: int = 384) -> np.ndarray:
         """Lightweight deterministic semantic hash + character n-gram local embedding."""

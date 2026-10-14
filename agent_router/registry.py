@@ -43,6 +43,8 @@ class AgentInfo:
         )
         self.embedding: Optional[np.ndarray] = None
         self.sample_embeddings: List[np.ndarray] = []
+        self.model_embeddings: Dict[str, np.ndarray] = {}
+        self.model_sample_embeddings: Dict[str, List[np.ndarray]] = {}
         self.queries_handled: int = 0
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.last_status_change = self.created_at
@@ -70,6 +72,24 @@ class AgentInfo:
             f"Description: {self.description}. "
             f"Capabilities & Typical Queries: {samples_joined}."
         )
+
+    def get_embedding_for_model(self, embedding_engine, model: Optional[str] = None) -> np.ndarray:
+        m_key = model or embedding_engine.model or "default"
+        if not hasattr(self, "model_embeddings") or self.model_embeddings is None:
+            self.model_embeddings = {}
+        if m_key not in self.model_embeddings:
+            txt = self.get_embedding_text()
+            self.model_embeddings[m_key] = embedding_engine.embed_text(txt, model=model)
+        return self.model_embeddings[m_key]
+
+    def get_sample_embeddings_for_model(self, embedding_engine, model: Optional[str] = None) -> List[np.ndarray]:
+        m_key = model or embedding_engine.model or "default"
+        if not hasattr(self, "model_sample_embeddings") or self.model_sample_embeddings is None:
+            self.model_sample_embeddings = {}
+        if m_key not in self.model_sample_embeddings:
+            samples = self.sample_prompts or []
+            self.model_sample_embeddings[m_key] = [embedding_engine.embed_text(p, model=model) for p in samples]
+        return self.model_sample_embeddings[m_key]
 
     def to_dict(self, include_embedding: bool = False) -> Dict[str, Any]:
         data = {

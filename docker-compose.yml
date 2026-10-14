@@ -193,6 +193,7 @@ services:
       - ./auth_service/secrets:/app/container_secrets/auth_service
       - ./web_ui/secrets:/app/container_secrets/web_ui
       - ./sample_docs:/app/sample_docs:ro
+      - ./agents/skills:/app/agents/skills:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - PORT=8000
