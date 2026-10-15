@@ -239,11 +239,16 @@ The Main App window should have:
 - Display the list of available Embedding Models for the embedding service. Briefly list the characteristics including the dimensions, context window, size, brief description, and status (Installed, Active, Available to Pull).
 
 ### 🤖 The third page: “Agents” (Agents Router Interface)
-The **Agents Router Interface** manages semantic vector routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
-- **Placement**: Located between **VectorDB Mgnt** (Tab 2) and **Telemetry** (Tab 4).
+The **Agents Router Interface** manages semantic routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
+- **Placement**: Located between **VectorDB Mgnt** (Tab 2) and **Semantic Lab** (Tab 3).
 - **Header & Controls**:
-  - **Routing Threshold Input Text Box**: Allows the user to set the minimum Routing Threshold (e.g. `0.50`) to route to specialized agents or fall back to the default Agent. Supported via `GET` / `POST /api/router/threshold` with an inline **Set** button.
-  - **Per-User Routing Threshold Storage**: Stored per user and persisted in the database. When a user logs in, their configured routing threshold is automatically reloaded and synchronized with the router backend.
+  - **Agent Selector Dropdown ("Agent Selector:")**: Allows the user to choose the routing engine used to dispatch incoming prompts.
+    - Options include an entry called **Main LLM select** followed by all available embedding models pulled dynamically from the embedding engine (e.g. `bge-large`, `nomic-embed-text`, `bge-m3`).
+    - Supported via `GET` / `POST /api/router/selector`.
+  - **Min Routing Threshold Control**: Placed directly to the right of the Agent Selector dropdown.
+    - **Dynamic Enabling/Disabling**: Only active when an embedding model is selected. When **Main LLM select** is selected, the Min Routing Threshold input box and its Set button are disabled (and the metric card displays `N/A (LLM)`).
+    - Allows setting the minimum cosine similarity threshold (e.g. `0.50` / `50%`) to route to specialized agents or fall back to the default agent. Supported via `GET` / `POST /api/router/threshold` with an inline **Set** button.
+  - **Per-User Preferences Storage**: Stored per user and persisted in the database. When a user logs in, their configured routing threshold and agent selector preference are reloaded and applied to the active router.
   - **"Refresh"** button to poll live status, trigger a full health-check sweep across all agents, and update handled query counts.
   - **"Add New Agent"** button that opens a popup window for manual agent onboarding.
 - **Summary Metrics (Displayed as Horizontal Cards)**:
@@ -251,12 +256,14 @@ The **Agents Router Interface** manages semantic vector routing, dynamic registr
     - **Total Registered Agents**: Count of all registered agents.
     - **Active Agents (UP)**: Count of operational agents currently responding as healthy.
     - **Offline Agents (DOWN)**: Count of offline or unreachable agents.
-    - **Routing Threshold**: Active minimum similarity threshold percentage (e.g. `50%` / `> 0.50`).
-- **Interactive Prompt Routing Playground ("Test Semantic Route")**:
-  - Positioned directly **above** the "Registered Agents Directory & Real-time Status" card.
-  - Input field to test query routing without invoking the LLM generation loop.
-  - Returns selected agent, similarity percentage, threshold pass status (`> 50%` vs default fallback triggered), explanation, routing latency, and a complete ranked breakdown of all agents and their individual similarity scores.
-  - **Login Reset**: Logging in as any user automatically clears the Test Semantic Prompts query text input (`#testRouteInput`) and clears any displayed route testing results (`#testRouteResults`).
+    - **Routing Threshold**: Active minimum similarity threshold percentage (e.g. `50%` / `> 0.50`), or `N/A (LLM Routing)` when Main LLM select is active.
+- **Dual Routing Modes**:
+  - **Embedding Model Routing**: When an embedding model is selected in the Agent Selector, the router embeds the prompt and candidate agents using that embedding model, computes cosine similarity, and dispatches to the specialized agent exceeding the Min Routing Threshold (defaulting to the primary `agents` container if below threshold or if the agent is DOWN).
+  - **Main LLM Select Routing**: When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (ID, title, description, sample prompts, operational status, and default flag) into structured JSON. It sends this JSON catalog along with the prompt to the primary foundation LLM (Google GenAI with structured JSON schema and multi-model fallback), requesting the LLM to return the optimal agent to process the prompt, its reasoning, and confidence score.
+- **Audit Logging for Routing Execution**:
+  - `agent_router` creates a comprehensive audit log sent to the central logging service when generating and returning the response to the invoker:
+    - **`agent_router_response`**: Logged upon completing execution and routing, containing both the full `request_payload` and full `response_payload` sent back to the invoker. Includes the exact model used to determine the agent (e.g. `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's top-level `model` field and inside `routing_metadata`, along with `selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latency.
+    - No preliminary log is created upon prompt arrival to avoid redundant log noise.
 - **Registered Agents Directory & Live Status**:
   - Displays table of all agents currently registered with the router:
     - **Agent Name & ID**: Agent identifier slug and human-readable title.
@@ -344,6 +351,11 @@ The **Semantic Lab** provides an interactive experimentation playground allowing
     - Preview of matched chunk text and SOP tool execution instructions.
   - **Batch Evaluation Table** (for Batch Suite runs):
     - Table displaying Prompt, Winning Agent, Agent Score, Top Skill, Skill Score, and Decision Status for all evaluated prompts.
+- **Audit Logging for Semantic Lab Evaluations**:
+  - Executing evaluation tests in Semantic Lab produces comprehensive event logs in the central logging service:
+    - **`semantic_lab_test_route`**: Logged by `agent_router` when testing agent routing (`/api/router/test_route`), capturing the complete request payload, response payload with ranked candidate scores, winning agent, similarity score, latency, and the embedding model used.
+    - **`semantic_lab_test_skills`**: Logged when testing skill matching (`/api/semantic_lab/test_skills`), capturing the request payload, retrieved skills response, and embedding model used.
+    - **`semantic_lab_batch_eval`**: Logged when executing batch evaluation suites (`/api/semantic_lab/batch_eval`), capturing all prompt evaluation results, total latency, and model used.
 
 ### 📊 The fifth page: “Telemetry”
 - The Web UI queries the Logging container's statistics and query API to compute and display the telemetry counters and timeline graphs.
@@ -1253,6 +1265,12 @@ All container-to-container communications must record the complete, untruncated 
   - Performs on-demand `/health` sweep across all registered agent containers.
 - `GET /api/router/threshold` & `POST /api/router/threshold`
   - Gets or sets the cosine similarity routing threshold (e.g. `0.50` / `50%`).
+- `GET /api/router/selector`
+  - Gets current routing configuration: `{"status": "success", "selector_type": "embedding" | "llm", "active_model": "<model_name>", "threshold": 0.55}`
+- `POST /api/router/selector`
+  - Configures agent selector mode and model.
+  - Request: `{"selector_type": "embedding" | "llm", "model": "<model_name>" | "main_llm", "threshold": 0.55}`
+  - Response: `{"status": "success", "selector_type": "...", "active_model": "...", "threshold": 0.55}`
 - `POST /api/router/test_route`
   - Simulates vector prompt routing without invoking LLM generation.
   - Request: `{"prompt": "<test query>"}`

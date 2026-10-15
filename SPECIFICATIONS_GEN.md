@@ -322,10 +322,17 @@ The top section uses an asymmetric split card grid (`.vectordb-split-grid`): the
 ---
 
 ### 2.6 Tab 3: "Agents" (Agents Router Interface)
-The **Agents Router Interface** manages semantic vector routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
+The **Agents Router Interface** manages semantic routing, dynamic registration, actual health probing, and persistent storage of specialized agent containers across the cluster.
 
 #### 2.6.1 Header & Control Bar
-- **Routing Threshold Control**: Input text box (`#routerThresholdInput`) and **Set** button to configure the minimum similarity routing threshold (default: `0.50` / `50%`). Backed by `GET` / `POST /api/router/threshold`. Persisted per user in `user_preferences` and reloaded upon login.
+- **Agent Selector Dropdown (`#agentSelectorSelect`)**:
+  - Allows selecting the active routing strategy: includes **Main LLM select** plus all available embedding models pulled dynamically from `/api/vectordb/models` (e.g., `bge-large`, `nomic-embed-text`, `bge-m3`).
+  - Supported via `GET` / `POST /api/router/selector`.
+- **Min Routing Threshold Control (`#thresholdControlBox`)**:
+  - Placed directly to the right of the Agent Selector dropdown.
+  - Contains input text box (`#routerThresholdInput`) and **Set** button (`#btnSetRouterThreshold`) to configure the minimum similarity routing threshold (default: `0.50` / `50%`).
+  - **Dynamic State**: Only active when an embedding model is selected. When **Main LLM select** is chosen, this box is disabled and the threshold metric displays `N/A (LLM)`.
+  - Persisted per user in `user_preferences` and reloaded upon login.
 - **Refresh**: Triggers live health check sweep across all containers and reloads the directory.
 - **Add New Agent Button**: Displays a popup window modal (`#addAgentModal`) for manual agent onboarding.
 
@@ -334,15 +341,24 @@ All metrics are presented as cards displayed horizontally across the page:
 - **Total Registered Agents**: Count of all registered agents.
 - **Active Agents (UP)**: Count of operational agents currently healthy.
 - **Offline Agents (DOWN)**: Count of offline or unreachable agents.
-- **Routing Threshold**: Active minimum similarity threshold percentage (e.g., `50%`).
+- **Routing Threshold**: Active minimum similarity threshold percentage (e.g., `50%`), or `N/A (LLM)` when in LLM routing mode.
 
-#### 2.6.3 Top Card: "Test Semantic Prompt Routing (Vector Similarity)"
-- Positioned directly above the Registered Agents Directory table.
-- Interactive prompt playground to compute vector embeddings and evaluate semantic routing without invoking the LLM generation loop.
-- Displays selected agent, similarity score, threshold evaluation, routing explanation, routing latency, and ranked breakdown of all agents.
-- **Login Reset**: Logging in as any user automatically clears the Test Semantic Prompts query input (`#testRouteInput`) and clears any displayed test routing results (`#testRouteResults`).
+#### 2.6.3 Dual Routing Architecture
+1. **Embedding Model Routing**:
+   - When an embedding model is selected, the router embeds the incoming user prompt and candidate agent profiles using that model.
+   - Calculates cosine similarity and routes to the candidate agent with score $> \text{threshold}$ (provided agent is UP).
+   - If no specialized agent exceeds the threshold, or if the matched agent is DOWN, routes to the default fallback agent (`agents:8002`).
+2. **Main LLM Select Routing**:
+   - When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (`id`, `title`, `description`, `sample_prompts`, `status`, `is_default`) into structured JSON.
+   - Dispatches a structured JSON schema generation request with the prompt to the primary foundation LLM (Google GenAI `gemini-3.5-flash-lite` with automatic failover to `gemini-3.1-flash-lite` and `gemma-4-26b-a4b-it`).
+   - The LLM analyzes the semantic agent catalog and returns `selected_agent_id`, `reasoning`, and `confidence_score`. The router then forwards the query to the chosen agent's container endpoint.
 
-#### 2.6.4 Bottom Card: "Registered Agents Directory & Real-time Status"
+#### 2.6.4 Router Audit Logging
+The `agents_router` container records a comprehensive execution and response log with the central logging service upon completing prompt execution:
+- **`agent_router_response`**: Dispatched upon completion of routing and downstream agent execution, containing both the full `request_payload` and the complete `response_payload` returned to the invoker. Includes the exact model used to determine the agent (e.g. `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's top-level `model` field and inside `routing_metadata`, along with `selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latency metrics.
+- No preliminary log is created on prompt receipt to prevent duplicate logging.
+
+#### 2.6.5 Registered Agents Directory & Real-time Status Card
 - Table columns:
   - **Agent Name & ID**: Agent identifier slug and display name.
   - **Status**: Live actual status (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)` with failure reason in tooltip).
@@ -358,17 +374,17 @@ All metrics are presented as cards displayed horizontally across the page:
     - **🏥 Ping**: Dispatches active `/health` check against the target container.
     - **🗑️ Delete**: Unregisters an agent and removes it from the persistent storage file.
 
-#### 2.6.5 Row-Click Inspection & Editing
+#### 2.6.6 Row-Click Inspection & Editing
 - Clicking any directory row opens the agent details modal.
 - For **Manually Added** agents, fields (Name, URI, Description, Prompts) are editable and saved via **Save Changes** (`POST /api/router/agents/<id>/update`).
 - For **Hard Coded** and **API Registered** agents, fields are read-only with a notice badge.
 
-#### 2.6.6 30-Second Periodic Actual Health Checking
+#### 2.6.7 30-Second Periodic Actual Health Checking
 - The status of all registered agents is checked every **30 seconds**.
 - Background daemon thread in `agents_router` executes `check_all_health()` every 30 seconds.
 - Web UI frontend polls and executes health checks every 30 seconds (`POST /api/router/agents/health_check_all`) and refreshes the directory table.
 
-#### 2.6.7 "Add New Agent" Popup Window & Chrome Autofill Protection
+#### 2.6.8 "Add New Agent" Popup Window & Chrome Autofill Protection
 - **2x Width & Responsive 2-Column Grid Layout**: Modal box `#addAgentModal .modal-box` is expanded to `max-width: 1080px; width: 95%` (double the previous 540px width) using a responsive CSS grid (`repeat(auto-fit, minmax(320px, 1fr))`):
   - **Left Column**: Form inputs for Agent ID (`#addAgentId`), Display Name (`#addAgentName`), Container URI (`#addAgentUri`), and Specialization & Description (`#addAgentDesc`).
   - **Right Column**: Sample Queries / Prompts textarea (`#addAgentPrompts`) with expanded height (`min-height: 220px; rows="10"`) and descriptive helper label.
@@ -376,17 +392,17 @@ All metrics are presented as cards displayed horizontally across the page:
 - Form is enclosed in `<form id="formAddAgent" autocomplete="off" onsubmit="event.preventDefault(); return false;">` with `data-lpignore="true"` and `type="button"` attributes on buttons to prevent Google Chrome from prompting to save passwords.
 - Bottom buttons: Cancel (closes modal) and Add (validates, registers, closes modal, dispatches health check, and updates table).
 
-#### 2.6.8 Volume Persistence for Manually Added Agents
+#### 2.6.9 Volume Persistence for Manually Added Agents
 - Volume `./agent_router/data:/app/data` is mounted to the `agents_router` container.
 - Manually configured agents are stored in `/app/data/manual_agents.json`.
 - All manually configured agents are automatically loaded upon starting the router.
 - When an agent is deleted, its entry is permanently removed from `manual_agents.json`.
 
-#### 2.6.9 180-Second Multi-Agent Execution Timeout
+#### 2.6.10 180-Second Multi-Agent Execution Timeout
 - Router forwarding (`agent_router/router.py`) and Web UI proxying (`web_ui/app.py`) configure an extended execution timeout of 180 seconds (`timeout=180`).
 - Accommodates multi-agent loops, collaborative reflection, deep research tools, and external LLM reasoning without HTTP 504 timeouts.
 
-#### 2.6.10 External Agent Networking & Registration
+#### 2.6.11 External Agent Networking & Registration
 - Supports external agents across two primary topologies:
   - **Option A (Shared Network)**: Connect external container to `agent-with-rag_default` (`docker network connect agent-with-rag_default <container>`) and access via `http://<container>:<port>`.
   - **Option B (Host Gateway IP)**: When external container or host process runs on host network, use gateway IP `http://172.20.0.1:<port>` to route cleanly from inside Docker containers to host ports.
@@ -394,16 +410,41 @@ All metrics are presented as cards displayed horizontally across the page:
 
 ---
 
-### 2.7 Tab 4: "Telemetry"
+### 2.7 Tab 4: "Semantic Lab" (Prompt, Embedding & Routing Experimentation)
+The **Semantic Lab** provides an interactive experimentation playground allowing developers, admins, and evaluators to benchmark and test prompts against different embedding models, agent definitions, and skills with real-time vector similarity scoring and vectorizer explainability.
+
+#### 2.7.1 Header & Global Controls
+- **Pipeline Mode Selector**: `Full Pipeline (Agents + Skills)`, `Agent Routing Only`, or `Skill Selection Only`.
+- **Embedder Model Selector**: Selects between installed local Ollama embedding models (`bge-large`, `nomic-embed-text`, `bge-m3`), cloud Gemini, or deterministic local hash embedder.
+- **Reload Lab Button**: Reloads live agent directory, skill registry, and embedding model catalog.
+- **Run Evaluation Button**: Dispatches single or batch test execution.
+
+#### 2.7.2 Testing & Sandbox Modes
+- **Single Prompt Evaluation**: Evaluates prompt against agents and skills with granular similarity breakdown.
+- **Batch Suite Evaluation**: Evaluates up to 20 prompts in parallel, rendering an executive comparison matrix with top agent, agent score, top skill, skill score, and decision status.
+- **Dynamic Threshold Sliders**: Real-time sensitivity sliders for Agent Minimum Routing Threshold and Skill Activation Threshold.
+- **"What-If" Draft Sandbox**:
+  - **Agent Sandbox**: Allows creating ephemeral draft agents or editing registered agent descriptions/sample prompts without persisting or corrupting production agents.
+  - **Skill Inspector**: Renders loaded skill markdown content, chunk counts, frontmatter triggers, and SOP tool execution rules.
+
+#### 2.7.3 Semantic Lab Audit Logging
+Executing evaluation runs in Semantic Lab automatically generates structured audit records in the central logging service:
+- **`semantic_lab_test_route`**: Dispatched by `agents_router` when evaluating candidate agent routing (`/api/router/test_route`), capturing the full `request_payload`, `response_payload` (including ranked candidate scores and explanations), `model_used`, and execution latency.
+- **`semantic_lab_test_skills`**: Dispatched when querying skill vector similarity (`/api/semantic_lab/test_skills`), capturing the request and response payloads, retrieved skills, and embedding model used.
+- **`semantic_lab_batch_eval`**: Dispatched when running batch evaluation suites (`/api/semantic_lab/batch_eval`), capturing all batch prompt evaluation results, total latency, and model used.
+
+---
+
+### 2.8 Tab 5: "Telemetry"
 Live operational analytics and token velocity monitoring.
 
-#### 2.6.1 Filter Bar
+#### 2.8.1 Filter Bar
 - **Model Selector**: Dropdown listing `All Models` (default) plus all distinct models logged in the system.
 - **Aggregation Interval**: Choices: `1 min`, `15 min` (default), `1 hr`, `1 day`.
 - **Time Range**: Choices: `Last hr`, `1 day` (default), `Week`, `Month`, and `Custom` (reveals Start Date and End Date calendar pickers).
 - **Refresh Telemetry** button: Triggers on-demand re-aggregation.
 
-#### 2.6.2 Top KPI Cards
+#### 2.8.2 Top KPI Cards
 - `Total Chat`: Count of user-submitted chat requests (`chat_request` / `send_chat_request`).
 - `Total Prompts`: Count of model requests (`llm_invocation`).
 - `Total Responses`: Count of model responses (`llm_response`).
@@ -411,7 +452,7 @@ Live operational analytics and token velocity monitoring.
 - `Total Input Tokens`: Cumulative prompt tokens consumed.
 - `Total Output Tokens`: Cumulative completion tokens generated.
 
-#### 2.6.3 Top Card: "System Throughput & Token Velocity"
+#### 2.8.3 Top Card: "System Throughput & Token Velocity"
 Contains two interactive responsive timeline charts rendered with **local time** coordinates:
 1. **Left Chart (Request Throughput)**: Multi-line chart tracking:
    - `Chat Requests`: Count of user chat requests (`chat_request`) per interval.
@@ -428,7 +469,7 @@ Contains two interactive responsive timeline charts rendered with **local time**
   - X-axis labels render in local time (`HH:MM` for same-day intervals, `MM-DD` or `MM-DD HH:MM` for multi-day intervals).
   - Hover tooltips display the full local date and time (`YYYY-MM-DD HH:mm:ss`).
 
-#### 2.6.4 Bottom Card: "Inference Performance & Latency Telemetry"
+#### 2.8.4 Bottom Card: "Inference Performance & Latency Telemetry"
 Displays computed generative AI performance telemetry:
 - **Average Latency**: Mean end-to-end turn time (ms).
 - **Time to First Token (TTFT)**: Estimated initial latency (ms).
@@ -438,7 +479,7 @@ Displays computed generative AI performance telemetry:
 
 ---
 
-### 2.7 Tab 4: "Audit Logs & Events" (Log Viewer)
+### 2.9 Tab 6: "Audit Logs & Events" (Log Viewer)
 Forensic auditing interface for inspecting raw messages and inter-container communication.
 - **Access Scoping**:
   - Role "User" and "Editor" can view only logs that they generate.
@@ -446,7 +487,7 @@ Forensic auditing interface for inspecting raw messages and inter-container comm
   - Global Admin (`admin` with no domain) can view all system logs across all domains.
 - **Prompt Sender Logging**: Every agent interaction records the name of the user who sends the prompt (`user` and `domain`).
 
-#### 2.7.1 Top Table: "User Conversations"
+#### 2.9.1 Top Table: "User Conversations"
 - Lists interaction sessions chronologically.
 - Columns: `Timestamp (Local)`, `Conversation ID`, `User / Sender` (Email or username of the user who initiated the conversation), `User Query`, `Agent Response`, `Agent Type`, `Events Count`.
 - All timestamps render in the client's **local time** format (`YYYY-MM-DD HH:mm:ss`).
@@ -454,7 +495,7 @@ Forensic auditing interface for inspecting raw messages and inter-container comm
 - **Clear All Logs** button: Truncates `log.json` and resets statistics after user confirmation (administrator only).
 - Selecting any row highlights it and filters the Bottom Table for that Conversation ID.
 
-#### 2.7.2 Bottom Table: "Events for Conversation <Conversation ID>"
+#### 2.9.2 Bottom Table: "Events for Conversation <Conversation ID>"
 - Chronological breakdown of every microservice hop and LLM interaction for the selected conversation.
 - Columns: `Time & Date (Local)`, `Event Type`, `Invoker`, `Target / Recipient`, `Elapsed Time (ms)`, `Actions`.
 - All timestamps render in the client's **local time** format (`YYYY-MM-DD HH:mm:ss`).
@@ -465,22 +506,22 @@ Forensic auditing interface for inspecting raw messages and inter-container comm
 
 ---
 
-### 2.8 Tab 5: "Container Mgr"
+### 2.10 Tab 7: "Container Mgr"
 Direct container health inspection and inter-container key configuration via Docker socket.
 - **Access Control**: Visible and accessible strictly to the Global Admin (`admin` with no domain). Hidden for domain administrators, editors, and regular users to safeguard host-level infrastructure.
 
-#### 2.8.1 Containers Table
-- Displays all 7 mesh containers (`web_ui`, `auth_service`, `agents`, `doc_rag`, `tools`, `logging`, `ollama`).
+#### 2.10.1 Containers Table
+- Displays all mesh containers (`web_ui`, `auth_service`, `agents`, `doc_rag`, `tools`, `logging`, `agents_router`, `agent_tech_support`, `ollama`).
 - Columns: `Container Name`, `Image`, `Status` (with color-coded badge: green `running`, red `exited`), `CPU %`, `Memory Usage / Limit`, `Actions`.
 - Action buttons per container: `Start`, `Stop`, `Restart`, and `Configure Keys`.
 
-#### 2.8.2 Container Authentication & Service Details Modal
+#### 2.10.2 Container Authentication & Service Details Modal
 - Clicking **Container Details / Configure** inspects the container runtime status and API endpoints.
 - Note: Token creation for individual containers (`<container>/secrets/keys`) has been decommissioned in favor of unified JWT authentication issued at login. All inter-service calls authenticate using the caller's login JWT token.
 
 ---
 
-### 2.9 Tab 6: "Password Mgnt & JWT"
+### 2.11 Tab 8: "Password Mgnt & JWT"
 Security administration interface with two sub-tabs and a global refresh control:
 - **Global Header Refresh**: Includes a **Refresh** button (`#btnRefreshAuth`) in the sub-header to update and re-sync all tables on the page (User Accounts, User Activity Log, Active Session, JWT List, and JWT Activities).
 

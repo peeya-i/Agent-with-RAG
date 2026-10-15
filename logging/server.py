@@ -168,6 +168,12 @@ def ingest_log():
 
     user = data.get("user") or (payload.get("user") if isinstance(payload, dict) else None) or (payload.get("username") if isinstance(payload, dict) else None) or (payload.get("user_name") if isinstance(payload, dict) else None) or (payload.get("email") if isinstance(payload, dict) else None) or ""
     domain = data.get("domain") or (payload.get("domain") if isinstance(payload, dict) else None) or ""
+    if isinstance(payload, dict) and isinstance(payload.get("request_payload"), dict):
+        req_p = payload["request_payload"]
+        if not user:
+            user = req_p.get("user") or req_p.get("username") or req_p.get("user_name") or req_p.get("email") or ""
+        if not domain:
+            domain = req_p.get("domain") or ""
     if not domain and user and "@" in str(user):
         domain = str(user).split("@")[-1].strip().lower()
 
@@ -176,7 +182,8 @@ def ingest_log():
         "timestamp": data.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "type": data.get("type", "generic"),
         "invoker": data.get("invoker", "unknown"),
-        "recipient": data.get("recipient", "unknown"),
+        "recipient": data.get("recipient") or data.get("target") or "unknown",
+        "target": data.get("target") or data.get("recipient") or "unknown",
         "conversation_id": data.get("conversation_id"),
         "user": user,
         "domain": domain,
@@ -290,35 +297,84 @@ def list_conversations():
             payload = {}
 
         u = l.get("user") or payload.get("user") or payload.get("user_name") or payload.get("username") or payload.get("email")
+        if not u and isinstance(payload.get("request_payload"), dict):
+            req_p = payload["request_payload"]
+            u = req_p.get("user") or req_p.get("username") or req_p.get("user_name") or req_p.get("email")
         if u and not conv.get("user"):
             conv["user"] = u
         d = l.get("domain") or payload.get("domain")
+        if not d and isinstance(payload.get("request_payload"), dict):
+            d = payload["request_payload"].get("domain")
         if not d and u and "@" in str(u):
             d = str(u).split("@")[-1].strip().lower()
+        if not d and u == "admin":
+            d = "pi-net.local"
         if d and not conv.get("domain"):
             conv["domain"] = d
 
         # Extract user query or agent response if logged
         l_type = str(l.get("type") or l.get("event_type") or "")
 
-        if any(t in l_type for t in ["chat_request", "user_query", "prompt"]):
-            query_text = payload.get("message") or payload.get("query") or payload.get("user_query") or payload.get("prompt")
+        if any(t in l_type for t in ["chat_request", "user_query", "prompt", "test_route", "agent_router"]):
+            query_text = (
+                payload.get("message")
+                or payload.get("query")
+                or payload.get("user_query")
+                or payload.get("prompt")
+                or (payload.get("request", {}).get("message") if isinstance(payload.get("request"), dict) else None)
+                or (payload.get("request", {}).get("query") if isinstance(payload.get("request"), dict) else None)
+                or (payload.get("request_payload", {}).get("message") if isinstance(payload.get("request_payload"), dict) else None)
+                or (payload.get("request_payload", {}).get("query") if isinstance(payload.get("request_payload"), dict) else None)
+            )
             if query_text:
                 conv["user_query"] = query_text
-            agent_t = payload.get("agent_type") or payload.get("agent")
+            agent_t = (
+                payload.get("agent_type")
+                or payload.get("agent")
+                or (payload.get("response", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("response"), dict) and isinstance(payload.get("response", {}).get("selected_agent"), dict) else None)
+                or (payload.get("response_payload", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("response_payload"), dict) and isinstance(payload.get("response_payload", {}).get("selected_agent"), dict) else None)
+                or (payload.get("routing_metadata", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("routing_metadata"), dict) and isinstance(payload.get("routing_metadata", {}).get("selected_agent"), dict) else None)
+                or (payload.get("selected_agent", {}).get("name") if isinstance(payload.get("selected_agent"), dict) else None)
+                or (payload.get("selected_agent") if isinstance(payload.get("selected_agent"), str) else None)
+            )
             if agent_t:
                 conv["agent_type"] = agent_t
-        elif any(t in l_type for t in ["chat_response", "agent_response"]):
-            resp_text = payload.get("response") or payload.get("agent_response") or payload.get("answer") or payload.get("text")
+        elif any(t in l_type for t in ["chat_response", "agent_response", "agent_router_response", "test_route", "agent_router"]):
+            resp_text = (
+                payload.get("response")
+                or payload.get("agent_response")
+                or payload.get("answer")
+                or payload.get("text")
+                or (payload.get("response", {}).get("explanation") if isinstance(payload.get("response"), dict) else None)
+                or (payload.get("response", {}).get("response") if isinstance(payload.get("response"), dict) and isinstance(payload.get("response", {}).get("response"), str) else None)
+                or (payload.get("response_payload", {}).get("response") if isinstance(payload.get("response_payload"), dict) and isinstance(payload.get("response_payload", {}).get("response"), str) else None)
+                or (payload.get("response_payload", {}).get("answer") if isinstance(payload.get("response_payload"), dict) else None)
+                or (payload.get("response_payload", {}).get("explanation") if isinstance(payload.get("response_payload"), dict) else None)
+                or payload.get("explanation")
+            )
             if isinstance(resp_text, str) and resp_text.strip():
                 conv["agent_response"] = resp_text
-            agent_t = payload.get("agent_type") or payload.get("agent")
+            agent_t = (
+                payload.get("agent_type")
+                or payload.get("agent")
+                or (payload.get("response", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("response"), dict) and isinstance(payload.get("response", {}).get("selected_agent"), dict) else None)
+                or (payload.get("response_payload", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("response_payload"), dict) and isinstance(payload.get("response_payload", {}).get("selected_agent"), dict) else None)
+                or (payload.get("routing_metadata", {}).get("selected_agent", {}).get("name") if isinstance(payload.get("routing_metadata"), dict) and isinstance(payload.get("routing_metadata", {}).get("selected_agent"), dict) else None)
+                or (payload.get("selected_agent", {}).get("name") if isinstance(payload.get("selected_agent"), dict) else None)
+                or (payload.get("selected_agent") if isinstance(payload.get("selected_agent"), str) else None)
+            )
             if agent_t:
                 conv["agent_type"] = agent_t
 
         # Fallback if user_query still missing:
         if not conv["user_query"]:
-            q = payload.get("user_query") or payload.get("message")
+            q = (
+                payload.get("user_query")
+                or payload.get("message")
+                or payload.get("query")
+                or (payload.get("request_payload", {}).get("message") if isinstance(payload.get("request_payload"), dict) else None)
+                or (payload.get("request_payload", {}).get("query") if isinstance(payload.get("request_payload"), dict) else None)
+            )
             if q and isinstance(q, str):
                 conv["user_query"] = q
             elif isinstance(payload.get("steps"), list):
@@ -336,9 +392,19 @@ def list_conversations():
 
         # Fallback if agent_response still missing:
         if not conv["agent_response"]:
-            r = payload.get("agent_response") or (payload.get("response") if isinstance(payload.get("response"), str) else None)
+            r = (
+                payload.get("agent_response")
+                or (payload.get("response") if isinstance(payload.get("response"), str) else None)
+                or (payload.get("response_payload", {}).get("response") if isinstance(payload.get("response_payload"), dict) and isinstance(payload.get("response_payload", {}).get("response"), str) else None)
+                or (payload.get("response_payload", {}).get("explanation") if isinstance(payload.get("response_payload"), dict) and isinstance(payload.get("response_payload", {}).get("explanation"), str) else None)
+                or (payload.get("explanation") if isinstance(payload.get("explanation"), str) else None)
+            )
             if r and isinstance(r, str) and r.strip():
                 conv["agent_response"] = r
+
+        m = l.get("model") or payload.get("model") or payload.get("model_used")
+        if m and not conv["model"]:
+            conv["model"] = m
 
     result = list(conversations.values())
 
@@ -347,10 +413,12 @@ def list_conversations():
     req_domain = request.args.get("domain")
     req_role = request.args.get("role")
 
-    if req_role in ["User", "Editor"] and req_user:
+    if req_user == "admin" or (req_role == "Admin" and not req_domain):
+        pass  # Global super-admin sees all conversations
+    elif req_role in ["User", "Editor"] and req_user:
         result = [c for c in result if (c.get("user") == req_user or c.get("user_email") == req_user)]
     elif req_role == "Admin" and req_domain:
-        result = [c for c in result if (c.get("domain") == req_domain or (c.get("user") and str(c.get("user")).endswith("@" + req_domain)))]
+        result = [c for c in result if (c.get("domain") == req_domain or (c.get("user") and str(c.get("user")).endswith("@" + req_domain)) or c.get("user") == "admin" or not c.get("domain"))]
 
     result.sort(key=lambda x: x["last_seen"], reverse=True)
 
@@ -391,13 +459,15 @@ def conversation_events(conversation_id):
     req_domain = request.args.get("domain")
     req_role = request.args.get("role")
 
-    if req_role in ["User", "Editor"] and req_user:
+    if req_user == "admin" or (req_role == "Admin" and not req_domain):
+        pass  # Global super-admin can access all conversation events
+    elif req_role in ["User", "Editor"] and req_user:
         conv_users = {l.get("user") for l in events if l.get("user")}
         if conv_users and req_user not in conv_users:
             return jsonify({"conversation_id": conversation_id, "events": []}), 403
     elif req_role == "Admin" and req_domain:
         conv_domains = {l.get("domain") for l in events if l.get("domain")}
-        if conv_domains and req_domain not in conv_domains:
+        if conv_domains and req_domain not in conv_domains and not any(l.get("user") == "admin" for l in events):
             return jsonify({"conversation_id": conversation_id, "events": []}), 403
 
     enriched = []

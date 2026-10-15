@@ -58,15 +58,17 @@ def resolve_url(url, host, port):
         return url.replace(f"{host}:{port}", f"127.0.0.1:{port}")
     return url
 
-def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model="", user=None, domain=None):
+def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model="", user=None, domain=None, target=None):
     try:
         url = resolve_url(LOGGING_URL, "logging", 8006)
         u_session = session.get("user") if has_request_context() else {}
         u = user or (u_session.get("email") if isinstance(u_session, dict) else None)
         d = domain or (u_session.get("domain") if isinstance(u_session, dict) else None)
+        tgt = target or recipient
         requests.post(f"{url}/api/logs", json={
             "invoker": invoker,
             "recipient": recipient,
+            "target": tgt,
             "conversation_id": conv_id,
             "user": u,
             "domain": d,
@@ -537,6 +539,9 @@ def proxy_chat():
             pass
 
     headers = {"Content-Type": "application/json"}
+    data["invoker"] = "Web UI"
+    data["target"] = "agents_router"
+    headers["X-Invoker"] = "Web UI"
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
 
@@ -544,6 +549,7 @@ def proxy_chat():
     log_event(
         invoker="Web UI",
         recipient="agents_router",
+        target="agents_router",
         event_type="send_chat_request",
         desc=f"Web UI submitted query from {username}: '{data.get('message', '')[:80]}'",
         payload=data,
@@ -555,13 +561,16 @@ def proxy_chat():
     # First attempt routing through agents-router
     res_data = None
     status_code = 200
+    responder_service = "agents_router"
     try:
         r = requests.post(f"{router_url}/api/router/chat", json=data, headers=headers, timeout=180)
         res_data = r.json()
         status_code = r.status_code
+        responder_service = "agents_router"
     except Exception as router_err:
         # Fallback directly to default agents container if router unreachable
         print(f"[WebUI] Router unavailable ({router_err}), falling back to direct agents container...")
+        responder_service = "agents"
         try:
             r = requests.post(f"{agents_url}/api/agent/chat", json=data, headers=headers, timeout=60)
             res_data = r.json()
@@ -606,10 +615,11 @@ def proxy_chat():
 
     # Log response received by Web UI
     log_event(
-        invoker="agents_router",
+        invoker=responder_service,
         recipient="Web UI",
+        target="Web UI",
         event_type="received_chat_response",
-        desc=f"Web UI received response from agent ({res_data.get('elapsed_ms', 0) if isinstance(res_data, dict) else 0}ms)",
+        desc=f"Web UI received response from {responder_service} ({res_data.get('elapsed_ms', 0) if isinstance(res_data, dict) else 0}ms)",
         payload=res_data,
         conv_id=conv_id,
         duration_ms=res_data.get("elapsed_ms", 0) if isinstance(res_data, dict) else 0,
@@ -692,6 +702,11 @@ def router_delete_agent(agent_id):
 def router_test_route():
     router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
     data = request.get_json(silent=True) or {}
+    user = session.get("user") or {}
+    if "user" not in data:
+        data["user"] = user.get("email") or "admin"
+    if "domain" not in data:
+        data["domain"] = user.get("domain") or "pi-net.local"
     try:
         r = requests.post(f"{router_url}/api/router/test_route", json=data, timeout=30)
         return jsonify(r.json()), r.status_code
@@ -710,6 +725,20 @@ def router_get_or_set_threshold():
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"status": "error", "message": f"Agents router unreachable: {e}", "threshold": 0.50}), 502
+
+@app.route("/api/router/selector", methods=["GET", "POST"])
+@app.route("/api/router/model", methods=["GET", "POST"])
+def proxy_router_selector():
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            r = requests.post(f"{router_url}/api/router/selector", json=data, timeout=5)
+        else:
+            r = requests.get(f"{router_url}/api/router/selector", timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Agents router unreachable: {e}"}), 502
 
 # ==============================================================================
 # Semantic Lab Endpoints
@@ -840,13 +869,29 @@ def semantic_lab_test_skills():
         if r.ok:
             res_json = r.json()
             results = res_json.get("results", [])
-            return jsonify({
+            resp_payload = {
                 "status": "success",
                 "query": query,
                 "threshold": threshold,
                 "matches": results,
                 "match_count": len(results)
-            })
+            }
+            log_event(
+                invoker="Semantic Lab",
+                recipient="doc_rag",
+                event_type="semantic_lab_test_skills",
+                desc=f"Semantic Lab test skills evaluated: '{query[:80]}' ({len(results)} matches)",
+                payload={
+                    "request_payload": data,
+                    "response_payload": resp_payload,
+                    "model_used": embedder_model or "default",
+                    "match_count": len(results)
+                },
+                conv_id=data.get("conversation_id"),
+                status="success",
+                model=embedder_model or ""
+            )
+            return jsonify(resp_payload)
         else:
             return jsonify({"status": "error", "message": f"Doc RAG returned {r.status_code}"}), r.status_code
     except Exception as e:
@@ -891,7 +936,9 @@ def semantic_lab_batch_eval():
                     "query": p,
                     "threshold": agent_threshold,
                     "embedder_model": embedder_model,
-                    "draft_agents": draft_agents
+                    "draft_agents": draft_agents,
+                    "invoker": "Semantic Lab",
+                    "conversation_id": data.get("conversation_id")
                 }, timeout=30)
                 if ar.ok:
                     aj = ar.json()
@@ -927,12 +974,32 @@ def semantic_lab_batch_eval():
         results.append(p_res)
 
     total_time_ms = round((time.time() - start_all) * 1000, 2)
-    return jsonify({
+    resp_payload = {
         "status": "success",
         "results": results,
-        "total_prompts": len(results),
-        "total_latency_ms": total_time_ms
-    })
+        "count": len(results),
+        "total_latency_ms": total_time_ms,
+        "model_used": embedder_model or "default"
+    }
+
+    log_event(
+        invoker="Semantic Lab",
+        recipient="web_ui",
+        event_type="semantic_lab_batch_eval",
+        desc=f"Semantic Lab batch evaluation: {len(results)} prompts evaluated ({int(total_time_ms)}ms)",
+        payload={
+            "request_payload": data,
+            "response_payload": resp_payload,
+            "model_used": embedder_model or "default",
+            "total_prompts": len(results)
+        },
+        conv_id=data.get("conversation_id"),
+        duration_ms=int(total_time_ms),
+        status="success",
+        model=embedder_model or ""
+    )
+
+    return jsonify(resp_payload)
 
 def extract_evidence_from_logs(conv_id):
     """Pulls logs for a conversation from the Logging container and extracts skills and documents evidence."""
@@ -1568,6 +1635,13 @@ def change_embed_model():
         requests.post(f"{agents_url}/api/agent/reload_skills", timeout=10)
     except Exception as e:
         app.logger.warning(f"Error reloading skills on model change: {e}")
+
+    # 3. Synchronize active model with agents_router
+    router_url = resolve_url(ROUTER_URL, "agents_router", 8004)
+    try:
+        requests.post(f"{router_url}/api/router/model", json={"model": new_model}, timeout=5)
+    except Exception as e:
+        app.logger.warning(f"Error synchronizing model with agents_router: {e}")
 
     return jsonify({"status": "success", "active_model": new_model, "message": f"Successfully changed embedder model to {new_model}"})
 

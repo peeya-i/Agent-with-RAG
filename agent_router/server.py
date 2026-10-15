@@ -61,19 +61,27 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Initialize router components
 embedding_engine = EmbeddingEngine(api_key=GEMINI_API_KEY)
 registry = AgentRegistry(embedding_engine=embedding_engine)
-router = VectorRouter(registry=registry, embedding_engine=embedding_engine, threshold=SIMILARITY_THRESHOLD)
+router = VectorRouter(
+    registry=registry,
+    embedding_engine=embedding_engine,
+    threshold=SIMILARITY_THRESHOLD,
+    gemini_api_key=GEMINI_API_KEY,
+    logging_url=os.environ.get("LOGGING_URL", "http://logging:8006")
+)
 
 def resolve_url(url, host, port):
     if not os.environ.get("RUNNING_IN_DOCKER") and f"{host}:{port}" in url:
         return url.replace(f"{host}:{port}", f"127.0.0.1:{port}")
     return url
 
-def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model=""):
+def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model="", user=None, domain=None, target=None):
     try:
         url = resolve_url(LOGGING_URL, "logging", 8006)
-        requests.post(f"{url}/api/logs", json={
+        tgt = target or recipient
+        req_json = {
             "invoker": invoker,
             "recipient": recipient,
+            "target": tgt,
             "conversation_id": conv_id,
             "type": event_type,
             "short_description": desc,
@@ -82,7 +90,12 @@ def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, statu
             "duration_ms": duration_ms,
             "model": model,
             "timestamp": datetime.now(timezone.utc).isoformat()
-        }, timeout=2)
+        }
+        if user:
+            req_json["user"] = user
+        if domain:
+            req_json["domain"] = domain
+        requests.post(f"{url}/api/logs", json=req_json, timeout=2)
     except Exception:
         pass
 
@@ -182,6 +195,49 @@ def router_threshold():
         "status": "success",
         "threshold": round(router.threshold, 4),
         "threshold_percent": f"{round(router.threshold * 100, 1)}%"
+    })
+
+@app.route("/api/router/selector", methods=["GET", "POST"])
+@app.route("/api/router/model", methods=["GET", "POST"])
+def router_selector():
+    """Gets or dynamically updates the active agent selector and embedding model for routing."""
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        new_sel = data.get("selector_type") or data.get("type")
+        new_model = data.get("model") or data.get("active_model")
+        thresh = data.get("threshold")
+
+        if thresh is not None:
+            try:
+                router.threshold = float(thresh)
+            except Exception:
+                pass
+
+        if new_model in ["main_llm", "llm", "Main LLM select"] or new_sel == "llm":
+            router.selector_type = "llm"
+            router.active_model = "main_llm"
+            logger.info("Router active selector updated to 'Main LLM select'")
+        elif new_model:
+            router.selector_type = "embedding"
+            router.active_model = new_model
+            embedding_engine.model = new_model
+            logger.info(f"Router active selector updated to embedding model '{new_model}'")
+        elif new_sel == "embedding":
+            router.selector_type = "embedding"
+
+        return jsonify({
+            "status": "success",
+            "selector_type": getattr(router, "selector_type", "embedding"),
+            "active_model": getattr(router, "active_model", "bge-large"),
+            "threshold": round(router.threshold, 4),
+            "message": f"Router selector updated to {router.selector_type} ({router.active_model})"
+        })
+
+    return jsonify({
+        "status": "success",
+        "selector_type": getattr(router, "selector_type", "embedding"),
+        "active_model": getattr(router, "active_model", getattr(embedding_engine, "model", "bge-large")),
+        "threshold": round(router.threshold, 4),
     })
 
 @app.route("/api/router/agents", methods=["GET"])
@@ -418,10 +474,11 @@ def test_route():
             s_dict["description"] = agent_obj.description
         ranked_dicts.append(s_dict)
 
-    return jsonify({
+    model_name = embedder_model or getattr(router, "last_model_used", None) or getattr(embedding_engine, "model", "bge-large:latest")
+    resp_payload = {
         "status": "success",
         "query": query,
-        "model_used": embedder_model or getattr(embedding_engine, "model", "default"),
+        "model_used": model_name,
         "selected_agent": target_agent.to_dict() if target_agent else None,
         "similarity_score": round(top_score, 4),
         "similarity_percent": f"{round(top_score * 100, 1)}%",
@@ -432,15 +489,50 @@ def test_route():
         "explanation": explanation,
         "routing_latency_ms": round(route_ms, 2),
         "ranked_scores": ranked_dicts
-    })
+    }
+
+    invoker = data.get("invoker") or "Semantic Lab"
+    conv_id = data.get("conversation_id") or f"conv_sem_lab_{int(time.time())}"
+    user = data.get("user") or data.get("username") or "admin"
+    domain = data.get("domain") or "pi-net.local"
+
+    # Log Semantic Lab test route evaluation
+    log_event(
+        invoker="agents_router",
+        recipient="agents_router",
+        target="agents_router",
+        event_type="agent_router",
+        desc=f"Agent Router evaluated test route: '{query[:80]}' -> '{target_agent.name if target_agent else 'None'}' using {model_name} ({round(route_ms)}ms)",
+        payload={
+            "request": data,
+            "response": resp_payload,
+            "request_payload": data,
+            "response_payload": resp_payload,
+            "model_used": model_name,
+            "selected_agent": target_agent.name if target_agent else "None",
+            "similarity_score": round(top_score, 4),
+            "is_default_fallback": is_fallback
+        },
+        conv_id=conv_id,
+        duration_ms=int(route_ms),
+        status="success",
+        model=model_name,
+        user=user,
+        domain=domain
+    )
+
+    return jsonify(resp_payload)
 
 @app.route("/api/router/chat", methods=["POST"])
 def router_chat():
-    """Main routing endpoint: determines target agent via vector embeddings and executes prompt."""
+    """Main routing endpoint: determines target agent via vector embeddings or LLM and executes prompt."""
     data = request.get_json(silent=True) or {}
     message = data.get("message") or data.get("query") or ""
     conv_id = data.get("conversation_id") or f"conv_{int(time.time())}"
     data["conversation_id"] = conv_id
+    invoker = data.get("invoker") or request.headers.get("X-Invoker") or "Web UI"
+    user = data.get("user") or data.get("username") or "admin"
+    domain = data.get("domain") or "pi-net.local"
 
     if not message.strip():
         return jsonify({"status": "error", "message": "Message cannot be empty"}), 400
@@ -458,32 +550,13 @@ def router_chat():
     routing_result = router.route_and_execute(
         query=message,
         payload=data,
-        headers=forward_headers
+        headers=forward_headers,
+        conv_id=conv_id
     )
 
     resp_data = routing_result.response_data or {}
-
-    # Log routing decision to centralized logging service
-    log_event(
-        invoker="agents_router",
-        recipient=routing_result.selected_agent.id if routing_result.selected_agent else "agents-default",
-        event_type="routed_chat_request",
-        desc=routing_result.explanation,
-        payload={
-            "query": message,
-            "selected_agent": routing_result.selected_agent.id if routing_result.selected_agent else None,
-            "similarity_score": routing_result.similarity_score,
-            "threshold": round(router.threshold, 4),
-            "is_default_fallback": routing_result.is_default_fallback,
-            "routing_latency_ms": routing_result.routing_latency_ms,
-            "total_latency_ms": routing_result.total_latency_ms,
-        },
-        conv_id=conv_id,
-        duration_ms=routing_result.routing_latency_ms,
-    )
-
-    # Return response payload and status code to preserve Web UI compatibility
     status_code = getattr(routing_result, "status_code", 200) or 200
+
     return jsonify(resp_data), status_code
 
 if __name__ == "__main__":

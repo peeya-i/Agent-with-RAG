@@ -72,14 +72,16 @@ def resolve_url(url, host, port):
         return url.replace(f"{host}:{port}", f"127.0.0.1:{port}")
     return url
 
-def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model=""):
+def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, status="success", duration_ms=0, model="", target=None, user=None, domain=None):
     try:
         base_url = resolve_url(LOGGING_URL, "logging", 8006).rstrip("/")
         if base_url.endswith("/api/logs"):
             base_url = base_url[:-9].rstrip("/")
-        requests.post(f"{base_url}/api/logs", json={
+        tgt = target or recipient
+        req_json = {
             "invoker": invoker,
             "recipient": recipient,
+            "target": tgt,
             "conversation_id": conv_id,
             "type": event_type,
             "short_description": desc,
@@ -88,7 +90,12 @@ def log_event(invoker, recipient, event_type, desc, payload, conv_id=None, statu
             "duration_ms": duration_ms,
             "model": model,
             "timestamp": datetime.now(timezone.utc).isoformat()
-        }, timeout=2)
+        }
+        if user:
+            req_json["user"] = user
+        if domain:
+            req_json["domain"] = domain
+        requests.post(f"{base_url}/api/logs", json=req_json, timeout=2)
     except Exception as e:
         logger.warning(f"Failed to send log event to {base_url}/api/logs: {e}")
 
@@ -194,7 +201,8 @@ def process_chat():
                 "is_jwt_expired": is_expired
             }), 403
 
-    logger.info(f"Processing tech support inquiry for conversation {conv_id}: '{message[:80]}'")
+    invoker = data.get("invoker") or request.headers.get("X-Invoker") or "Web UI"
+    logger.info(f"Processing tech support inquiry for conversation {conv_id} from {invoker}: '{message[:80]}'")
 
     # Extract prior conversation history if provided
     history = data.get("history") or []
@@ -218,19 +226,22 @@ def process_chat():
             "query": message,
             "document_type": "document",
             "top_k": 3,
-            "conversation_id": conv_id
+            "conversation_id": conv_id,
+            "invoker": "agent_tech_support",
+            "target": "Vector DB"
         }
         # Log outgoing vector query event
         log_event(
-            invoker="Tech Support Agent",
+            invoker="agent_tech_support",
             recipient="Vector DB",
+            target="Vector DB",
             event_type="document_vector_query",
             desc=f"Query document vector DB for tech support: '{message[:80]}'",
             payload=doc_query_payload,
             conv_id=conv_id
         )
 
-        rag_headers = {"Content-Type": "application/json"}
+        rag_headers = {"Content-Type": "application/json", "X-Invoker": "agent_tech_support"}
         if jwt_token:
             rag_headers["Authorization"] = f"Bearer {jwt_token}"
 
@@ -414,10 +425,11 @@ def process_chat():
         }
     }
 
-    # Log to centralized logging service
+    # Log response back to the caller (using caller invoker as target)
     log_event(
         invoker="agent_tech_support",
-        recipient="Web UI",
+        recipient=invoker,
+        target=invoker,
         event_type="tech_support_response",
         desc=f"Technical Support Specialist diagnosed query ({elapsed_ms}ms)",
         payload=result,

@@ -399,17 +399,30 @@
         <div class="page-title-area">
           <h2 class="page-heading"><span class="heading-icon">🤖</span> Agents Router & Dynamic Registration</h2>
         </div>
-        <div class="page-controls-area">
+        <div class="page-controls-area" style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <!-- Agent Selector Dropdown -->
           <div class="control-box" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px;">
-            <label for="routerThresholdInput" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
+            <label for="agentSelectorSelect" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
+              <span class="control-icon">⚙️</span> Agent Selector:
+            </label>
+            <select id="agentSelectorSelect" style="padding: 4px 10px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 4px; color: #38bdf8; font-weight: 600; font-size: 0.8rem; cursor: pointer;">
+              <option value="main_llm">Main LLM select</option>
+              <!-- Embedding models populated dynamically -->
+            </select>
+          </div>
+
+          <!-- Min Routing Threshold (To the right of Agent Selector) -->
+          <div class="control-box" id="thresholdControlBox" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px; transition: opacity 0.2s ease;">
+            <label for="routerThresholdInput" id="routerThresholdLabel" style="font-size: 0.8rem; color: #94a3b8; margin: 0; white-space: nowrap;">
               <span class="control-icon">🎯</span> Min Routing Threshold:
             </label>
-            <input type="number" id="routerThresholdInput" value="0.50" min="0.0" max="1.0" step="0.05" style="width: 75px; padding: 4px 8px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 4px; color: #38bdf8; font-weight: 700; text-align: center;" title="Minimum similarity score required to route to a specialized agent instead of default fallback agent" />
+            <input type="number" id="routerThresholdInput" value="0.55" min="0.0" max="1.0" step="0.05" style="width: 75px; padding: 4px 8px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 4px; color: #38bdf8; font-weight: 700; text-align: center;" title="Minimum similarity score required to route to a specialized agent instead of default fallback agent" />
             <button id="btnSetThreshold" class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" title="Apply minimum routing threshold" onclick="if(window.updateRoutingThreshold)window.updateRoutingThreshold();">
               Set
             </button>
             <span id="thresholdStatusMsg" style="font-size: 0.75rem; color: #34d399; margin-left: 4px; display: none;">Saved</span>
           </div>
+
           <button id="btnRefreshAgents" class="btn-secondary" title="Refresh agents list" onclick="if(window.loadAgentsData)window.loadAgentsData();">
             <span class="icon">🔄</span> Refresh
           </button>
@@ -446,33 +459,8 @@
           <div style="font-size: 2.2rem;">⚡</div>
           <div>
             <div class="metric-label">Routing Threshold</div>
-            <div class="metric-value" id="statRoutingThreshold" style="color: #38bdf8;">50%</div>
-            <div style="font-size: 0.73rem; color: #94a3b8; margin-top: 2px;">Min for specialized match</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Interactive Test Routing Card -->
-      <div class="glass-card full-width-card" style="margin-top: 20px;">
-        <div class="card-header">
-          <div class="card-title">
-            <span class="card-icon">🎯</span> Test Semantic Prompt Routing (Vector Similarity)
-          </div>
-          <div class="text-muted" style="font-size: 0.82rem;">
-            Simulate how prompts are embedded and routed to specialized agents or fallback to default agents container.
-          </div>
-        </div>
-        <div class="card-body">
-          <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-            <input type="text" id="testRouteInput" class="input-field" placeholder="Enter a sample query (e.g., 'Docker container crashed with code 137 OOMKilled' or 'What is the stock price of Apple?')" style="flex: 1; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff;" />
-            <button id="btnTestRoute" class="btn-primary" style="padding: 10px 20px;" onclick="if(window.testSemanticRoute)window.testSemanticRoute();">
-              <span class="icon">🚀</span> Test Route
-            </button>
-          </div>
-
-          <!-- Test Route Results Container -->
-          <div id="testRouteResults" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px;">
-            <!-- Dynamically populated test results -->
+            <div class="metric-value" id="statRoutingThreshold" style="color: #38bdf8;">55%</div>
+            <div style="font-size: 0.73rem; color: #94a3b8; margin-top: 2px;" id="statRoutingThresholdSub">Min for specialized match</div>
           </div>
         </div>
       </div>
@@ -1033,12 +1021,13 @@ Database replica is 5 minutes behind master</textarea>
                   <th>User / Sender</th>
                   <th>User Query</th>
                   <th>Agent Response</th>
-                  <th>Agent Type</th>
+                  <th>Routed Agent</th>
+                  <th>Model</th>
                   <th>Events</th>
                 </tr>
               </thead>
               <tbody id="conversationsTbody">
-                <tr><td colspan="7" class="text-center text-muted">No conversations recorded yet.</td></tr>
+                <tr><td colspan="8" class="text-center text-muted">No conversations recorded yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1047,9 +1036,19 @@ Database replica is 5 minutes behind master</textarea>
 
       <!-- Bottom Table: Events for Conversation -->
       <div class="glass-card full-width-card">
-        <div class="card-header">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
           <div class="card-title" id="eventsTableTitle">
             <span class="card-icon">⚡</span> Events for Conversation: <span class="badge" id="selectedConvBadge">None Selected</span>
+          </div>
+          <div class="events-filter-group" style="display:flex; align-items:center; gap:8px;">
+            <label for="eventFilterSelect" style="font-size:0.8rem; color:var(--text-muted); font-weight:600;">Filter Component:</label>
+            <select id="eventFilterSelect" class="form-control-compact" style="background:#0f172a; border:1px solid #334155; color:#f8fafc; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:600; cursor:pointer;">
+              <option value="all">All Events</option>
+              <option value="agents_router">🔀 agents_router Only</option>
+              <option value="llm">🤖 LLM</option>
+              <option value="tools">🛠️ Tools</option>
+              <option value="rag">📚 Doc RAG / Vector DB</option>
+            </select>
           </div>
         </div>
         <div class="card-body">
@@ -1061,11 +1060,12 @@ Database replica is 5 minutes behind master</textarea>
                   <th>Event Type</th>
                   <th>Invoker</th>
                   <th>Target</th>
+                  <th>Model Used</th>
                   <th>Short Description</th>
                 </tr>
               </thead>
               <tbody id="eventsTbody">
-                <tr><td colspan="5" class="text-center text-muted">Select a conversation row above to view its detailed event trace.</td></tr>
+                <tr><td colspan="6" class="text-center text-muted">Select a conversation row above to view its detailed event trace.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1806,6 +1806,6 @@ Database replica is 5 minutes behind master</textarea>
     </div>
   </div>
   <script src="/static/js/chart.umd.min.js"></script>
-  <script src="/static/js/app.js?v=20261011_06"></script>
+  <script src="/static/js/app.js?v=20261014_agent_router_visible"></script>
 </body>
 </html>

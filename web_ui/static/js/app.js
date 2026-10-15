@@ -125,6 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const conversationsTbody = document.getElementById('conversationsTbody');
   const eventsTbody = document.getElementById('eventsTbody');
   const selectedConvBadge = document.getElementById('selectedConvBadge');
+  const eventFilterSelect = document.getElementById('eventFilterSelect');
   const clearLogsModal = document.getElementById('clearLogsModal');
   const btnCancelClearLogs = document.getElementById('btnCancelClearLogs');
   const btnConfirmClearLogs = document.getElementById('btnConfirmClearLogs');
@@ -1600,8 +1601,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Conversations Table
       currentConversationsCache = data.conversations || [];
       if (currentConversationsCache.length === 0) {
-        conversationsTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted">No conversations recorded yet.</td></tr>`;
-        eventsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No conversation events to display.</td></tr>`;
+        conversationsTbody.innerHTML = `<tr><td colspan="8" class="text-center text-muted">No conversations recorded yet.</td></tr>`;
+        eventsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No conversation events to display.</td></tr>`;
         selectedConvBadge.textContent = 'None Selected';
         return;
       }
@@ -1611,14 +1612,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const localTs = formatToLocalTime(rawTs);
         const evCount = c.event_count !== undefined ? c.event_count : (c.events_count || 0);
         const userName = c.user || c.username || 'anonymous';
+        const modelBadge = c.model ? `<span class="badge" style="background:#1e1b4b; color:#c084fc; font-size:0.75rem; font-weight:600;">${escapeHtml(c.model)}</span>` : `<span style="color:var(--text-muted);font-size:0.75rem;">-</span>`;
         return `
         <tr class="conv-row ${c.conversation_id === selectedConversationId ? 'selected-row' : ''}" data-cid="${escapeHtml(c.conversation_id)}">
           <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(localTs)}</span></td>
           <td><code style="color:#a5b4fc;">${escapeHtml(c.conversation_id)}</code></td>
           <td><span class="badge" style="background:#4338ca;color:#e0e7ff;font-size:0.75rem;">${escapeHtml(userName)}</span></td>
-          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.user_query || '')}</td>
-          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.agent_response || '')}</td>
-          <td><span class="badge">${escapeHtml(c.agent_type || 'Custom Agent')}</span></td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.user_query || '')}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.agent_response || '')}</td>
+          <td><span class="badge" style="background:#0f172a; border:1px solid #3b82f6; color:#93c5fd;">${escapeHtml(c.agent_type || 'Custom Agent')}</span></td>
+          <td>${modelBadge}</td>
           <td><strong>${evCount}</strong></td>
         </tr>
       `;
@@ -1632,16 +1635,87 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
-      // Auto-select first conversation if none selected
-      if (!selectedConversationId && currentConversationsCache.length > 0) {
-        selectConversation(currentConversationsCache[0].conversation_id);
-      } else if (selectedConversationId) {
-        selectConversation(selectedConversationId);
+      // Auto-select first (newest) conversation if none selected, or keep selected if exists
+      const targetCid = selectedConversationId && currentConversationsCache.some(c => c.conversation_id === selectedConversationId)
+        ? selectedConversationId
+        : (currentConversationsCache.length > 0 ? currentConversationsCache[0].conversation_id : null);
+
+      if (targetCid) {
+        selectConversation(targetCid);
       }
 
     } catch (e) {
       console.error('Failed to load audit logs:', e);
     }
+  }
+
+  function renderEventsTable() {
+    if (!currentEventsCache || currentEventsCache.length === 0) {
+      eventsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No events recorded for this conversation.</td></tr>`;
+      return;
+    }
+
+    const filterVal = eventFilterSelect ? eventFilterSelect.value : 'all';
+    const filtered = currentEventsCache.filter(evt => {
+      if (filterVal === 'all') return true;
+      const type = (evt.event_type || evt.type || '').toLowerCase();
+      const invoker = (evt.invoker || '').toLowerCase();
+      const target = (evt.target || evt.recipient || '').toLowerCase();
+      if (filterVal === 'agents_router') {
+        return invoker.includes('router') || target.includes('router') || type.includes('router');
+      }
+      if (filterVal === 'llm') {
+        return invoker.includes('llm') || target.includes('llm') || type.includes('llm');
+      }
+      if (filterVal === 'tools') {
+        return invoker.includes('tool') || target.includes('tool') || type.includes('tool');
+      }
+      if (filterVal === 'rag') {
+        return invoker.includes('rag') || target.includes('rag') || invoker.includes('vector') || target.includes('vector') || type.includes('vector') || type.includes('embedding');
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      eventsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No events matching component filter '${escapeHtml(filterVal)}'.</td></tr>`;
+      return;
+    }
+
+    eventsTbody.innerHTML = filtered.map((evt) => {
+      const origIdx = currentEventsCache.indexOf(evt);
+      const rawTime = evt.local_time || evt.raw_timestamp || evt.timestamp || '';
+      const localTime = formatToLocalTime(rawTime);
+      const eventType = evt.event_type || evt.type || 'generic';
+      const invoker = evt.invoker || 'unknown';
+      const target = evt.target || evt.recipient || 'unknown';
+      const model = evt.model || '-';
+      const desc = evt.short_description || '';
+      const isRouter = invoker.includes('router') || target.includes('router') || eventType.includes('router');
+      const rowStyle = isRouter ? 'background:rgba(219, 39, 119, 0.12); font-weight:600;' : '';
+      return `
+        <tr class="event-row ${isRouter ? 'router-event-highlight' : ''}" data-idx="${origIdx}" style="${rowStyle}">
+          <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(localTime)}</span></td>
+          <td><span class="step-bubble ${eventType.toLowerCase().replace(/\s+/g, '-')}">${escapeHtml(eventType)}</span></td>
+          <td><strong>${escapeHtml(invoker)}</strong></td>
+          <td>${escapeHtml(target)}</td>
+          <td><span class="badge" style="background:#1e1b4b; color:#c084fc; font-size:0.75rem; font-weight:600;">${escapeHtml(model)}</span></td>
+          <td>${escapeHtml(desc)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    // Bind click to open detail inspector
+    eventsTbody.querySelectorAll('.event-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const idx = parseInt(row.getAttribute('data-idx'));
+        const evt = currentEventsCache[idx];
+        if (evt) showEventDetailModal(evt);
+      });
+    });
+  }
+
+  if (eventFilterSelect) {
+    eventFilterSelect.onchange = renderEventsTable;
   }
 
   async function selectConversation(cid) {
@@ -1669,40 +1743,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       currentEventsCache = data.events || [];
 
-      if (currentEventsCache.length === 0) {
-        eventsTbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">No events recorded for this conversation.</td></tr>`;
-        return;
-      }
-
-      eventsTbody.innerHTML = currentEventsCache.map((evt, idx) => {
-        const rawTime = evt.local_time || evt.raw_timestamp || evt.timestamp || '';
-        const localTime = formatToLocalTime(rawTime);
-        const eventType = evt.event_type || evt.type || 'generic';
-        const invoker = evt.invoker || 'unknown';
-        const target = evt.target || evt.recipient || 'unknown';
-        const desc = evt.short_description || '';
-        return `
-          <tr class="event-row" data-idx="${idx}">
-            <td><span style="font-family:var(--font-mono);font-size:0.75rem;">${escapeHtml(localTime)}</span></td>
-            <td><span class="step-bubble ${eventType.toLowerCase().replace(/\s+/g, '-')}">${escapeHtml(eventType)}</span></td>
-            <td><strong>${escapeHtml(invoker)}</strong></td>
-            <td>${escapeHtml(target)}</td>
-            <td>${escapeHtml(desc)}</td>
-          </tr>
-        `;
-      }).join('');
-
-      // Bind click to open detail inspector
-      eventsTbody.querySelectorAll('.event-row').forEach(row => {
-        row.addEventListener('click', () => {
-          const idx = parseInt(row.getAttribute('data-idx'));
-          const evt = currentEventsCache[idx];
-          if (evt) showEventDetailModal(evt);
-        });
-      });
+      renderEventsTable();
 
     } catch (e) {
-      eventsTbody.innerHTML = `<tr><td colspan="5" class="text-danger">Error loading events: ${e.message}</td></tr>`;
+      eventsTbody.innerHTML = `<tr><td colspan="6" class="text-danger">Error loading events: ${e.message}</td></tr>`;
     }
   }
 
@@ -1711,15 +1755,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let prompt = null;
     let response = null;
 
-    // Check payload.request and payload.response (standard inter-container format)
-    if (payload.request !== undefined && payload.request !== null) {
+    // Check payload.request_payload / payload.response_payload and payload.request / payload.response
+    if (payload.request_payload !== undefined && payload.request_payload !== null) {
+      prompt = payload.request_payload;
+    } else if (payload.request !== undefined && payload.request !== null) {
       if (typeof payload.request === 'object' && Object.keys(payload.request).length > 0) {
         prompt = payload.request;
       } else if (typeof payload.request === 'string' && payload.request.trim() !== '') {
         prompt = payload.request;
       }
     }
-    if (payload.response !== undefined && payload.response !== null) {
+    if (payload.response_payload !== undefined && payload.response_payload !== null) {
+      response = payload.response_payload;
+    } else if (payload.response !== undefined && payload.response !== null) {
       if (typeof payload.response === 'object' && Object.keys(payload.response).length > 0) {
         response = payload.response;
       } else if (typeof payload.response === 'string' && payload.response.trim() !== '') {
@@ -1857,7 +1905,9 @@ document.addEventListener('DOMContentLoaded', () => {
       <div><span style="color:var(--text-muted);">Event Type:</span> <strong style="color:#60a5fa;">${escapeHtml(evt.event_type || '')}</strong></div>
       <div><span style="color:var(--text-muted);">Latency:</span> <strong>${evt.elapsed_ms ? `${evt.elapsed_ms} ms` : 'N/A'}</strong></div>
       <div><span style="color:var(--text-muted);">Invoker:</span> <strong>${escapeHtml(evt.invoker || '')}</strong></div>
-      <div><span style="color:var(--text-muted);">Target:</span> <strong>${escapeHtml(evt.target || '')}</strong></div>
+      <div><span style="color:var(--text-muted);">Target:</span> <strong>${escapeHtml(evt.target || evt.recipient || '')}</strong></div>
+      <div><span style="color:var(--text-muted);">Model Used:</span> <strong style="color:#c084fc;">${escapeHtml(evt.model || 'N/A')}</strong></div>
+      <div><span style="color:var(--text-muted);">Status:</span> <strong>${escapeHtml(evt.status || 'success')}</strong></div>
       <div style="grid-column: span 2;"><span style="color:var(--text-muted);">Description:</span> <strong>${escapeHtml(evt.short_description || '')}</strong></div>
     `;
 
@@ -3119,6 +3169,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const routerThresholdInput = document.getElementById('routerThresholdInput');
   const btnSetThreshold = document.getElementById('btnSetThreshold');
   const thresholdStatusMsg = document.getElementById('thresholdStatusMsg');
+  const agentSelectorSelect = document.getElementById('agentSelectorSelect');
+  const thresholdControlBox = document.getElementById('thresholdControlBox');
+  const statRoutingThresholdSub = document.getElementById('statRoutingThresholdSub');
   const btnRefreshAgents = document.getElementById('btnRefreshAgents');
   const btnOpenAddAgentModal = document.getElementById('btnOpenAddAgentModal');
   const addAgentModal = document.getElementById('addAgentModal');
@@ -3134,6 +3187,74 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let currentModalMode = 'add'; // 'add', 'edit', 'view'
   let currentModalAgentId = null;
+
+  function updateAgentSelectorUIState(isLlm, thresholdVal) {
+    if (isLlm) {
+      if (routerThresholdInput) {
+        routerThresholdInput.disabled = true;
+        routerThresholdInput.style.opacity = '0.5';
+        routerThresholdInput.style.cursor = 'not-allowed';
+      }
+      if (btnSetThreshold) {
+        btnSetThreshold.disabled = true;
+        btnSetThreshold.style.opacity = '0.5';
+        btnSetThreshold.style.cursor = 'not-allowed';
+      }
+      if (thresholdControlBox) {
+        thresholdControlBox.style.opacity = '0.5';
+        thresholdControlBox.style.pointerEvents = 'none';
+      }
+      if (statRoutingThreshold) statRoutingThreshold.textContent = 'N/A (LLM)';
+      if (statRoutingThresholdSub) statRoutingThresholdSub.textContent = 'Main LLM Reasoning Mode';
+    } else {
+      if (routerThresholdInput) {
+        routerThresholdInput.disabled = false;
+        routerThresholdInput.style.opacity = '1';
+        routerThresholdInput.style.cursor = 'text';
+      }
+      if (btnSetThreshold) {
+        btnSetThreshold.disabled = false;
+        btnSetThreshold.style.opacity = '1';
+        btnSetThreshold.style.cursor = 'pointer';
+      }
+      if (thresholdControlBox) {
+        thresholdControlBox.style.opacity = '1';
+        thresholdControlBox.style.pointerEvents = 'auto';
+      }
+      if (typeof thresholdVal === 'number' && statRoutingThreshold) {
+        statRoutingThreshold.textContent = `${Math.round(thresholdVal * 100)}%`;
+      }
+      if (statRoutingThresholdSub) statRoutingThresholdSub.textContent = 'Min for specialized match';
+    }
+  }
+
+  if (agentSelectorSelect) {
+    agentSelectorSelect.addEventListener('change', async () => {
+      const val = agentSelectorSelect.value;
+      const isLlm = (val === 'main_llm' || val === 'llm');
+      const thresh = parseFloat(routerThresholdInput ? routerThresholdInput.value : 0.55);
+      updateAgentSelectorUIState(isLlm, thresh);
+
+      try {
+        const resp = await fetch('/api/router/selector', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            selector_type: isLlm ? 'llm' : 'embedding',
+            model: isLlm ? 'main_llm' : val
+          })
+        });
+        const res = await resp.json();
+        if (thresholdStatusMsg) {
+          thresholdStatusMsg.style.display = 'inline';
+          thresholdStatusMsg.textContent = isLlm ? 'Main LLM Active!' : 'Model Saved!';
+          setTimeout(() => { thresholdStatusMsg.style.display = 'none'; }, 2500);
+        }
+      } catch (e) {
+        console.warn('Error saving agent selector:', e);
+      }
+    });
+  }
 
   async function updateRoutingThreshold() {
     if (!routerThresholdInput) return;
@@ -3202,18 +3323,62 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadAgentsData() {
     if (!agentsTbody) return;
     try {
-      const resp = await fetch('/api/router/agents');
+      const [resp, selResp, modelsResp] = await Promise.all([
+        fetch('/api/router/agents'),
+        fetch('/api/router/selector').catch(() => null),
+        fetch('/api/vectordb/models').catch(() => null)
+      ]);
+
       if (!resp.ok) {
         agentsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Agents Router service initializing...</td></tr>';
         return;
       }
       const data = await resp.json();
       const agents = data.agents || [];
+      const selData = (selResp && selResp.ok) ? await selResp.json() : null;
+      const modelsData = (modelsResp && modelsResp.ok) ? await modelsResp.json() : null;
+
+      // Populate Agent Selector Dropdown
+      if (agentSelectorSelect && modelsData && modelsData.models) {
+        const activeSelModel = (selData && selData.active_model) ? selData.active_model : 'bge-large:latest';
+        const isLlmActive = (selData && (selData.selector_type === 'llm' || selData.active_model === 'main_llm'));
+
+        agentSelectorSelect.innerHTML = '';
+        
+        // Option 1: Main LLM select
+        const optLlm = document.createElement('option');
+        optLlm.value = 'main_llm';
+        optLlm.textContent = 'Main LLM select';
+        agentSelectorSelect.appendChild(optLlm);
+
+        // Option 2+: Available Embedding Models
+        modelsData.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.name;
+          opt.textContent = `${m.name} (Embedding)`;
+          agentSelectorSelect.appendChild(opt);
+        });
+
+        if (isLlmActive) {
+          agentSelectorSelect.value = 'main_llm';
+        } else {
+          // Match active embedding model
+          const matched = modelsData.models.find(m => m.name === activeSelModel || m.name.split(':')[0] === activeSelModel.split(':')[0]);
+          if (matched) {
+            agentSelectorSelect.value = matched.name;
+          } else {
+            agentSelectorSelect.value = activeSelModel;
+          }
+        }
+
+        updateAgentSelectorUIState(isLlmActive, data.threshold);
+      }
 
       // Update threshold display and input
       if (typeof data.threshold === 'number') {
         const pct = Math.round(data.threshold * 100);
-        if (statRoutingThreshold) statRoutingThreshold.textContent = `${pct}%`;
+        const isLlm = (agentSelectorSelect && agentSelectorSelect.value === 'main_llm');
+        if (!isLlm && statRoutingThreshold) statRoutingThreshold.textContent = `${pct}%`;
         if (routerThresholdInput && document.activeElement !== routerThresholdInput) {
           routerThresholdInput.value = data.threshold.toFixed(2);
         }
@@ -4081,6 +4246,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Parallel execution for single prompt
+        const semLabConvId = 'conv_semantic_lab_' + Date.now();
         const promises = [];
         if (mode === 'full' || mode === 'agents') {
           promises.push(
@@ -4091,7 +4257,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 query: query,
                 threshold: agentThresh,
                 embedder_model: embedderModel,
-                draft_agents: draftAgents
+                draft_agents: draftAgents,
+                invoker: 'Semantic Lab',
+                conversation_id: semLabConvId
               })
             }).then(r => r.json()).catch(err => ({ status: 'error', message: err.message }))
           );
@@ -4122,7 +4290,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 threshold: skillThresh,
                 embedder_model: embedderModel,
                 limit: 5,
-                draft_skill: draftSkill
+                draft_skill: draftSkill,
+                invoker: 'Semantic Lab',
+                conversation_id: semLabConvId
               })
             }).then(r => r.json()).catch(err => ({ status: 'error', message: err.message }))
           );
@@ -4143,6 +4313,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
+        const batchConvId = 'conv_semantic_lab_batch_' + Date.now();
         const res = await fetch('/api/semantic_lab/batch_eval', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4152,7 +4323,9 @@ document.addEventListener('DOMContentLoaded', () => {
             skill_threshold: skillThresh,
             embedder_model: embedderModel,
             mode: mode,
-            draft_agents: draftAgents
+            draft_agents: draftAgents,
+            invoker: 'Semantic Lab',
+            conversation_id: batchConvId
           })
         });
         const data = await res.json();

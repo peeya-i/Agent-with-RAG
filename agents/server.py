@@ -173,6 +173,7 @@ def process_chat():
 
     user = data.get("user") or data.get("username") or data.get("email") or "anonymous"
     domain = data.get("domain") or ""
+    invoker = data.get("invoker") or request.headers.get("X-Invoker") or "Web UI"
 
     result = runner.run(
         message=message,
@@ -189,6 +190,7 @@ def process_chat():
         jwt_token=jwt_token,
         user=user,
         domain=domain,
+        invoker=invoker,
         history=data.get("history") or []
     )
 

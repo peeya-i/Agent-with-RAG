@@ -767,6 +767,8 @@ select option:checked {
 .step-bubble.skills { color: #fde047; background: #422006; border-color: #eab308; }
 .step-bubble.tools { color: #6ee7b7; background: #064e3b; border-color: #10b981; }
 .step-bubble.rag { color: #c4b5fd; background: #3b0764; border-color: #8b5cf6; }
+.step-bubble.agent_router_response, .step-bubble.agent-router-response { color: #f472b6; background: #500724; border-color: #db2777; }
+.step-bubble.semantic_lab_test_route, .step-bubble.semantic-lab-test-route { color: #38bdf8; background: #0c4a6e; border-color: #0284c7; }
 
 .step-bubble .elapsed {
   font-size: 0.7rem;

@@ -17,12 +17,14 @@ class CustomAgent:
             return url.replace(f"{host}:{port}", f"127.0.0.1:{port}")
         return url
 
-    def log(self, invoker, recipient, event_type, desc, payload, conv_id=None, status="success", dur_ms=0, in_tok=0, out_tok=0, model=None, is_error=False, user=None, domain=None):
+    def log(self, invoker, recipient, event_type, desc, payload, conv_id=None, status="success", dur_ms=0, in_tok=0, out_tok=0, model=None, is_error=False, user=None, domain=None, target=None):
         try:
             url = self._resolve(self.logging_url, "logging", 8006)
+            tgt = target or recipient
             requests.post(f"{url}/api/logs", json={
                 "invoker": invoker,
                 "recipient": recipient,
+                "target": tgt,
                 "conversation_id": conv_id,
                 "user": user or getattr(self, "current_user", None),
                 "domain": domain or getattr(self, "current_domain", None),
@@ -207,6 +209,7 @@ class CustomAgent:
             jwt_token = api_key
         self.current_user = kwargs.get("user") or kwargs.get("username") or kwargs.get("email") or "anonymous"
         self.current_domain = kwargs.get("domain") or ""
+        self.current_invoker = kwargs.get("invoker") or "Web UI"
         agent_start = time.time()
         steps = []
         max_turns = max(1, min(int(max_turns or 5), 10))
@@ -226,10 +229,11 @@ class CustomAgent:
 
         # Initial Agent Invocaton Log
         self.log(
-            invoker="Web UI",
+            invoker=self.current_invoker,
             recipient="Custom Agent",
+            target="Custom Agent",
             event_type="received_chat_request",
-            desc=f"User query received: '{message[:50]}...'",
+            desc=f"User query received from {self.current_invoker}: '{message[:50]}...'",
             payload={
                 "message": message,
                 "agent_type": "Custom Agent",
@@ -237,7 +241,9 @@ class CustomAgent:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "max_turns": max_turns,
-                "skill_selector": skill_selector
+                "skill_selector": skill_selector,
+                "invoker": self.current_invoker,
+                "target": "Custom Agent"
             },
             conv_id=conversation_id,
             model=model
@@ -270,17 +276,19 @@ class CustomAgent:
                     "limit": 2,
                     "conversation_id": conversation_id,
                     "jwt_token": jwt_token,
-                    "invoker": "Custom Agent"
+                    "invoker": "Custom Agent",
+                    "target": "Vector DB"
                 }
                 self.log(
                     invoker="Custom Agent",
                     recipient="Vector DB",
+                    target="Vector DB",
                     event_type="skill_vector_query",
                     desc=f"Query skills vector DB: '{message[:80]}'",
                     payload=skill_req,
                     conv_id=conversation_id
                 )
-                headers = {"Content-Type": "application/json"}
+                headers = {"Content-Type": "application/json", "X-Invoker": "Custom Agent"}
                 if jwt_token:
                     headers["Authorization"] = f"Bearer {jwt_token}"
                 resp = requests.post(f"{rag_url}/api/rag/query", json=skill_req, headers=headers, timeout=5)
@@ -522,17 +530,19 @@ class CustomAgent:
                             "arguments": t_args,
                             "conversation_id": conversation_id,
                             "jwt_token": jwt_token,
-                            "invoker": "Custom Agent"
+                            "invoker": "Custom Agent",
+                            "target": "tools"
                         }
                         self.log(
                             invoker="Custom Agent",
                             recipient="tools",
+                            target="tools",
                             event_type="tool_invocation",
                             desc=f"Invoking tool: {t_name}",
                             payload=tool_req,
                             conv_id=conversation_id
                         )
-                        headers = {"Content-Type": "application/json"}
+                        headers = {"Content-Type": "application/json", "X-Invoker": "Custom Agent"}
                         if jwt_token:
                             headers["Authorization"] = f"Bearer {jwt_token}"
                         r = requests.post(f"{tools_url}/api/tools/call", json=tool_req, headers=headers, timeout=8)
@@ -606,10 +616,11 @@ class CustomAgent:
 
         total_elapsed = int((time.time() - agent_start) * 1000)
 
-        # Log Final Response with FULL steps payload
+        # Log Final Response with FULL steps payload to caller (using invoker as target)
         self.log(
             invoker="Custom Agent",
-            recipient="Web UI",
+            recipient=self.current_invoker,
+            target=self.current_invoker,
             event_type="send_chat_response",
             desc=f"Agent response completed in {total_elapsed}ms",
             payload={
@@ -620,7 +631,9 @@ class CustomAgent:
                 "model": model,
                 "elapsed_ms": total_elapsed,
                 "steps": steps,
-                "retrieved_evidence": retrieved_evidence
+                "retrieved_evidence": retrieved_evidence,
+                "invoker": "Custom Agent",
+                "target": self.current_invoker
             },
             conv_id=conversation_id,
             dur_ms=total_elapsed,

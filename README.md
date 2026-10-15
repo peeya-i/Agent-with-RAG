@@ -18,10 +18,14 @@ An enterprise multi-container web application and autonomous AI Agent platform w
 * **Dual-Collection Vector Store (`doc_RAG`):** Powered by ChromaDB and local Ollama embeddings (`nomic-embed-text`, `bge-m3`) across two isolated collections:
   * `skill`: Semantic discovery and prompt augmentation for procedural skills.
   * `document`: High-precision chunked semantic document retrieval with tenant isolation.
-* **Semantic Vector Routing (`agents_router`):** Vector embedding engine with cosine similarity and deterministic local fallback that analyzes prompts from Web UI. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds 50% (> 0.50) and agent status is UP. Defaults to the primary `agents` container for general queries or whenever match is <= 50%. Enforces an extended 180-second execution timeout (`timeout=180`) to accommodate multi-agent planning loops without premature timeouts.
+* **Intelligent Agent Routing Engine (`agents_router`):** Hybrid routing system offering dual execution modes:
+  * **Embedding Model Routing:** Uses dense vector embeddings (e.g. `bge-large`, `nomic-embed-text`) and cosine similarity against candidate agent profiles. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds the configurable threshold (`> 0.50`), defaulting to the primary `agents` container if below threshold or if the agent is DOWN.
+  * **Main LLM Select Routing:** Serializes all agent capabilities (ID, title, description, sample prompts, operational status) into structured JSON and uses the primary foundation LLM (Google GenAI) to classify the user prompt and select the best candidate agent.
+  * **Audit Logging:** Logs complete execution events (`agent_router_response`) upon completing prompt execution containing both the full request and response payloads, along with the exact model used to determine the agent (e.g., `gemini-3.5-flash-lite`, `bge-large:latest`), similarity score, threshold, and execution latency. Preliminary prompt arrival logging is omitted to eliminate redundancy.
+  * **Timeout Resilience:** Enforces an extended 180-second execution timeout (`timeout=180`) to accommodate multi-agent planning loops without premature timeouts.
 * **Specialized Product Tech Support Agent (`agent_tech_support`):** Dedicated domain agent for product troubleshooting, DevOps, Docker container crash log inspection (exit 137 OOMKilled), microservice timeouts, and database connection debugging. Dynamically auto-registers with the router upon container turn-up.
-* **Agents Router Management GUI (`Agents` Tab):** Displays real-time directory of all registered agents with operational status badges (UP/DOWN), interactive semantic prompt routing simulator, and dynamic onboarding form/modal ("Add New Agent") to manually link new agent containers.
-* **Semantic Lab Playground (`Semantic Lab` Tab):** Positioned between Agents and Telemetry, provides a sandbox to run single or batch tests against embedding models, active/draft agent definitions, and skills with real-time vector scoring and vectorizer explainability.
+* **Agents Router Management GUI (`Agents` Tab):** Features the **Agent Selector** dropdown (`Main LLM select` + all available embedding models), dynamically toggled **Min Routing Threshold** box (active for embedding models, disabled for LLM select), real-time directory of all registered agents with actual status badges (UP/DOWN), and dynamic onboarding modal ("Add New Agent") to manually link new agent containers.
+* **Semantic Lab Playground (`Semantic Lab` Tab):** Positioned between Agents and Telemetry, provides a dedicated sandbox to run single or batch tests against embedding models, active/draft agent definitions, and skills with real-time vector scoring and vectorizer explainability.
 * **Unified Single `jwt_auth.py` Architecture:** A single copy of `jwt_auth.py` is maintained at the repository root and volume-mounted into all containers via `docker-compose.yml`, eliminating code duplication while guaranteeing full host and container interoperability. Features `decode_jwt_token_with_reason(token)` returning diagnostic reason strings (`Token expired`, `Signature verification failed`, `Invalid token format`, `Token missing`) while preserving backward-compatible `decode_jwt_token(token)`.
 * **Flexible External Agent Networking:** External autonomous agent containers can be connected either via a shared Docker network (`agent-with-rag_default`) using container name URIs (`http://<container>:<port>`) or via the host OS Docker gateway IP (`http://172.20.0.1:<port>`) for agents running on host ports or separate bridge networks.
 
@@ -183,13 +187,24 @@ Access the Web Console at: **`http://localhost:8000`**
   * Role "User" cannot delete any entries.
 
 ### 🤖 Page 3: Agents (Agents Router Interface)
+* **Agent Selector Dropdown (`#agentSelectorSelect`):** Header control allowing the user to switch the active routing strategy:
+  * **Main LLM select:** Prompts the primary foundation LLM with structured JSON representing candidate agent capabilities to select the routing destination.
+  * **Embedding Models:** Dynamically loaded list of available embedding models (e.g. `bge-large`, `nomic-embed-text`, `bge-m3`). Uses vector embeddings and cosine similarity against candidate agent profiles.
+* **Min Routing Threshold Box (`#thresholdControlBox`):**
+  * Positioned directly to the right of the Agent Selector.
+  * Dynamically enabled when an embedding model is selected; automatically disabled when **Main LLM select** is chosen.
+  * Displays active similarity percentage (e.g., `55%`) in metric card, or `N/A (LLM)` when LLM routing is active.
+* **Execution & Response Audit Logging:** Upon completing prompt routing and downstream agent execution, the router logs an `agent_router_response` audit record to the central logging service containing:
+  * Full incoming `request_payload`.
+  * Full generated `response_payload` returned to the invoker.
+  * The exact model used to determine the agent (e.g., `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's `model` field and inside `routing_metadata`.
+  * Detailed routing metadata (`selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latencies).
+  * Preliminary prompt arrival logging is omitted to eliminate log noise.
 * **Horizontal Statistics Cards:** All metrics are displayed as cards arranged horizontally across the page:
   * **Registered Agents:** Total count of agents registered with the vector router.
   * **Active Agents (UP):** Count of online agents actively responding as healthy.
   * **Offline Agents (DOWN):** Count of offline agents (requests automatically skip to fallback).
-  * **Routing Threshold:** Active similarity threshold percentage.
-* **Configurable Routing Threshold:** Text box (`#routerThresholdInput`) and **Set** button allow setting the minimum Routing Threshold dynamically (default: `0.50`). When prompts match below this threshold, or if the top specialized agent is DOWN, the router falls back to the default `agents` container. The configured threshold is persisted per user and automatically reloaded on login.
-* **Interactive Prompt Routing Playground ("Test Semantic Route"):** Positioned directly above the Registered Agents Directory, tests query routing without invoking LLMs and returns ranked similarity scores and routing explanations. Logging in as any user automatically clears the Test Semantic Prompts query input (`#testRouteInput`) and clears any displayed test routing results (`#testRouteResults`).
+  * **Routing Threshold:** Active similarity threshold percentage (or `N/A (LLM)`).
 * **Registered Agents Directory & Live Status Table:**
   * Displays actual status (`🟢 UP (Healthy)` or `🔴 DOWN (Offline / Unreachable)`).
   * Displays Role / Type: `Hard Coded`, `API Registered`, or `Manually Added`.
@@ -219,6 +234,10 @@ Access the Web Console at: **`http://localhost:8000`**
   * **Agent Sandbox:** Tweak agent descriptions or sample prompts (or add a draft test agent) and evaluate routing without saving or corrupting production agents.
   * **Skill Inspector:** Inspect loaded `SKILL.md` markdown contents, chunk counts, frontmatter triggers, and SOP tool execution rules.
 * **Explainability Inspector:** Collapsible inspector drawers showing the exact text strings passed to the vectorizer for both queries and candidate agents/skills.
+* **Semantic Lab Audit Logging:** Every test execution in Semantic Lab dispatches comprehensive event logs to the central logging service:
+  * `semantic_lab_test_route`: Logged by `agent_router` on agent routing evaluation (`/api/router/test_route`), capturing the request payload, response payload, winning agent, similarity score, latency, and the embedding model used.
+  * `semantic_lab_test_skills`: Logged on skill vector searches (`/api/semantic_lab/test_skills`), capturing the request, retrieved skills, and model used.
+  * `semantic_lab_batch_eval`: Logged on batch evaluation runs (`/api/semantic_lab/batch_eval`), capturing all evaluated prompts and total latency.
 
 ### 📊 Page 5: Telemetry
 * Accessible by all authenticated users (User, Editor, Domain Admin, Global Admin).
