@@ -213,14 +213,72 @@ def run_customer_search(keywords=None, field="", keyword=None):
         "authorized_domain": "sample-b.com"
     }
 
+COMPANY_NAME_TO_TICKER = {
+    "APPLE": "AAPL",
+    "NVIDIA": "NVDA",
+    "MICROSOFT": "MSFT",
+    "GOOGLE": "GOOGL",
+    "ALPHABET": "GOOGL",
+    "AMAZON": "AMZN",
+    "TESLA": "TSLA",
+    "META": "META",
+    "FACEBOOK": "META",
+    "AMD": "AMD",
+    "INTEL": "INTC",
+    "BROADCOM": "AVGO",
+    "SALESFORCE": "CRM",
+    "PALANTIR": "PLTR",
+    "QUALCOMM": "QCOM",
+}
+
+def fetch_live_quote(symbol: str):
+    """Attempt to fetch real-time market quote from public finance API."""
+    try:
+        clean_sym = symbol.upper().strip()
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?interval=1d&range=1d"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+            price = meta.get("regularMarketPrice")
+            prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            currency = meta.get("currency", "USD")
+            name = meta.get("shortName") or meta.get("longName") or clean_sym
+            if price is not None:
+                pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
+                return {
+                    "symbol": clean_sym,
+                    "name": name,
+                    "price": round(float(price), 2),
+                    "previous_close": round(float(prev_close), 2) if prev_close else round(float(price), 2),
+                    "change_pct": pct,
+                    "currency": currency,
+                    "source": "live_market_api"
+                }
+    except Exception as e:
+        print(f"[Tools] Live quote error for {symbol}: {e}")
+    return None
+
 # TOOL 2: Stock search
 def run_stock_search(action="gainers", limit=5, ticker=None):
     clean_act = (action or "gainers").lower().strip()
     limit = int(limit or 5)
 
     if ticker or clean_act == "quote":
-        sym = (ticker or "NVDA").upper().strip()
-        # Look in tracked equities
+        raw_sym = (ticker or "NVDA").upper().strip()
+        sym = COMPANY_NAME_TO_TICKER.get(raw_sym, raw_sym)
+
+        # 1. Fetch live market price from API
+        live = fetch_live_quote(sym)
+        if live:
+            return {
+                "action": "quote",
+                "result": live,
+                "status": "success"
+            }
+
+        # 2. Fallback to cached equities basket if API is offline or unreachable
         for item in TRACKED_TICKERS:
             if item["symbol"] == sym:
                 return {
@@ -229,11 +287,13 @@ def run_stock_search(action="gainers", limit=5, ticker=None):
                         "symbol": item["symbol"],
                         "name": item["name"],
                         "price": round(item["base_price"] * (1 + item["change_pct"] / 100), 2),
-                        "change_pct": item["change_pct"]
+                        "change_pct": item["change_pct"],
+                        "currency": "USD",
+                        "source": "cached_basket_fallback"
                     },
                     "status": "success"
                 }
-        return {"error": f"Ticker '{sym}' not found in active equities", "status": "not_found"}
+        return {"error": f"Ticker '{sym}' not found in active equities or live market", "status": "not_found"}
 
     basket = []
     for item in TRACKED_TICKERS:
@@ -393,9 +453,9 @@ def call_tool():
         field = arguments.get("field") or ""
         resp_data = run_employee_search(keywords=kw, field=field)
     elif any(k in clean_tool for k in ["stock", "equity", "ticker"]):
-        act = arguments.get("action") or ("gainers" if "gain" in clean_tool else "losers" if "lose" in clean_tool else "gainers")
+        act = arguments.get("action") or ("quote" if ("quote" in clean_tool or "price" in clean_tool) else "gainers" if "gain" in clean_tool else "losers" if "lose" in clean_tool else "gainers")
         lim = arguments.get("limit") or 5
-        ticker = arguments.get("ticker")
+        ticker = arguments.get("ticker") or arguments.get("symbol") or arguments.get("query")
         resp_data = run_stock_search(action=act, limit=lim, ticker=ticker)
     elif any(k in clean_tool for k in ["weather", "time", "metro"]):
         city = arguments.get("city") or arguments.get("location") or "Paris"

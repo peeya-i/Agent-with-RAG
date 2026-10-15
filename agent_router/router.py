@@ -426,7 +426,7 @@ class VectorRouter:
     ) -> RoutingResult:
         """Decides agent route based on vector embedding or LLM and executes prompt via HTTP REST."""
         total_start = time.time()
-        req_model = model or (payload.get("embedder_model") or payload.get("model") if isinstance(payload, dict) else None)
+        req_model = model or (payload.get("embedder_model") or payload.get("router_model") if isinstance(payload, dict) else None)
         if req_model == "default":
             req_model = None
         req_sel = payload.get("selector_type") or payload.get("agent_selector") if isinstance(payload, dict) else None

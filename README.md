@@ -14,7 +14,7 @@ An enterprise multi-container web application and autonomous AI Agent platform w
   * `sample-b.com`: Granted access to `tools/data/customer_database.csv` (customer purchase registry).
   * `Admin`: Granted unrestricted access to both CSV databases.
 * **Autonomous Multi-Turn Reasoning:** Executes goal-oriented conversational workflows using either a **Custom Agent** (with tool execution loops up to a configurable turn limit) or a **Google ADK Agent** (via Google AI Studio GenAI SDK).
-* **Dynamic Skill & Tool Invocation:** Intercepts structured JSON tool calls from LLMs and invokes procedural FastMCP tools (employee registry search, customer registry search, stock market analysis, weather/time lookup, document retrieval).
+* **Dynamic Skill & Tool Invocation:** Intercepts structured JSON tool calls from LLMs and invokes procedural FastMCP tools (employee registry search, customer registry search, live stock market analysis & quotes, weather/time lookup, document retrieval).
 * **Dual-Collection Vector Store (`doc_RAG`):** Powered by ChromaDB and local Ollama embeddings (`nomic-embed-text`, `bge-m3`) across two isolated collections:
   * `skill`: Semantic discovery and prompt augmentation for procedural skills.
   * `document`: High-precision chunked semantic document retrieval with tenant isolation.
@@ -301,7 +301,7 @@ Access the Web Console at: **`http://localhost:8000`**
 1. **`time-weather-skill`:** Real-time weather and local time lookup for any city worldwide using the free Open-Meteo public service.
 2. **`person-information-skill`:** Employee registry lookups across 30 records (`tools/data/employee_database.csv`) using a list of search texts (or single search text) across name, city, country, or job title. Accessible to `example-a.com` and Admin.
 3. **`customer-information-skill`:** Customer registry lookups across 20 records (`tools/data/customer_database.csv`) with name, address with country info, and 3-5 products purchased. Accessible to `sample-b.com` and Admin.
-4. **`stock-market-skill`:** Real-time stock queries for top percentage gainers, losers, or equity quotes.
+4. **`stock-market-skill`:** Real-time stock queries fetching live market quotes via financial market APIs with automatic company-name-to-ticker resolution and fault-tolerant fallback to cached tracked basket.
 5. **`document-search-skill`:** Vector search for top-$k$ text chunks from the ingested ChromaDB knowledge store with multi-tenant domain isolation.
 
 ---

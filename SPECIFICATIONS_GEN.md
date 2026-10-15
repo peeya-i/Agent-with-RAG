@@ -885,7 +885,7 @@ Tariq Mansoor,King Fahd Road Riyadh,Saudi Arabia,"Smart Air Purifier, Extra Carb
   - Returns metadata and parameter schemas for available tools:
     1. `person_search.query_person_registry`: Searches `tools/data/employee_database.csv` across fields (`name`, `city`, `country`, `job_title`) using a list of search texts (`keywords`, or single text `keyword`). Restricted to `example-a.com` and Admin.
     2. `customer_search.query_customer_registry`: Searches `tools/data/customer_database.csv` across fields (`name`, `address`, `country`, `products_purchased`) using search text(s). Restricted to `sample-b.com` and Admin.
-    3. `stock_search.query_stocks`: Evaluates mock market feed and returns top `gainers` or `losers` limited by `limit`.
+    3. `stock_search.query_stocks`: Fetches live market quotes via public financial API (`https://query1.finance.yahoo.com/v8/finance/chart/{sym}`) with automatic company-name-to-ticker resolution (e.g. `Apple` -> `AAPL`, `Nvidia` -> `NVDA`, `Tesla` -> `TSLA`) and fault-tolerant fallback to cached tracked basket (`source="cached_basket_fallback"`). Also computes top `gainers` or `losers` limited by `limit`.
 - `POST /api/tools/call`
   - Dispatches tool invocation with JWT authorization enforcement.
   - Body:
@@ -1438,7 +1438,7 @@ PYTHONPATH=. pytest tests/test_agents_router.py tests/test_microservices.py -v
 All unit and integration assertions must pass, covering:
 1. `logging` health, log ingestion, query filtering, and secret redaction.
 2. `auth_service` login, locked registration, unlocking, key creation, and validation.
-3. `tools` procedural employee search and stock gainers/losers calculation.
+3. `tools` procedural employee search, customer search, and live stock market quote / gainers / losers calculation.
 4. `doc_rag` document/skill addition, semantic querying, stats, and deletion.
 5. `agents` model catalog and skill discovery.
 6. `agents_router` dynamic registry, manual agents persistence, health probing, cosine similarity routing, and 180s timeout.

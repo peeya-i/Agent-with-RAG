@@ -1102,15 +1102,19 @@ All container-to-container communications must record the complete, untruncated 
   - Request:
     ```json
     {
-      "tool": "person_search.query_person_registry" | "stock_search.query_stocks",
-      "arguments": {"keyword": "Dubois", "field": "name"},
+      "tool": "person_search.query_person_registry" | "customer_search.query_customer_registry" | "stock_search.query_stocks" | "time_weather.get_current_weather",
+      "arguments": {"ticker": "AAPL", "action": "quote"},
       "conversation_id": "conv_<id>",
-      "api_key": "<api_key>"
+      "jwt_token": "<token>"
     }
     ```
+  - **Stock Tool Execution (`stock_search.query_stocks` / `stock_search.get_stock_performers`)**:
+    - **Live Market API Integration**: When `action="quote"` or when a ticker/symbol is queried, fetches real-time quote data (`regularMarketPrice`, `previousClose`, `change_pct`) from the public market finance API.
+    - **Company Name Resolution**: Automatically resolves company names to standard exchange tickers (e.g. `Apple` -> `AAPL`, `Nvidia` -> `NVDA`, `Tesla` -> `TSLA`).
+    - **Fault-Tolerant Fallback**: Falls back to the curated 15-stock basket (`TRACKED_TICKERS`) with `source="cached_basket_fallback"` only if the external live API is unreachable or offline (air-gapped environment).
   - Response: `{"tool": "...", "result": {...}, "status": "success", "duration_ms": 12}`
 - `GET /sse` & `POST /messages`
-  - FastMCP async interface exposing `person_search.query_person_registry` and `stock_search.query_stocks`.
+  - FastMCP async interface exposing `person_search.query_person_registry`, `customer_search.query_customer_registry`, and `stock_search.query_stocks`.
 
 ### 6. Central Logging & Telemetry Service (`logging`, Port 8006)
 - `GET /health`
