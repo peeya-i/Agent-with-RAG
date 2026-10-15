@@ -33,6 +33,15 @@ class EmbeddingEngine:
         else:
             logger.info("No Gemini API key provided. Using Ollama / deterministic local semantic embedding engine.")
 
+    def _store_cache(self, key: str, val: np.ndarray, max_size: int = 2000):
+        """Stores embedding in memory cache with FIFO bounded capacity."""
+        if len(self._cache) >= max_size:
+            # Evict oldest 20% of entries
+            evict_count = max(1, max_size // 5)
+            for k in list(self._cache.keys())[:evict_count]:
+                self._cache.pop(k, None)
+        self._cache[key] = val
+
     def embed_text(self, text: str, model: Optional[str] = None) -> np.ndarray:
         """Compute normalized embedding vector for a single text using specified or default model."""
         cleaned_text = (text or "").strip()
@@ -40,7 +49,6 @@ class EmbeddingEngine:
             cleaned_text = "empty"
 
         target_model = (model or self.model or "bge-large").strip()
-        # Normalize model aliases if necessary (e.g. bge-large:latest -> bge-large)
         cache_key = f"{target_model}@@{cleaned_text}"
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -49,16 +57,16 @@ class EmbeddingEngine:
         is_gemini_model = any(target_model.lower().startswith(p) for p in ["gemini", "text-embedding"])
         if not is_gemini_model and self.ollama_url:
             try:
-                # Try with exact name, and if it fails with stripped tag
                 resp = requests.post(
                     f"{self.ollama_url}/api/embeddings",
                     json={"model": target_model, "prompt": cleaned_text},
                     timeout=10
                 )
-                if resp.status_code != 200 and ":" in target_model:
+                if resp.status_code != 200:
+                    alt_model = target_model.split(":")[0] if ":" in target_model else f"{target_model}:latest"
                     resp = requests.post(
                         f"{self.ollama_url}/api/embeddings",
-                        json={"model": target_model.split(":")[0], "prompt": cleaned_text},
+                        json={"model": alt_model, "prompt": cleaned_text},
                         timeout=10
                     )
                 if resp.status_code == 200:
@@ -67,7 +75,7 @@ class EmbeddingEngine:
                         vec = np.array(emb, dtype=np.float32)
                         norm = np.linalg.norm(vec)
                         res = vec / norm if norm > 0 else vec
-                        self._cache[cache_key] = res
+                        self._store_cache(cache_key, res)
                         return res
             except Exception as e:
                 logger.debug(f"Ollama embedding ({target_model}) error: {e}")
@@ -84,14 +92,14 @@ class EmbeddingEngine:
                     vec = np.array(response.embeddings[0].values, dtype=np.float32)
                     norm = np.linalg.norm(vec)
                     res = vec / norm if norm > 0 else vec
-                    self._cache[cache_key] = res
+                    self._store_cache(cache_key, res)
                     return res
             except Exception as e:
                 logger.warning(f"Google GenAI embedding failed ({e}); falling back to local semantic embedding.")
 
         # 3. Deterministic local semantic embedding fallback
         res = self._local_embed(cleaned_text)
-        self._cache[cache_key] = res
+        self._store_cache(cache_key, res)
         return res
 
     def embed_batch(self, texts: List[str], model: Optional[str] = None) -> List[np.ndarray]:

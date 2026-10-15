@@ -354,9 +354,18 @@ All metrics are presented as cards displayed horizontally across the page:
    - The LLM analyzes the semantic agent catalog and returns `selected_agent_id`, `reasoning`, and `confidence_score`. The router then forwards the query to the chosen agent's container endpoint.
 
 #### 2.6.4 Router Audit Logging
-The `agents_router` container records a comprehensive execution and response log with the central logging service upon completing prompt execution:
-- **`agent_router_response`**: Dispatched upon completion of routing and downstream agent execution, containing both the full `request_payload` and the complete `response_payload` returned to the invoker. Includes the exact model used to determine the agent (e.g. `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's top-level `model` field and inside `routing_metadata`, along with `selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latency metrics.
-- No preliminary log is created on prompt receipt to prevent duplicate logging.
+The `agents_router` container records immediate real-time audit logs prior to downstream agent execution:
+- **`agent_router`**: Dispatched **immediately after `agent_router` evaluates and decides which agent will process the prompt, BEFORE forwarding the prompt to the target agent**. Contains both the full incoming `request` payload and the complete routing decision `response` payload (`selected_agent`, `model_used`, `similarity_score`, `threshold`, `is_default_fallback`, `explanation`, `routing_latency_ms`, `ranked_scores`).
+  - `invoker`: `"agents_router"`
+  - `target`: `"agents_router"`
+  - `model`: The exact model used to determine the agent (the active embedding model name, e.g. `bge-large` / `bge-large:latest`, or foundation LLM model name, e.g. `gemini-3.5-flash-lite`, when Main LLM select is active).
+- **`forward_chat_request`**: Dispatched by `agent_router` immediately before sending the prompt to the target agent container.
+  - `invoker`: `"agents_router"`
+  - `target`: Name of the target agent (e.g. `Technical Support & DevOps Specialist` or `Default Multi-Tool & RAG Agent`).
+- **Downstream Response & Web UI Attribution**:
+  - Target agents log `send_chat_response` with `target="agents_router"`.
+  - Web UI logs `received_chat_response` with `invoker="agents_router"` and `target="Web UI"`.
+- Preliminary prompt-receipt logs are omitted to prevent redundant log noise.
 
 #### 2.6.5 Registered Agents Directory & Real-time Status Card
 - Table columns:

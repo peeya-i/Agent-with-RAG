@@ -21,7 +21,7 @@ An enterprise multi-container web application and autonomous AI Agent platform w
 * **Intelligent Agent Routing Engine (`agents_router`):** Hybrid routing system offering dual execution modes:
   * **Embedding Model Routing:** Uses dense vector embeddings (e.g. `bge-large`, `nomic-embed-text`) and cosine similarity against candidate agent profiles. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds the configurable threshold (`> 0.50`), defaulting to the primary `agents` container if below threshold or if the agent is DOWN.
   * **Main LLM Select Routing:** Serializes all agent capabilities (ID, title, description, sample prompts, operational status) into structured JSON and uses the primary foundation LLM (Google GenAI) to classify the user prompt and select the best candidate agent.
-  * **Audit Logging:** Logs complete execution events (`agent_router_response`) upon completing prompt execution containing both the full request and response payloads, along with the exact model used to determine the agent (e.g., `gemini-3.5-flash-lite`, `bge-large:latest`), similarity score, threshold, and execution latency. Preliminary prompt arrival logging is omitted to eliminate redundancy.
+  * **Real-time Audit Logging:** Logs the routing decision (`agent_router`) **immediately after deciding which agent will process the prompt, BEFORE forwarding to the target agent**, with `invoker="agents_router"`, `target="agents_router"`, and the exact decision model used (`model=model_used`). Dispatches `forward_chat_request` prior to calling the downstream agent, while downstream responses and Web UI receipts clearly trace the entity boundaries (`target="agents_router"`, `invoker="agents_router"`, `target="Web UI"`).
   * **Timeout Resilience:** Enforces an extended 180-second execution timeout (`timeout=180`) to accommodate multi-agent planning loops without premature timeouts.
 * **Specialized Product Tech Support Agent (`agent_tech_support`):** Dedicated domain agent for product troubleshooting, DevOps, Docker container crash log inspection (exit 137 OOMKilled), microservice timeouts, and database connection debugging. Dynamically auto-registers with the router upon container turn-up.
 * **Agents Router Management GUI (`Agents` Tab):** Features the **Agent Selector** dropdown (`Main LLM select` + all available embedding models), dynamically toggled **Min Routing Threshold** box (active for embedding models, disabled for LLM select), real-time directory of all registered agents with actual status badges (UP/DOWN), and dynamic onboarding modal ("Add New Agent") to manually link new agent containers.
@@ -194,11 +194,14 @@ Access the Web Console at: **`http://localhost:8000`**
   * Positioned directly to the right of the Agent Selector.
   * Dynamically enabled when an embedding model is selected; automatically disabled when **Main LLM select** is chosen.
   * Displays active similarity percentage (e.g., `55%`) in metric card, or `N/A (LLM)` when LLM routing is active.
-* **Execution & Response Audit Logging:** Upon completing prompt routing and downstream agent execution, the router logs an `agent_router_response` audit record to the central logging service containing:
-  * Full incoming `request_payload`.
-  * Full generated `response_payload` returned to the invoker.
-  * The exact model used to determine the agent (e.g., `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's `model` field and inside `routing_metadata`.
-  * Detailed routing metadata (`selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latencies).
+* **Real-time Routing Decision & Forwarding Audit Logging:**
+  * **`agent_router`**: Logged **immediately after deciding which agent will process the prompt, BEFORE forwarding to the target agent**, capturing:
+    * Full incoming `request` payload.
+    * Full routing decision `response` payload (`selected_agent`, `model_used`, `similarity_score`, `threshold`, `is_default_fallback`, `explanation`, `routing_latency_ms`, `ranked_scores`).
+    * `invoker`: `"agents_router"`, `target`: `"agents_router"`.
+    * `model`: Exact model used to determine the agent (the active embedding model name, e.g. `bge-large` / `bge-large:latest`, or foundation LLM model name, e.g. `gemini-3.5-flash-lite`, when Main LLM select is active).
+  * **`forward_chat_request`**: Dispatched by `agents_router` immediately before sending the prompt to the target agent container (`invoker="agents_router"`, `target=<target_agent_name>`).
+  * **Response & Boundary Attribution**: Target agent logs `send_chat_response` with `target="agents_router"`, and Web UI logs `received_chat_response` with `invoker="agents_router"` and `target="Web UI"`.
   * Preliminary prompt arrival logging is omitted to eliminate log noise.
 * **Horizontal Statistics Cards:** All metrics are displayed as cards arranged horizontally across the page:
   * **Registered Agents:** Total count of agents registered with the vector router.

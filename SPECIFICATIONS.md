@@ -261,9 +261,18 @@ The **Agents Router Interface** manages semantic routing, dynamic registration, 
   - **Embedding Model Routing**: When an embedding model is selected in the Agent Selector, the router embeds the prompt and candidate agents using that embedding model, computes cosine similarity, and dispatches to the specialized agent exceeding the Min Routing Threshold (defaulting to the primary `agents` container if below threshold or if the agent is DOWN).
   - **Main LLM Select Routing**: When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (ID, title, description, sample prompts, operational status, and default flag) into structured JSON. It sends this JSON catalog along with the prompt to the primary foundation LLM (Google GenAI with structured JSON schema and multi-model fallback), requesting the LLM to return the optimal agent to process the prompt, its reasoning, and confidence score.
 - **Audit Logging for Routing Execution**:
-  - `agent_router` creates a comprehensive audit log sent to the central logging service when generating and returning the response to the invoker:
-    - **`agent_router_response`**: Logged upon completing execution and routing, containing both the full `request_payload` and full `response_payload` sent back to the invoker. Includes the exact model used to determine the agent (e.g. `gemini-3.5-flash-lite`, `bge-large:latest`) in both the log entry's top-level `model` field and inside `routing_metadata`, along with `selected_agent`, `similarity_score`, `selector_type`, `threshold`, and latency.
-    - No preliminary log is created upon prompt arrival to avoid redundant log noise.
+  - `agent_router` implements immediate real-time audit logging prior to downstream execution:
+    - **`agent_router`**: Emitted **immediately after `agent_router` evaluates and decides which agent will process the prompt, BEFORE forwarding the prompt to the target agent**. Contains both the full incoming `request` payload and the complete routing decision `response` payload (`selected_agent`, `model_used`, `similarity_score`, `threshold`, `is_default_fallback`, `explanation`, `routing_latency_ms`, `ranked_scores`).
+      - `invoker`: `"agents_router"`
+      - `target`: `"agents_router"`
+      - `model`: Exact model used to make the routing decision (the active embedding model name, e.g. `bge-large` / `bge-large:latest`, or the foundation LLM model name, e.g. `gemini-3.5-flash-lite`, when Main LLM select is active).
+    - **`forward_chat_request`**: Emitted by `agent_router` immediately before dispatching the HTTP REST request to the target agent container.
+      - `invoker`: `"agents_router"`
+      - `target`: Name of the target agent (e.g. `Technical Support & DevOps Specialist` or `Default Multi-Tool & RAG Agent`).
+    - **Downstream Response & Web UI Attribution**:
+      - Target agents log `send_chat_response` with `target="agents_router"`.
+      - Web UI logs `received_chat_response` with `invoker="agents_router"` and `target="Web UI"`, accurately tracking the service boundary from which the user interface received the chat completion.
+    - Preliminary prompt-receipt logs are omitted to prevent redundant log noise.
 - **Registered Agents Directory & Live Status**:
   - Displays table of all agents currently registered with the router:
     - **Agent Name & ID**: Agent identifier slug and human-readable title.
@@ -1292,7 +1301,7 @@ All container-to-container communications must record the complete, untruncated 
     }
     ```
 - `POST /api/router/chat`
-  - Main routed chat invocation endpoint. Evaluates prompt similarity, dispatches request to top specialized agent (if score > threshold and status is UP) or fallback agent (`agents:8002`), adhering to a 180-second timeout.
+  - Main routed chat invocation endpoint. Evaluates prompt semantic relevance (via vector similarity or Main LLM classification), immediately emits an `agent_router` decision log (`invoker="agents_router"`, `target="agents_router"`, `model=<decision_model>`), emits a `forward_chat_request` log (`invoker="agents_router"`, `target=<target_agent>`), and dispatches the prompt over HTTP REST to the top specialized agent (if score > threshold and status is UP) or fallback agent (`agents:8002`), adhering to a 180-second execution timeout.
   - Request:
     ```json
     {
@@ -1300,6 +1309,7 @@ All container-to-container communications must record the complete, untruncated 
       "conversation_id": "conv_<id>",
       "jwt_token": "<token>",
       "model": "gemma-4-26b-a4b-it",
+      "selector_type": "embedding" | "llm",
       "temperature": 0.7,
       "max_turns": 5
     }
@@ -1310,10 +1320,19 @@ All container-to-container communications must record the complete, untruncated 
       "status": "success",
       "response": "<synthesized answer>",
       "routed_to": "agent-tech-support",
-      "similarity_score": 0.74,
-      "threshold_met": true,
-      "is_fallback": false,
-      "routing_explanation": "Routed to Tech Support Specialist (similarity: 74.0%)"
+      "router_metadata": {
+        "routed_agent_id": "agent-tech-support",
+        "routed_agent_name": "Tech Support Specialist",
+        "routed_agent_url": "http://agent_tech_support:8007",
+        "similarity_score": 0.74,
+        "threshold": 0.50,
+        "is_default_fallback": false,
+        "routing_latency_ms": 38.2,
+        "total_latency_ms": 2840.1,
+        "explanation": "Matched specialized agent 'Tech Support Specialist' with similarity 74.0% > 50.0%",
+        "model_used": "bge-large",
+        "selector_type": "embedding"
+      }
     }
     ```
 

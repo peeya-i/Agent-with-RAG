@@ -524,9 +524,6 @@ class VectorRouter:
 
         total_latency = (time.time() - total_start) * 1000.0
 
-        model_used = getattr(self, "last_model_used", None) or req_model or getattr(self, "active_model", "bge-large:latest")
-        selector_type = getattr(self, "last_selector_type", None) or req_sel or getattr(self, "selector_type", "embedding")
-
         # Inject routing metadata into the response
         if isinstance(resp_data, dict):
             if "conversation_id" not in resp_data and payload.get("conversation_id"):

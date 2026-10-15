@@ -437,6 +437,7 @@ def test_route():
     embedder_model = data.get("embedder_model") or data.get("model")
     if embedder_model == "default":
         embedder_model = None
+    selector_type = data.get("selector_type") or data.get("agent_selector")
 
     # Optional ephemeral draft agents for What-If sandbox evaluation:
     # Start with all registered agents so none are lost!
@@ -452,7 +453,11 @@ def test_route():
                 logger.warning(f"Error parsing draft agent: {e}")
 
     target_agent, top_score, ranked, is_fallback, explanation, route_ms = router.decide_route(
-        query, threshold=threshold_val, candidate_agents=candidate_agents, model=embedder_model
+        query,
+        threshold=threshold_val,
+        candidate_agents=candidate_agents,
+        model=embedder_model,
+        selector_type=selector_type,
     )
 
     effective_thresh = threshold_val if threshold_val is not None else router.threshold
