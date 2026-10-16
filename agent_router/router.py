@@ -447,12 +447,14 @@ class VectorRouter:
             or req_sel
             or getattr(self, "selector_type", "embedding")
         )
+        display_model = "Main LLM select" if (selector_type == "llm" or getattr(self, "active_model", "") == "main_llm") else model_used
         chosen_agent = agent.name if agent else "Default Multi-Tool Agent"
 
         # Full payload of the routing response about which agent should be used
         routing_decision_response = {
             "selected_agent": agent.to_dict() if agent else None,
-            "model_used": model_used,
+            "model_used": display_model,
+            "underlying_model": model_used,
             "selector_type": selector_type,
             "similarity_score": round(top_score, 4),
             "similarity_percent": f"{round(top_score * 100, 1)}%",
@@ -473,19 +475,19 @@ class VectorRouter:
             recipient="agents_router",
             target="agents_router",
             event_type="agent_router",
-            desc=f"Agent Router routed query to '{chosen_agent}' using {model_used} ({round(route_ms)}ms)",
+            desc=f"Agent Router routed query to '{chosen_agent}' using {display_model} ({round(route_ms)}ms)",
             payload={
                 "request": payload,
                 "response": routing_decision_response,
                 "request_payload": payload,
                 "response_payload": routing_decision_response,
-                "model_used": model_used,
+                "model_used": display_model,
                 "selected_agent": chosen_agent
             },
             conv_id=c_id,
             duration_ms=int(route_ms),
             status="success" if agent else "error",
-            model=model_used,
+            model=display_model,
             user=user_name,
             domain=domain_name
         )

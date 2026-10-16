@@ -480,6 +480,9 @@ def test_route():
         ranked_dicts.append(s_dict)
 
     model_name = embedder_model or getattr(router, "last_model_used", None) or getattr(embedding_engine, "model", "bge-large:latest")
+    is_llm = bool(selector_type == "llm" or embedder_model in ["main_llm", "llm", "Main LLM select"] or getattr(router, "last_selector_type", None) == "llm")
+    if is_llm or getattr(router, "selector_type", None) == "llm":
+        model_name = "Main LLM select"
     resp_payload = {
         "status": "success",
         "query": query,
