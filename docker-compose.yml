@@ -134,6 +134,7 @@ services:
       - ./jwt_auth.py:/app/jwt_auth.py
       - ./agent_router/server.py:/app/server.py
       - ./agent_router/router.py:/app/router.py
+      - ./agent_router/llm_router.py:/app/llm_router.py
       - ./agent_router/registry.py:/app/registry.py
       - ./agent_router/embeddings.py:/app/embeddings.py
       - ./agent_router/data:/app/data

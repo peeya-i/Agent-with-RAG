@@ -204,6 +204,18 @@ def process_chat():
     invoker = data.get("invoker") or request.headers.get("X-Invoker") or "Web UI"
     logger.info(f"Processing tech support inquiry for conversation {conv_id} from {invoker}: '{message[:80]}'")
 
+    steps = [
+        {
+            "component": "Agent",
+            "icon": "🛠️",
+            "title": "Technical Support Agent Initialized",
+            "summary": f"Inquiry assigned to Tech Support Specialist ({model})",
+            "description": f"Processing technical inquiry with model {model}",
+            "logs": f"Agent: Technical Support Specialist\nModel: {model}\nConversation: {conv_id}\nQuery: {message}",
+            "elapsed_ms": int((time.time() - start_time) * 1000)
+        }
+    ]
+
     # Extract prior conversation history if provided
     history = data.get("history") or []
     history_ctx = ""
@@ -221,6 +233,7 @@ def process_chat():
     rag_docs = []
     rag_context = ""
     try:
+        rag_start = time.time()
         rag_endpoint = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
         doc_query_payload = {
             "query": message,
@@ -290,8 +303,29 @@ def process_chat():
                 payload=rag_data,
                 conv_id=conv_id
             )
+
+            steps.append({
+                "component": "RAG",
+                "icon": "📚",
+                "title": "Document Vector Search",
+                "summary": f"Retrieved {len(rag_docs)} technical documentation documents ({rag_ms}ms)",
+                "description": f"Retrieved {len(rag_docs)} documents with {sum(len(d.get('chunks', [])) for d in rag_docs)} chunks from Vector DB",
+                "logs": f"Endpoint: {rag_endpoint}/api/rag/query\nTop K: 3\nDocuments found: {len(rag_docs)}\n" + "\n".join([f"- {d['doc_name']} (similarity: {d['highest_similarity']})" for d in rag_docs]),
+                "elapsed_ms": rag_ms
+            })
     except Exception as rag_err:
         logger.warning(f"Error querying RAG vector store from Tech Support Agent: {rag_err}")
+
+    if not any(s.get("component") == "RAG" for s in steps):
+        steps.append({
+            "component": "RAG",
+            "icon": "📚",
+            "title": "Document Vector Search",
+            "summary": "Technical documentation vector search completed (0 documents)",
+            "description": "Queried technical documentation vector store",
+            "logs": "No matching document chunks returned from Vector DB",
+            "elapsed_ms": int((time.time() - start_time) * 1000)
+        })
 
     # Build prompt with history and retrieved RAG context
     prompt = f"{history_ctx}{rag_context}Product Technical Support Inquiry:\n{message}"
@@ -364,6 +398,16 @@ def process_chat():
                         duration_ms=llm_dur_ms,
                         model=try_model
                     )
+
+                    steps.append({
+                        "component": "LLM",
+                        "icon": "🧠",
+                        "title": f"Diagnostic Synthesis ({try_model})",
+                        "summary": f"Generated technical diagnosis in {llm_dur_ms}ms",
+                        "description": f"Synthesized diagnostic recommendations using {try_model}",
+                        "logs": f"Model: {try_model}\nDuration: {llm_dur_ms}ms\nInput Tokens: {in_tok}\nOutput Tokens: {out_tok}",
+                        "elapsed_ms": llm_dur_ms
+                    })
                     break
                 except Exception as e:
                     last_err = e
@@ -392,6 +436,7 @@ def process_chat():
 
     if not content:
         # Deterministic diagnostic response with documentation references if available
+        llm_dur_ms = int((time.time() - start_time) * 1000)
         doc_ref_section = ""
         if rag_context:
             doc_ref_section = f"\n\n**Referenced Knowledge Context**:\n{rag_context[:400]}..."
@@ -406,6 +451,15 @@ def process_chat():
             f"If the issue persists, capture the full stack trace and correlate with conversation `{conv_id}`."
             f"{doc_ref_section}"
         )
+        steps.append({
+            "component": "LLM",
+            "icon": "🧠",
+            "title": "Specialized Diagnostics Engine",
+            "summary": f"Generated DevOps diagnostic recommendations ({llm_dur_ms}ms)",
+            "description": "Synthesized recommendations via specialized technical diagnostic engine",
+            "logs": f"Engine: Specialized Diagnostic Engine\nDuration: {llm_dur_ms}ms\nStatus: Local engine fallback",
+            "elapsed_ms": llm_dur_ms
+        })
 
     elapsed_ms = round((time.time() - start_time) * 1000.0, 2)
 
@@ -419,6 +473,7 @@ def process_chat():
         "conversation_id": conv_id,
         "user_query": message,
         "elapsed_ms": elapsed_ms,
+        "steps": steps,
         "retrieved_evidence": {
             "skills": [{"name": "tech_diagnostics", "description": "DevOps & System Diagnostics Toolset"}],
             "documents": evidence_docs

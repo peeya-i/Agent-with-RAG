@@ -292,24 +292,45 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTokenConstraints();
       }
 
-      // 2. Fetch Skills
-      const sRes = await fetch('/api/skills');
-      if (sRes.ok) {
+      // 2. Fetch Skills and Local Ollama LLMs
+      const [sRes, vModelsRes] = await Promise.all([
+        fetch('/api/skills').catch(() => ({ ok: false })),
+        fetch('/api/vectordb/models').catch(() => ({ ok: false }))
+      ]);
+
+      let skillsList = [];
+      if (sRes && sRes.ok) {
         const sData = await sRes.json();
-        const skillsList = sData.skills || [];
-        
-        // Reset skills dropdown options preserving Vector Store Selects and LLM Selects
-        chatSkills.innerHTML = `
-          <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
-          <option value="LLM Selects">LLM Selects</option>
-        `;
-        skillsList.forEach(s => {
-          const opt = document.createElement('option');
-          opt.value = s.name;
-          opt.textContent = `Skill: ${s.name}`;
-          chatSkills.appendChild(opt);
-        });
+        skillsList = sData.skills || [];
       }
+
+      let ollamaLlms = [];
+      if (vModelsRes && vModelsRes.ok) {
+        const mData = await vModelsRes.json();
+        ollamaLlms = mData.llm_models || [];
+      }
+      
+      // Reset skills dropdown options preserving Vector Store Selects and LLM Selects
+      chatSkills.innerHTML = `
+        <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
+        <option value="LLM Selects">LLM Selects</option>
+      `;
+
+      // Add options for local Ollama LLMs labeled as "Local <model name>"
+      ollamaLlms.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = `Local ${m.name}`;
+        opt.textContent = `Local ${m.name}`;
+        chatSkills.appendChild(opt);
+      });
+
+      // Add specialized skills
+      skillsList.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = `Skill: ${s.name}`;
+        chatSkills.appendChild(opt);
+      });
     } catch (e) {
       console.error('Failed to load models or skills:', e);
     }
@@ -619,6 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
         max_turns: parseInt(chatMaxTurns.value) || 5,
         rag_chunks: parseInt(chatRagChunks.value) || 5,
         skill_mode: chatSkills.value,
+        skill_selector: chatSkills.value,
         skill_threshold: parseFloat(chatSkillThreshold.value) || 0.2,
         doc_threshold: parseFloat(docThresholdInput.value) || 0.3,
         custom_endpoint: isCustomModel ? customEndpoint.value.trim() : null,
@@ -799,11 +821,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let logsHtml = '';
     steps.forEach(st => {
+      const summaryText = st.summary || st.description || '';
+      const logsText = st.logs || (st.description && st.description !== st.summary ? st.description : '');
       logsHtml += `
         <div class="step-log-item">
-          <strong>${st.icon || '🔹'} [${escapeHtml(st.component)}] ${escapeHtml(st.title)}</strong> (${st.elapsed_ms || 0}ms)<br>
-          <span style="color:var(--text-muted);">${escapeHtml(st.summary || '')}</span>
-          <pre style="margin-top:4px;white-space:pre-wrap;color:#93c5fd;">${escapeHtml(st.logs || '')}</pre>
+          <strong>${st.icon || '🔹'} [${escapeHtml(st.component || 'Agent')}] ${escapeHtml(st.title || '')}</strong> (${st.elapsed_ms || 0}ms)<br>
+          ${summaryText ? `<span style="color:var(--text-muted);">${escapeHtml(summaryText)}</span><br>` : ''}
+          ${logsText ? `<pre style="margin-top:4px;white-space:pre-wrap;color:#93c5fd;">${escapeHtml(logsText)}</pre>` : ''}
         </div>
       `;
     });
@@ -3231,7 +3255,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (agentSelectorSelect) {
     agentSelectorSelect.addEventListener('change', async () => {
       const val = agentSelectorSelect.value;
-      const isLlm = (val === 'main_llm' || val === 'llm');
+      const isLocalLlm = (val.startsWith('local:') || val.startsWith('Local '));
+      const isLlm = (val === 'main_llm' || val === 'llm' || isLocalLlm);
       const thresh = parseFloat(routerThresholdInput ? routerThresholdInput.value : 0.55);
       updateAgentSelectorUIState(isLlm, thresh);
 
@@ -3240,14 +3265,14 @@ document.addEventListener('DOMContentLoaded', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            selector_type: isLlm ? 'llm' : 'embedding',
-            model: isLlm ? 'main_llm' : val
+            selector_type: isLocalLlm ? 'ollama_llm' : (isLlm ? 'llm' : 'embedding'),
+            model: isLocalLlm ? val.replace(/^local:/, '').replace(/^Local /, '') : (isLlm ? 'main_llm' : val)
           })
         });
         const res = await resp.json();
         if (thresholdStatusMsg) {
           thresholdStatusMsg.style.display = 'inline';
-          thresholdStatusMsg.textContent = isLlm ? 'Main LLM Active!' : 'Model Saved!';
+          thresholdStatusMsg.textContent = isLocalLlm ? 'Local LLM Active!' : (isLlm ? 'Main LLM Active!' : 'Model Saved!');
           setTimeout(() => { thresholdStatusMsg.style.display = 'none'; }, 2500);
         }
       } catch (e) {
@@ -3341,7 +3366,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // Populate Agent Selector Dropdown
       if (agentSelectorSelect && modelsData && modelsData.models) {
         const activeSelModel = (selData && selData.active_model) ? selData.active_model : 'bge-large:latest';
-        const isLlmActive = (selData && (selData.selector_type === 'llm' || selData.active_model === 'main_llm'));
+        const isOllamaLlmActive = (selData && (selData.selector_type === 'ollama_llm' || activeSelModel.startsWith('local:') || activeSelModel.startsWith('Local ')));
+        const isMainLlmActive = (selData && (selData.selector_type === 'llm' || selData.active_model === 'main_llm'));
+        const isLlmActive = isMainLlmActive || isOllamaLlmActive;
 
         agentSelectorSelect.innerHTML = '';
         
@@ -3351,7 +3378,16 @@ document.addEventListener('DOMContentLoaded', () => {
         optLlm.textContent = 'Main LLM select';
         agentSelectorSelect.appendChild(optLlm);
 
-        // Option 2+: Available Embedding Models
+        // Option 2: Local Ollama LLM models labeled as "Local <model name>"
+        const ollamaLlms = modelsData.llm_models || [];
+        ollamaLlms.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = `local:${m.name}`;
+          opt.textContent = `Local ${m.name}`;
+          agentSelectorSelect.appendChild(opt);
+        });
+
+        // Option 3+: Available Embedding Models
         modelsData.models.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.name;
@@ -3359,8 +3395,11 @@ document.addEventListener('DOMContentLoaded', () => {
           agentSelectorSelect.appendChild(opt);
         });
 
-        if (isLlmActive) {
+        if (isMainLlmActive) {
           agentSelectorSelect.value = 'main_llm';
+        } else if (isOllamaLlmActive) {
+          const cleanM = activeSelModel.replace(/^local:/, '').replace(/^Local /, '');
+          agentSelectorSelect.value = `local:${cleanM}`;
         } else {
           // Match active embedding model
           const matched = modelsData.models.find(m => m.name === activeSelModel || m.name.split(':')[0] === activeSelModel.split(':')[0]);
@@ -4143,9 +4182,20 @@ document.addEventListener('DOMContentLoaded', () => {
       semLabCachedSkills = data.skills || [];
       semLabCachedModels = data.models || [];
 
-      // 1. Update embedder dropdown
+      // 1. Update selector dropdown
       if (semLabEmbedderSelect) {
-        semLabEmbedderSelect.innerHTML = `<option value="default">Active Embedder (${escapeHtml(data.active_model || 'Auto')})</option>`;
+        semLabEmbedderSelect.innerHTML = `<option value="default">Active Selector (${escapeHtml(data.active_model || 'Auto')})</option>`;
+        
+        // Local Ollama LLM models labeled as "Local <model name>"
+        const ollamaLlms = data.llm_models || [];
+        ollamaLlms.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = `local:${m.name}`;
+          opt.textContent = `Local ${m.name}`;
+          semLabEmbedderSelect.appendChild(opt);
+        });
+
+        // Available Embedding Models
         semLabCachedModels.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.name;

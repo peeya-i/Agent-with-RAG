@@ -256,3 +256,29 @@ def test_manual_agents_persistence(tmp_path):
     with open(storage_file, "r") as f:
         data_after = json.load(f)
     assert len(data_after) == 0
+
+def test_ollama_llm_routing_selection():
+    from unittest.mock import patch, MagicMock
+    router = VectorRouter(registry=AgentRegistry())
+    default_agent = AgentInfo(id="agents-default", name="Default Agent", description="General queries", url="http://agents:8002", is_default=True)
+    stock_agent = AgentInfo(id="stock_agent", name="Stock Agent", description="Stock market queries", url="http://stock_agent:8000")
+    router.registry.register(default_agent)
+    router.registry.register(stock_agent)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "response": '{"selected_agent_id": "stock_agent", "confidence_score": 0.95, "reasoning": "Financial question"}'
+    }
+
+    with patch("requests.post", return_value=mock_resp):
+        target, conf, scored, is_fallback, explanation, latency = router.decide_route(
+            "What is the stock price of Apple?",
+            model="local:deepseek-r1:1.5b",
+            selector_type="ollama_llm"
+        )
+        assert target.id == "stock_agent"
+        assert conf == 0.95
+        assert router.last_model_used == "Local deepseek-r1:1.5b"
+        assert router.last_selector_type == "ollama_llm"
+        assert is_fallback is False

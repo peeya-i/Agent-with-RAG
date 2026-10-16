@@ -147,10 +147,12 @@ class AgentRegistry:
         self.embedding_engine = embedding_engine or EmbeddingEngine()
         data_dir = os.environ.get("AGENTS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
         self.storage_file = storage_file or os.environ.get("AGENTS_STORAGE_FILE", os.path.join(data_dir, "manual_agents.json"))
+        self._last_storage_mtime: float = 0.0
+        self._storage_loaded: bool = (storage_file is not None)
 
     def save_manual_agents(self):
         """Persists all manually configured agents into the mounted volume storage file."""
-        if not self.storage_file:
+        if not self.storage_file or not getattr(self, "_storage_loaded", False):
             return
         with self._lock:
             try:
@@ -165,25 +167,42 @@ class AgentRegistry:
                         manual_list.append(agent.to_dict(include_embedding=False))
                 with open(self.storage_file, "w", encoding="utf-8") as f:
                     json.dump(manual_list, f, indent=2)
+                try:
+                    self._last_storage_mtime = os.path.getmtime(self.storage_file)
+                except Exception:
+                    pass
                 logger.info(f"Persisted {len(manual_list)} manual agents to {self.storage_file}")
             except Exception as e:
                 logger.error(f"Error persisting manual agents to {self.storage_file}: {e}")
 
-    def load_manual_agents(self) -> List[AgentInfo]:
-        """Loads and registers all manually configured agents from the volume storage file upon starting."""
+    def load_manual_agents(self, force: bool = False) -> List[AgentInfo]:
+        """Loads and registers all manually configured agents from the volume storage file upon starting or file update."""
         if not self.storage_file or not os.path.exists(self.storage_file):
             return []
+        self._storage_loaded = True
         with self._lock:
             try:
+                curr_mtime = os.path.getmtime(self.storage_file)
+                if not force and self._last_storage_mtime and self._last_storage_mtime == curr_mtime:
+                    return [
+                        a for a in self._agents.values()
+                        if getattr(a, "agent_type", "") == "Manually Added"
+                        or (a.metadata and a.metadata.get("registration_type") == "Manually Added")
+                    ]
+
                 with open(self.storage_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 loaded = []
+                disk_ids = set()
                 for item in data:
                     agent = AgentInfo.from_dict(item)
+                    disk_ids.add(agent.id)
                     agent.agent_type = "Manually Added"
                     if not agent.metadata:
                         agent.metadata = {}
                     agent.metadata["registration_type"] = "Manually Added"
+                    if agent.id in self._agents:
+                        agent.queries_handled = self._agents[agent.id].queries_handled
                     # Auto embed if missing
                     if agent.embedding is None:
                         text_to_embed = agent.get_embedding_text()
@@ -192,6 +211,18 @@ class AgentRegistry:
                         agent.sample_embeddings = [self.embedding_engine.embed_text(p) for p in agent.sample_prompts]
                     self._agents[agent.id] = agent
                     loaded.append(agent)
+
+                # Remove manual agents deleted from file
+                to_remove = [
+                    aid for aid, a in self._agents.items()
+                    if (getattr(a, "agent_type", "") == "Manually Added"
+                        or (a.metadata and a.metadata.get("registration_type") == "Manually Added"))
+                    and aid not in disk_ids
+                ]
+                for aid in to_remove:
+                    del self._agents[aid]
+
+                self._last_storage_mtime = curr_mtime
                 logger.info(f"Loaded {len(loaded)} manually configured agents from {self.storage_file}")
                 return loaded
             except Exception as e:
@@ -229,9 +260,15 @@ class AgentRegistry:
                 # Do not allow unregistering the default fallback agent
                 if self._agents[agent_id].is_default:
                     raise ValueError(f"Cannot unregister default fallback agent '{agent_id}'.")
+                agent = self._agents[agent_id]
+                is_manual = (
+                    getattr(agent, "agent_type", "") == "Manually Added"
+                    or (agent.metadata and agent.metadata.get("registration_type") == "Manually Added")
+                )
                 del self._agents[agent_id]
-                self.save_manual_agents()
-                logger.info(f"Agent '{agent_id}' unregistered and removed from persistence file.")
+                if is_manual and getattr(self, "_storage_loaded", False):
+                    self.save_manual_agents()
+                logger.info(f"Agent '{agent_id}' unregistered.")
                 return True
             return False
 
@@ -277,6 +314,13 @@ class AgentRegistry:
 
     def list_all_agents(self) -> List[AgentInfo]:
         with self._lock:
+            if self._storage_loaded and self.storage_file and os.path.exists(self.storage_file):
+                try:
+                    curr_mtime = os.path.getmtime(self.storage_file)
+                    if getattr(self, "_last_storage_mtime", 0.0) != curr_mtime:
+                        self.load_manual_agents(force=True)
+                except Exception:
+                    pass
             return list(self._agents.values())
 
     def list_available_agents(self) -> List[AgentInfo]:

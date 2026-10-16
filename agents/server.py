@@ -144,7 +144,7 @@ def process_chat():
     temperature = float(data.get("temperature", 0.7))
     max_tokens = int(data.get("max_tokens", 2048)) if data.get("max_tokens") else 2048
     max_turns = int(data.get("max_turns", 5))
-    skill_selector = data.get("skill_selector", "Vector Store Selects")
+    skill_selector = data.get("skill_selector") or data.get("skill_mode") or "Vector Store Selects"
     skill_threshold = float(data.get("skill_threshold", 0.2))
     doc_threshold = float(data.get("doc_threshold", 0.3))
     max_chunks = int(data.get("max_chunks", 5))

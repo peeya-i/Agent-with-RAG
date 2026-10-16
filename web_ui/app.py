@@ -818,12 +818,14 @@ def get_semantic_lab_context():
 
     # 3. Models
     models = []
+    llm_models = []
     active_model = "bge-large:latest"
     try:
         m_resp = get_vectordb_models()
         if hasattr(m_resp, "get_json"):
             m_data = m_resp.get_json()
             models = m_data.get("models", [])
+            llm_models = m_data.get("llm_models", [])
             active_model = m_data.get("active_model", active_model)
     except Exception as e:
         app.logger.warning(f"Error getting models for semantic lab: {e}")
@@ -834,12 +836,13 @@ def get_semantic_lab_context():
         "agent_threshold": threshold,
         "skills": skills,
         "models": models,
+        "llm_models": llm_models,
         "active_model": active_model
     })
 
 @app.route("/api/semantic_lab/test_skills", methods=["POST"])
 def semantic_lab_test_skills():
-    """Queries doc_RAG for skill vector matches given a prompt and threshold."""
+    """Queries doc_RAG or Local Ollama LLM for skill matches given a prompt and threshold."""
     data = request.get_json(silent=True) or {}
     query = (data.get("query") or data.get("message") or "").strip()
     threshold = float(data.get("threshold", 0.20))
@@ -853,6 +856,113 @@ def semantic_lab_test_skills():
     embedder_model = (data.get("embedder_model") or data.get("model") or "").strip() or None
     if embedder_model == "default":
         embedder_model = None
+
+    is_ollama_llm = bool(
+        embedder_model and (
+            embedder_model.startswith("local:")
+            or embedder_model.startswith("Local ")
+            or "deepseek" in embedder_model.lower()
+            or "llama" in embedder_model.lower()
+        )
+    )
+
+    if is_ollama_llm:
+        clean_model = embedder_model.replace("local:", "").replace("Local ", "").strip()
+        skills_summary = []
+        try:
+            r_sk = requests.get(f"{doc_rag_url}/api/rag/skills/list", timeout=5)
+            if r_sk.ok:
+                for s in r_sk.json().get("skills", []):
+                    skills_summary.append({
+                        "skill_name": s.get("name") or s.get("skill_name"),
+                        "description": s.get("description", ""),
+                    })
+        except Exception:
+            pass
+
+        if draft_skill and isinstance(draft_skill, dict):
+            skills_summary.append({
+                "skill_name": draft_skill.get("name") or "draft-sandbox-skill",
+                "description": draft_skill.get("description", "")
+            })
+
+        prompt_ol = (
+            "You are an expert AI skill selector. Given the user prompt and a list of available specialized skills, "
+            "determine which skill or skills (if any) are directly relevant to answering the prompt.\n"
+            "If no skill is relevant, return an empty list.\n\n"
+            f"Available Skills:\n{json.dumps(skills_summary, indent=2)}\n\n"
+            f"User Prompt:\n\"{query}\"\n\n"
+            "Respond ONLY with a JSON object in this exact format:\n"
+            "{\n"
+            '  "selected_skills": ["<skill_name_1>", ...],\n'
+            '  "reasoning": "<short explanation why these skills were selected>"\n'
+            "}"
+        )
+        ollama_url = resolve_url(OLLAMA_URL, "ollama", 11434)
+        matches = []
+        try:
+            r_ol = requests.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": clean_model,
+                    "prompt": prompt_ol,
+                    "stream": False,
+                    "format": "json"
+                },
+                timeout=30
+            )
+            if r_ol.ok:
+                raw_txt = r_ol.json().get("response", "").strip()
+                if raw_txt.startswith("```json"):
+                    raw_txt = raw_txt[7:]
+                if raw_txt.startswith("```"):
+                    raw_txt = raw_txt[3:]
+                if raw_txt.endswith("```"):
+                    raw_txt = raw_txt[:-3]
+                parsed_ol = json.loads(raw_txt.strip())
+                sel_names = parsed_ol.get("selected_skills", [])
+                if isinstance(sel_names, str):
+                    sel_names = [sel_names]
+                reasoning = parsed_ol.get("reasoning", "")
+                for sn in sel_names:
+                    s_obj = next((s for s in skills_summary if s["skill_name"] == sn), None)
+                    matches.append({
+                        "skill_name": sn,
+                        "similarity_score": 1.0,
+                        "similarity_percent": "100.0%",
+                        "chunk_text": s_obj.get("description", "") if s_obj else "",
+                        "reasoning": reasoning,
+                        "metadata": {"selector": f"Local {clean_model}"}
+                    })
+        except Exception as e:
+            app.logger.warning(f"Error evaluating skills with Ollama LLM {clean_model}: {e}")
+
+        resp_payload = {
+            "status": "success",
+            "query": query,
+            "threshold": threshold,
+            "matches": matches,
+            "match_count": len(matches),
+            "model_used": f"Local {clean_model}"
+        }
+        log_event(
+            invoker="Semantic Lab",
+            recipient="Ollama LLM",
+            event_type="semantic_lab_test_skills",
+            desc=f"Semantic Lab evaluated skills via Local LLM {clean_model}: '{query[:80]}' ({len(matches)} matches)",
+            payload={
+                "request_payload": data,
+                "response_payload": resp_payload,
+                "model_used": f"Local {clean_model}",
+                "match_count": len(matches)
+            },
+            conv_id=data.get("conversation_id"),
+            status="success",
+            model=f"Local {clean_model}"
+        )
+        return jsonify(resp_payload)
+
+    # Fallback to doc_rag vector query
     try:
         req_payload = {
             "db_type": "skill",
@@ -1266,6 +1376,23 @@ def get_vectordb_models():
     except Exception:
         installed_tags = {"bge-large", "bge-large:latest", "bge-m3", "bge-m3:latest", "nomic-embed-text", "nomic-embed-text:latest", "all-minilm", "all-minilm:latest"}
 
+    # Partition raw Ollama models into embedders vs generative LLMs
+    llm_models = []
+    for om in raw_ollama_models:
+        caps = om.get("capabilities", [])
+        om_name = om.get("name", "")
+        # If model has completion or thinking or not an embedding family
+        if "completion" in caps or "thinking" in caps or ("embedding" not in caps and "bert" not in om.get("details", {}).get("family", "")):
+            size_bytes = om.get("size", 0)
+            size_str = f"{size_bytes / (1024**3):.1f}GB" if size_bytes > 1024**3 else f"{size_bytes / (1024**2):.1f}MB"
+            llm_models.append({
+                "name": om_name,
+                "model": om.get("model", om_name),
+                "size": size_str,
+                "details": om.get("details", {}),
+                "capabilities": caps
+            })
+
     active_base = active_model.split(":")[0]
     result_models = []
     known_names = set()
@@ -1295,33 +1422,69 @@ def get_vectordb_models():
             "is_installed": is_installed
         })
 
-    # Dynamically append any additional models discovered from Ollama
+    # Dynamically append any additional embedding models discovered from Ollama
     for om in raw_ollama_models:
         om_name = om.get("name", "")
-        if om_name and om_name not in known_names and om_name.split(":")[0] not in known_names:
-            details = om.get("details", {})
-            dim = details.get("embedding_length", "N/A")
-            ctx = details.get("context_length", "N/A")
-            size_bytes = om.get("size", 0)
-            size_str = f"{size_bytes / (1024**3):.1f}GB" if size_bytes > 1024**3 else f"{size_bytes / (1024**2):.1f}MB"
-            is_active = (om_name == active_model or om_name.split(":")[0] == active_base)
+        caps = om.get("capabilities", [])
+        # Only add to embedding models if it supports embedding
+        if "embedding" in caps or ("completion" not in caps and "thinking" not in caps):
+            if om_name and om_name not in known_names and om_name.split(":")[0] not in known_names:
+                details = om.get("details", {})
+                dim = details.get("embedding_length", "N/A")
+                ctx = details.get("context_length", "N/A")
+                size_bytes = om.get("size", 0)
+                size_str = f"{size_bytes / (1024**3):.1f}GB" if size_bytes > 1024**3 else f"{size_bytes / (1024**2):.1f}MB"
+                is_active = (om_name == active_model or om_name.split(":")[0] == active_base)
 
-            result_models.append({
-                "name": om_name,
-                "dimensions": dim,
-                "context_window": str(ctx) if ctx != "N/A" else "Unknown",
-                "size": size_str,
-                "description": f"Custom Ollama model ({details.get('family', 'general')})",
-                "status": "Installed (Active)" if is_active else "Installed",
-                "is_active": is_active,
-                "is_installed": True
-            })
+                result_models.append({
+                    "name": om_name,
+                    "dimensions": dim,
+                    "context_window": str(ctx) if ctx != "N/A" else "Unknown",
+                    "size": size_str,
+                    "description": f"Custom Ollama model ({details.get('family', 'general')})",
+                    "status": "Installed (Active)" if is_active else "Installed",
+                    "is_active": is_active,
+                    "is_installed": True
+                })
 
     return jsonify({
         "status": "success",
         "models": result_models,
+        "llm_models": llm_models,
         "active_model": active_model
     })
+
+@app.route("/api/skills", methods=["GET"])
+@app.route("/api/rag/skills", methods=["GET"])
+def proxy_get_skills():
+    doc_rag_url = resolve_url(DOC_RAG_URL, "doc_rag", 8003)
+    try:
+        r = requests.get(f"{doc_rag_url}/api/rag/skills/list", timeout=5)
+        if r.ok:
+            return jsonify(r.json())
+    except Exception as e:
+        app.logger.warning(f"Error proxying skills: {e}")
+    return jsonify({"status": "success", "skills": []})
+
+@app.route("/api/models/ollama_llms", methods=["GET"])
+def get_ollama_llms():
+    ollama_url = resolve_url(OLLAMA_URL, "ollama", 11434)
+    llms = []
+    try:
+        r = requests.get(f"{ollama_url}/api/tags", timeout=4)
+        if r.ok:
+            for om in r.json().get("models", []):
+                caps = om.get("capabilities", [])
+                if "completion" in caps or "thinking" in caps or ("embedding" not in caps and "bert" not in om.get("details", {}).get("family", "")):
+                    llms.append({
+                        "name": om.get("name", ""),
+                        "model": om.get("model", ""),
+                        "size": om.get("size", 0),
+                        "details": om.get("details", {})
+                    })
+    except Exception as e:
+        app.logger.warning(f"Error fetching Ollama LLMs: {e}")
+    return jsonify({"status": "success", "models": llms})
 
 @app.route("/api/vectordb/update_skills", methods=["POST"])
 @app.route("/api/skills/update", methods=["POST"])

@@ -4,6 +4,10 @@ import time
 import re
 from datetime import datetime, timezone
 import requests
+try:
+    from .skill_selector import select_skills_with_ollama, select_skills_with_gemini
+except ImportError:
+    from skill_selector import select_skills_with_ollama, select_skills_with_gemini
 
 class CustomAgent:
     def __init__(self, doc_rag_url="http://doc_rag:8003", tools_url="http://tools:8005", logging_url="http://logging:8006", gemini_api_key=None):
@@ -265,7 +269,63 @@ class CustomAgent:
 
         # 1. Skill Selection
         s_start = time.time()
-        if skill_selector == "Vector Store Selects":
+        is_local_ollama_selector = (
+            skill_selector.startswith("Local ")
+            or skill_selector.startswith("local:")
+            or skill_selector in ["deepseek-r1:1.5b", "deepseek-r1"]
+        )
+
+        if is_local_ollama_selector:
+            local_model = skill_selector.replace("Local ", "").replace("local:", "").strip()
+            # Fetch all available skills
+            available_skills = []
+            try:
+                rag_url = self._resolve(self.doc_rag_url, "doc_rag", 8003)
+                r_sk = requests.get(f"{rag_url}/api/rag/skills/list", timeout=5)
+                if r_sk.ok:
+                    available_skills = r_sk.json().get("skills", [])
+            except Exception as e:
+                pass
+
+            sel_matched, sel_evidence, sel_err = select_skills_with_ollama(
+                message=message,
+                local_model=local_model,
+                available_skills=available_skills
+            )
+            if sel_err:
+                self.log(
+                    invoker="Custom Agent",
+                    recipient="Ollama LLM",
+                    event_type="skill_selection_error",
+                    desc=f"Local LLM skill selection failed: {sel_err}",
+                    payload={"error": sel_err, "model": local_model},
+                    conv_id=conversation_id,
+                    status="error"
+                )
+            matched_skills.extend(sel_matched)
+            retrieved_evidence["skills"].extend(sel_evidence)
+
+            steps.append({
+                "component": "Skills",
+                "icon": "⚡",
+                "title": f"Local LLM Skill Selection (Local {local_model})",
+                "description": f"Retrieved {len(matched_skills)} skills: {', '.join([s['skill_name'] for s in matched_skills]) if matched_skills else 'None'}",
+                "elapsed_ms": int((time.time() - s_start) * 1000),
+                "data": matched_skills
+            })
+
+            self.log(
+                invoker="Custom Agent",
+                recipient="Ollama LLM",
+                target="Ollama LLM",
+                event_type="local_llm_skill_selection",
+                desc=f"Local LLM {local_model} selected {len(matched_skills)} skill(s)",
+                payload={"query": message, "selected_skills": matched_skills, "model": f"Local {local_model}"},
+                conv_id=conversation_id,
+                model=f"Local {local_model}"
+            )
+
+        elif skill_selector == "Vector Store Selects":
             # Query doc_RAG skill vector store
             try:
                 rag_url = self._resolve(self.doc_rag_url, "doc_rag", 8003)
@@ -323,7 +383,7 @@ class CustomAgent:
                 "data": matched_skills
             })
 
-        elif skill_selector == "Use AI Agent with Tools":
+        elif skill_selector in ["Use AI Agent with Tools", "LLM Selects"]:
             # Ask LLM to pick appropriate skill
             steps.append({
                 "component": "Skills",
@@ -334,7 +394,7 @@ class CustomAgent:
             })
             matched_skills = [{"skill_name": "all_tools", "text": "All registered tools enabled"}]
 
-        elif skill_selector.startswith("Skill:"):
+        elif skill_selector.startswith("Skill:") or skill_selector not in ["Vector Store Selects"]:
             target_skill = skill_selector.replace("Skill:", "").strip()
             matched_skills = [{"skill_name": target_skill, "text": f"User explicitly selected skill {target_skill}"}]
             steps.append({

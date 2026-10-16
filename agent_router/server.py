@@ -217,6 +217,11 @@ def router_selector():
             router.selector_type = "llm"
             router.active_model = "main_llm"
             logger.info("Router active selector updated to 'Main LLM select'")
+        elif new_sel in ["ollama_llm", "local_llm"] or (new_model and (str(new_model).startswith("local:") or str(new_model).startswith("Local "))):
+            clean_m = str(new_model).replace("local:", "").replace("Local ", "").strip()
+            router.selector_type = "ollama_llm"
+            router.active_model = clean_m
+            logger.info(f"Router active selector updated to Local Ollama LLM '{clean_m}'")
         elif new_model:
             router.selector_type = "embedding"
             router.active_model = new_model
@@ -480,8 +485,16 @@ def test_route():
         ranked_dicts.append(s_dict)
 
     model_name = embedder_model or getattr(router, "last_model_used", None) or getattr(embedding_engine, "model", "bge-large:latest")
+    is_ollama_llm = bool(
+        selector_type in ["ollama_llm", "local_llm"]
+        or (embedder_model and (str(embedder_model).startswith("local:") or str(embedder_model).startswith("Local ")))
+        or getattr(router, "last_selector_type", None) == "ollama_llm"
+    )
     is_llm = bool(selector_type == "llm" or embedder_model in ["main_llm", "llm", "Main LLM select"] or getattr(router, "last_selector_type", None) == "llm")
-    if is_llm or getattr(router, "selector_type", None) == "llm":
+    if is_ollama_llm or getattr(router, "selector_type", None) == "ollama_llm":
+        raw_m = str(embedder_model or getattr(router, "active_model", "deepseek-r1:1.5b")).replace("local:", "").replace("Local ", "").strip()
+        model_name = f"Local {raw_m}"
+    elif is_llm or getattr(router, "selector_type", None) == "llm":
         model_name = "Main LLM select"
     resp_payload = {
         "status": "success",
