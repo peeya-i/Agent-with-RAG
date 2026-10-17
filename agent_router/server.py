@@ -457,11 +457,17 @@ def test_route():
             except Exception as e:
                 logger.warning(f"Error parsing draft agent: {e}")
 
+    invoker = data.get("invoker") or "Semantic Lab"
+    conv_id = data.get("conversation_id") or f"conv_sem_lab_{int(time.time())}"
+    user = data.get("user") or data.get("username") or "admin"
+    domain = data.get("domain") or "pi-net.local"
+
     target_agent, top_score, ranked, is_fallback, explanation, route_ms = router.decide_route(
         query,
         threshold=threshold_val,
         candidate_agents=candidate_agents,
         model=embedder_model,
+        conv_id=conv_id,
         selector_type=selector_type,
     )
 
@@ -511,12 +517,6 @@ def test_route():
         "routing_latency_ms": round(route_ms, 2),
         "ranked_scores": ranked_dicts
     }
-
-    invoker = data.get("invoker") or "Semantic Lab"
-    conv_id = data.get("conversation_id") or f"conv_sem_lab_{int(time.time())}"
-    user = data.get("user") or data.get("username") or "admin"
-    domain = data.get("domain") or "pi-net.local"
-
     # Log Semantic Lab test route evaluation
     log_event(
         invoker="agents_router",

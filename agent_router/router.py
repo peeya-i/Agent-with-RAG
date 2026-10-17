@@ -177,6 +177,7 @@ class VectorRouter:
             default_agent=default_agent,
             gemini_api_key=self.gemini_api_key,
             conv_id=conv_id,
+            logging_url=self.logging_url,
         )
 
         scored = [
@@ -213,6 +214,7 @@ class VectorRouter:
             all_agents=all_agents,
             default_agent=default_agent,
             conv_id=conv_id,
+            logging_url=self.logging_url,
         )
 
         scored = [

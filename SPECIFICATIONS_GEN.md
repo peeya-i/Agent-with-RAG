@@ -67,6 +67,7 @@ Agent-with-RAG/
 │   ├── data/                     # Volume-mounted persistence directory for manual agents
 │   │   └── manual_agents.json    # Persistent JSON store of manually added agents
 │   ├── embeddings.py             # Vector embedding engine (Google GenAI + local fallback)
+│   ├── llm_router.py             # Unified LLM agent routing module (prompt builder, Gemini & Ollama dispatch)
 │   ├── registry.py               # Dynamic agent registry, persistence, actual status & health pings
 │   ├── router.py                 # Cosine similarity vector routing (> 50% threshold) & fallback
 │   ├── server.py                 # Flask REST server (/api/router/chat, /api/router/agents)
@@ -78,7 +79,8 @@ Agent-with-RAG/
 │   └── requirements.txt
 ├── agents/                       # Primary Default Multi-Tool Agent & FastMCP service (Port 8002)
 │   ├── custom_agent/             # Autonomous planning orchestrator
-│   │   └── custom_agent.py
+│   │   ├── custom_agent.py       # Multi-turn autonomous ReAct execution loop
+│   │   └── skill_selector.py     # Unified LLM skill selection module (Ollama & Gemini)
 │   ├── genai/                    # Google ADK agent implementation
 │   ├── secrets/                  # Inter-container keys & env configs
 │   ├── skills/                   # Discovered domain skills
@@ -269,12 +271,12 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
   - `Max RAG Chunks` dropdown: Options are `2`, `3`, `5` (Default), `7`, `10`. Defines maximum context chunks retrieved from vector store.
   - `Doc Threshold` input: Numeric similarity threshold (Default: `0.3`, Min: `0.0`, Max: `1.0`, Step: `0.05`).
 - **Second Parameter Row** (`.chat-param-row`):
-  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `LLM Selects`, and individually discovered skills (`time-weather-skill`, `stock-analysis-skill`, `person-information-skill`, `document-search-skill`).
-  - `Skill Threshold` box: Numeric input (Default: `0.2`, Min: `0.0`, Max: `1.0`, Step: `0.05`). Visible when `Vector Store Selects` is active.
+  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `LLM Selects`, `Local nimble-v3` (using Nimble choice routing via `/v1/systemone`), other local Ollama models (e.g. `Local deepseek-r1:1.5b`), and individually discovered skills (`time-weather-skill`, `stock-analysis-skill`, `person-information-skill`, `document-search-skill`).
+  - `Skill Threshold` box: Numeric input (Default: `0.2`, Min: `0.0`, Max: `1.0`, Step: `0.05`). Visible when `Vector Store Selects` is active, hidden for other modes.
 - **Body Content**:
-  - Lists matched skills with similarity scores and rationale.
+  - Lists matched skills with similarity scores, descriptions, and a badge indicating the selection method (`VectorDB (ChromaDB)`, `LLM Selection (<model>)`, or `Manual Selection`).
   - Displays retrieved document chunks with similarity score badges (`XX.X% match`), source document filename, chunk index, and complete chunk text.
-  - Updates dynamically following every chat response from agent execution trace logs.
+  - Updates dynamically following every chat response from agent execution trace logs and response payloads.
 
 ---
 
@@ -940,23 +942,34 @@ Tariq Mansoor,King Fahd Road Riyadh,Saudi Arabia,"Smart Air Purifier, Extra Carb
   {
     "id": "log_1790000000000_a1b2",
     "timestamp": "2026-09-29T12:00:00.000000+00:00",
-    "type": "send_chat_request|received_chat_request|send_chat_response|received_chat_response|llm_invocation|llm_response|tool_invocation|tool_response|skill_vector_query|skill_vector_response|document_vector_query|document_vector_response|embedding_query",
-    "invoker": "web_ui|agents|doc_rag|tools|ollama",
-    "recipient": "agents|doc_rag|tools|logging|web_ui|llm",
+    "type": "send_chat_request|received_chat_request|send_chat_response|received_chat_response|llm_invocation|llm_response|tool_invocation|tool_response|skill_vector_query|skill_vector_response|document_vector_query|document_vector_response|embedding_query|agent_router|forward_chat_request",
+    "invoker": "web_ui|agents|agents_router|doc_rag|tools|ollama|agent_tech_support",
+    "recipient": "agents|doc_rag|tools|logging|web_ui|llm|llm_selector|agents_router",
+    "target": "agents|doc_rag|tools|logging|web_ui|llm|llm_selector|agents_router",
     "conversation_id": "conv_1790000000",
-    "short_description": "Summary description (e.g. Agent received chat response 1420ms)",
+    "short_description": "Summary description (e.g. Main LLM Agent Routing Decision (gemini-3.5-flash-lite))",
     "payload": {
-      "request": { ... },
-      "response": { ... }
+      "input": { ... },
+      "output": { ... }
     },
     "status": "success|error",
     "duration_ms": 1420,
     "input_tokens": 863,
     "output_tokens": 124,
-    "model": "gemma-4-26b-a4b-it",
+    "model": "gemini-3.5-flash-lite",
     "is_error": false
   }
   ```
+
+  - **`llm_invocation` (LLM Decision Telemetry)**: Emitted by `agent_router` (`llm_router.py`) and `agents` (`skill_selector.py`) immediately upon receiving a response from the LLM model call (Gemini or local Ollama).
+    - `type`: `"llm_invocation"`
+    - `invoker`: `"agents_router"`
+    - `recipient`: `"llm_selector"`
+    - `target`: `"llm_selector"`
+    - `payload.input`: Full request payload passed to the LLM (model, prompt, system_instruction, format/config).
+    - `payload.output`: Full response payload received from the LLM (parsed JSON reasoning, selected_agent_id/selected_skills, confidence scores).
+    - `duration_ms`: Duration of the LLM call in milliseconds.
+    - `model`: Exact model identifier invoked (e.g. `gemini-3.5-flash-lite`, `deepseek-r1:1.5b`).
 
 #### 3.5.2 Features
 - **Full Payload Retention**: All inter-service requests and responses retain complete, untruncated payloads.

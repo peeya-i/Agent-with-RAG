@@ -601,13 +601,18 @@ def proxy_chat():
     # Enrich response with retrieved_evidence pulled from Logging per SPECIFICATIONS.md
     if isinstance(res_data, dict):
         logged_ev = extract_evidence_from_logs(conv_id)
-        if logged_ev.get("skills") or logged_ev.get("documents"):
-            res_data["retrieved_evidence"] = {
-                "skills": logged_ev.get("skills", []),
-                "documents": logged_ev.get("documents", [])
-            }
-        elif not res_data.get("retrieved_evidence"):
-            res_data["retrieved_evidence"] = {"skills": [], "documents": []}
+        existing_ev = res_data.get("retrieved_evidence") or {}
+        merged_skills = existing_ev.get("skills", [])
+        if not merged_skills and logged_ev.get("skills"):
+            merged_skills = logged_ev.get("skills", [])
+        merged_docs = existing_ev.get("documents", [])
+        if not merged_docs and logged_ev.get("documents"):
+            merged_docs = logged_ev.get("documents", [])
+
+        res_data["retrieved_evidence"] = {
+            "skills": merged_skills,
+            "documents": merged_docs
+        }
 
         res_data["conversation_id"] = conv_id
         if not res_data.get("user_query") and data.get("message"):
@@ -861,6 +866,7 @@ def semantic_lab_test_skills():
         embedder_model and (
             embedder_model.startswith("local:")
             or embedder_model.startswith("Local ")
+            or "nimble" in embedder_model.lower()
             or "deepseek" in embedder_model.lower()
             or "llama" in embedder_model.lower()
         )
@@ -1137,7 +1143,7 @@ def extract_evidence_from_logs(conv_id):
         req = payload.get("request", {}) if isinstance(payload.get("request"), dict) else {}
         resp = payload.get("response", {}) if isinstance(payload.get("response"), dict) else {}
 
-        # 1. Skills: skill_vector_response or received_skill_vector_response or vector_db_query_response with skill
+        # 1. Skills from Vector DB
         if "skill_vector_response" in l_type or (l_type in ["vector_db_query_response", "received_vector_query_request"] and req.get("document_type") == "skill"):
             items = payload.get("results") or resp.get("matched_items") or []
             for item in items:
@@ -1152,12 +1158,37 @@ def extract_evidence_from_logs(conv_id):
                     skills.append({
                         "name": name,
                         "similarity": score,
-                        "description": desc[:300]
+                        "description": desc[:300],
+                        "selection_method": "VectorDB (ChromaDB)"
                     })
                 else:
                     for s in skills:
                         if s["name"] == name and score > s["similarity"]:
                             s["similarity"] = score
+
+        # 1b. Skills from LLM Selection (Local Nimble, DeepSeek, Gemini, etc.)
+        elif l_type in ["local_llm_skill_selection", "gemini_llm_skill_selection", "llm_skill_selection", "llm_invocation"] and (payload.get("selected_skills") or payload.get("output", {}).get("selected_tool") or payload.get("output", {}).get("answers", {}).get("route_intent", {}).get("choice")):
+            m_name = payload.get("model") or l.get("model") or "LLM"
+            method_str = f"LLM Selection ({m_name})" if not str(m_name).startswith("LLM Selection") else str(m_name)
+            sel_items = payload.get("selected_skills") or []
+            if not sel_items and payload.get("output"):
+                out_obj = payload.get("output")
+                choice = out_obj.get("selected_tool") or out_obj.get("answers", {}).get("route_intent", {}).get("choice")
+                if choice and choice != "GENERAL_FALLBACK":
+                    sel_items = [{"skill_name": choice, "text": f"Selected by {m_name}"}]
+            for item in sel_items:
+                name = item.get("skill_name") or item.get("name") or "Skill"
+                if name == "all_tools" or name == "GENERAL_FALLBACK":
+                    continue
+                desc = item.get("text") or item.get("description") or ""
+                if name not in seen_skills:
+                    seen_skills.add(name)
+                    skills.append({
+                        "name": name,
+                        "similarity": 1.0,
+                        "description": desc[:300],
+                        "selection_method": method_str
+                    })
 
         # 2. Documents: document_vector_response or received_document_vector_response or vector_db_query_response with document
         if "document_vector_response" in l_type or (l_type in ["vector_db_query_response", "received_vector_query_request"] and req.get("document_type") == "document"):

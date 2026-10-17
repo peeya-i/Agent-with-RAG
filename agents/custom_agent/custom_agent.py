@@ -272,7 +272,9 @@ class CustomAgent:
         is_local_ollama_selector = (
             skill_selector.startswith("Local ")
             or skill_selector.startswith("local:")
-            or skill_selector in ["deepseek-r1:1.5b", "deepseek-r1"]
+            or skill_selector in ["deepseek-r1:1.5b", "deepseek-r1", "nimble-v3", "nimble-v3:latest", "nimble"]
+            or "nimble" in skill_selector.lower()
+            or "deepseek" in skill_selector.lower()
         )
 
         if is_local_ollama_selector:
@@ -290,7 +292,9 @@ class CustomAgent:
             sel_matched, sel_evidence, sel_err = select_skills_with_ollama(
                 message=message,
                 local_model=local_model,
-                available_skills=available_skills
+                available_skills=available_skills,
+                conv_id=conversation_id,
+                logging_url=self.logging_url
             )
             if sel_err:
                 self.log(
@@ -361,7 +365,8 @@ class CustomAgent:
                         retrieved_evidence["skills"].append({
                             "name": s_name,
                             "similarity": score,
-                            "description": desc
+                            "description": desc,
+                            "selection_method": "VectorDB (ChromaDB)"
                         })
                     self.log(
                         invoker="Vector DB",
@@ -384,19 +389,59 @@ class CustomAgent:
             })
 
         elif skill_selector in ["Use AI Agent with Tools", "LLM Selects"]:
-            # Ask LLM to pick appropriate skill
+            # Ask LLM (Gemini) to pick appropriate skill
+            available_skills = []
+            try:
+                rag_url = self._resolve(self.doc_rag_url, "doc_rag", 8003)
+                r_sk = requests.get(f"{rag_url}/api/rag/skills/list", timeout=5)
+                if r_sk.ok:
+                    available_skills = r_sk.json().get("skills", [])
+            except Exception:
+                pass
+
+            sel_matched, sel_evidence, sel_err = select_skills_with_gemini(
+                message=message,
+                available_skills=available_skills,
+                model_name=model or "gemini-3.5-flash-lite",
+                api_key=gemini_key,
+                conv_id=conversation_id,
+                logging_url=self.logging_url
+            )
+            if sel_matched:
+                matched_skills.extend(sel_matched)
+                retrieved_evidence["skills"].extend(sel_evidence)
+            else:
+                matched_skills = [{"skill_name": "all_tools", "text": "All registered tools enabled"}]
+
             steps.append({
                 "component": "Skills",
                 "icon": "⚡",
-                "title": "LLM Skill Evaluation",
-                "description": "Evaluating all available tools against user intent",
-                "elapsed_ms": int((time.time() - s_start) * 1000)
+                "title": f"LLM Skill Evaluation ({model or 'Gemini'})",
+                "description": f"Retrieved {len(matched_skills)} skills: {', '.join([s['skill_name'] for s in matched_skills])}",
+                "elapsed_ms": int((time.time() - s_start) * 1000),
+                "data": matched_skills
             })
-            matched_skills = [{"skill_name": "all_tools", "text": "All registered tools enabled"}]
+
+            self.log(
+                invoker="Custom Agent",
+                recipient="Gemini LLM",
+                target="Gemini LLM",
+                event_type="gemini_llm_skill_selection",
+                desc=f"Gemini LLM {model} selected {len(matched_skills)} skill(s)",
+                payload={"query": message, "selected_skills": matched_skills, "model": model},
+                conv_id=conversation_id,
+                model=model
+            )
 
         elif skill_selector.startswith("Skill:") or skill_selector not in ["Vector Store Selects"]:
             target_skill = skill_selector.replace("Skill:", "").strip()
             matched_skills = [{"skill_name": target_skill, "text": f"User explicitly selected skill {target_skill}"}]
+            retrieved_evidence["skills"].append({
+                "name": target_skill,
+                "similarity": 1.0,
+                "description": f"User explicitly selected skill {target_skill}",
+                "selection_method": "Manual Selection"
+            })
             steps.append({
                 "component": "Skills",
                 "icon": "⚡",

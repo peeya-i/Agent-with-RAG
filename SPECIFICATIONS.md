@@ -8,6 +8,7 @@ Agent-with-RAG/
 │   ├── data/                # Volume-mounted persistence directory for manual agents
 │   │   └── manual_agents.json # Persistent JSON store of manually added agents
 │   ├── embeddings.py        # Vector embedding engine (Google GenAI + local fallback)
+│   ├── llm_router.py        # Unified LLM agent routing module (prompt builder, Gemini & Ollama dispatch)
 │   ├── registry.py          # Dynamic agent registry, persistence, actual status & health pings
 │   ├── router.py            # Vector routing (> 50% threshold) & default agents:8002 fallback
 │   ├── server.py            # Flask REST router API (/api/router/chat, /api/router/agents)
@@ -19,6 +20,8 @@ Agent-with-RAG/
 │   └── requirements.txt
 ├── agents/                  # Primary Default Multi-Tool & RAG Agent microservice (Port 8002)
 │   ├── custom_agent/        # Custom autonomous planning & orchestrator agent
+│   │   ├── custom_agent.py  # Multi-turn autonomous ReAct execution loop
+│   │   └── skill_selector.py # LLM skill evaluation and selection module (Ollama & Gemini)
 │   ├── genai/               # Google ADK / GenAI Agent implementation
 │   ├── secrets/             # Agent runtime secrets (.env, keys)
 │   ├── skills/              # Domain skills (SKILL.md, tools, and trigger queries)
@@ -170,7 +173,7 @@ The Main App window should have:
 #### Right Card: "Retrieved Context Evidence"
 - Displays the Agent that was selected to process the prompt and the similarity score along with Skills and Documents if any were used:
   - **Routed Agent Banner**: Displays the selected agent name, similarity score percentage and float, routing match status (`Specialized Match (> Threshold)` vs `Default Fallback (<= Threshold)`), and detailed routing explanation.
-  - **Skills Vector Store Matches**: Displays matched procedural skills, similarity scores, and descriptions.
+  - **Selected Skills / Context Matches**: Displays matched procedural skills, similarity scores, descriptions, and the selection method used (e.g., `VectorDB (ChromaDB)`, `LLM Selection (nimble-v3)`, `LLM Selection (deepseek-r1:1.5b)`, `LLM Selection (Gemini)`, `Manual Selection`). When a skill is selected by an LLM (such as `nimble-v3`), it is added to the Retrieved Context evidence similar to when selected by VectorDB, with a badge indicating the selection method.
   - **Document Vector Store Matches**: Displays source document names, chunk indexes, similarity scores, and text excerpts.
 - Add a box at the right side of the card named "Doc Threshold" for the user to set the threshold for the document retrieval.
   - The default value is 0.3.
@@ -180,16 +183,17 @@ The Main App window should have:
   - Use this number to limit the number of text chunks to return from the Document Vector Store query.
 - In the next row, add a dropbox called "Skill Selector" to allow the user to select the skills the agent can use.
   - The first option in the dropbox should be "Vector Store Selects" (default option). The Custom Agent will query the skills vector store to select the skills to use in the prompt to the model.
-  - The second option should be "LLM Selects". The Custom Agent will ask the LLM to select the skills to use in the prompt to the model.
-  - The remainder of the selection should be the list of skills in skills/ folder. The Custom Agent will use the skills selected in the prompt to the model.
+  - The second option should be "LLM Selects". The Custom Agent will ask the LLM (Gemini) to select the skills to use in the prompt to the model.
+  - Local LLM options including "Local nimble-v3" (using Nimble choice routing via `/v1/systemone`) and other local Ollama models (such as `Local deepseek-r1:1.5b`).
+  - The remainder of the selection should be the list of skills in skills/ folder (`Skill: <skill-name>`). The Custom Agent will use the skills selected in the prompt to the model.
 - Add a text box "Skill Threshold" for the user to enter the threshold when the skill selection is "Vector Store Selects".
   - Use this number as the threshold when querying the vector store.
   - The default value is 0.2.
   - Remove this box if for other selection for "Skill Selector"
-- Display the contents of the information retrieved from the Document and Skill vector stores.
+- Display the contents of the information retrieved from the Document and Skill stores.
   - Pull the information from the Logging container related to the conversation ID for the specific chat message.
   - Group the results by the skills and documents.
-  - Display the matching score from the vector store along with the name of the document.
+  - Display the matching score along with the name of the document or skill, and the selection method for skills.
 - Allow the user to scroll through the data
 
 ### 🛢️ The second page: “VectorDB Mgnt”
@@ -257,11 +261,20 @@ The **Agents Router Interface** manages semantic routing, dynamic registration, 
     - **Active Agents (UP)**: Count of operational agents currently responding as healthy.
     - **Offline Agents (DOWN)**: Count of offline or unreachable agents.
     - **Routing Threshold**: Active minimum similarity threshold percentage (e.g. `50%` / `> 0.50`), or `N/A (LLM Routing)` when Main LLM select is active.
-- **Dual Routing Modes**:
+- **Triple Routing Modes**:
   - **Embedding Model Routing**: When an embedding model is selected in the Agent Selector, the router embeds the prompt and candidate agents using that embedding model, computes cosine similarity, and dispatches to the specialized agent exceeding the Min Routing Threshold (defaulting to the primary `agents` container if below threshold or if the agent is DOWN).
-  - **Main LLM Select Routing**: When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (ID, title, description, sample prompts, operational status, and default flag) into structured JSON. It sends this JSON catalog along with the prompt to the primary foundation LLM (Google GenAI with structured JSON schema and multi-model fallback), requesting the LLM to return the optimal agent to process the prompt, its reasoning, and confidence score.
-- **Audit Logging for Routing Execution**:
-  - `agent_router` implements immediate real-time audit logging prior to downstream execution:
+  - **Main LLM Select Routing**: When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (ID, name, description, sample prompts, operational status, and default flag) into structured JSON via `llm_router.py`. It sends this JSON catalog along with the prompt to the primary foundation LLM (Google GenAI with structured JSON schema and multi-model fallback), requesting the LLM to return the optimal agent to process the prompt, its reasoning, and confidence score.
+  - **Local Ollama LLM Routing**: When a local model (e.g. `Local deepseek-r1:1.5b`) is chosen, `llm_router.py` formats candidate agents and query into a structured JSON instruction prompt, querying the local Ollama instance (`/api/generate`) with `format: "json"`.
+- **Audit Logging for Routing & LLM Decision Execution**:
+  - `agent_router` and `agents` implement immediate real-time audit logging prior to downstream execution:
+    - **`llm_invocation` (LLM Decision Log)**: Emitted **immediately after receiving a response from an LLM call** for Agent Routing (`llm_router.py`) or Skill Selection (`skill_selector.py`).
+      - `type`: `"llm_invocation"`
+      - `invoker`: `"agents_router"`
+      - `recipient`: `"llm_selector"`
+      - `target`: `"llm_selector"`
+      - `payload`: Contains `"input"` (the full request payload passed into the LLM call, including prompt, system instruction, candidate agents or skills, model, parameters) and `"output"` (the full response received from the LLM, including parsed selected agent/skills, confidence, reasoning).
+      - `duration_ms`: Duration of the LLM generation call in milliseconds.
+      - `model`: Name of the LLM model invoked (e.g., `gemini-3.5-flash-lite`, `deepseek-r1:1.5b`).
     - **`agent_router`**: Emitted **immediately after `agent_router` evaluates and decides which agent will process the prompt, BEFORE forwarding the prompt to the target agent**. Contains both the full incoming `request` payload and the complete routing decision `response` payload (`selected_agent`, `model_used`, `similarity_score`, `threshold`, `is_default_fallback`, `explanation`, `routing_latency_ms`, `ranked_scores`).
       - `invoker`: `"agents_router"`
       - `target`: `"agents_router"`

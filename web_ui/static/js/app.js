@@ -314,13 +314,17 @@ document.addEventListener('DOMContentLoaded', () => {
       chatSkills.innerHTML = `
         <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
         <option value="LLM Selects">LLM Selects</option>
+        <option value="Local nimble-v3">Local nimble-v3</option>
       `;
 
       // Add options for local Ollama LLMs labeled as "Local <model name>"
       ollamaLlms.forEach(m => {
+        const rawName = m.name || m.model || '';
+        const cleanName = rawName.replace(/:latest$/, '');
+        if (cleanName === 'nimble-v3' || rawName === 'nimble-v3') return;
         const opt = document.createElement('option');
-        opt.value = `Local ${m.name}`;
-        opt.textContent = `Local ${m.name}`;
+        opt.value = `Local ${cleanName}`;
+        opt.textContent = `Local ${cleanName}`;
         chatSkills.appendChild(opt);
       });
 
@@ -948,16 +952,24 @@ document.addEventListener('DOMContentLoaded', () => {
       html += `
         <div class="evidence-doc-group">
           <div class="evidence-doc-header">
-            <div class="evidence-doc-title"><span>⚡</span> Skills Vector Store Matches</div>
+            <div class="evidence-doc-title"><span>⚡</span> Selected Skills / Context Matches</div>
             <span class="similarity-badge">${skills.length} matched</span>
           </div>
           <div class="evidence-doc-body">
             ${skills.map(s => {
-              const scoreDisplay = typeof s.similarity === 'number' ? s.similarity.toFixed(4) : (s.similarity || '0.0000');
+              const scoreDisplay = typeof s.similarity === 'number' ? s.similarity.toFixed(4) : (s.similarity || '1.0000');
+              const methodDisplay = s.selection_method || (Number(s.similarity) === 1.0 ? 'LLM Selection' : 'VectorDB (ChromaDB)');
+              const isLLM = methodDisplay.includes('LLM') || methodDisplay.includes('Manual');
+              const badgeBg = isLLM ? 'rgba(168, 85, 247, 0.2)' : 'rgba(56, 189, 248, 0.2)';
+              const badgeColor = isLLM ? '#c084fc' : '#38bdf8';
+              const badgeBorder = isLLM ? 'rgba(168, 85, 247, 0.4)' : 'rgba(56, 189, 248, 0.4)';
               return `
                 <div class="evidence-chunk-item">
-                  <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                    <strong style="color:#fde047;">${escapeHtml(s.name)}</strong>
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <strong style="color:#fde047;">${escapeHtml(s.name)}</strong>
+                      <span class="badge" style="background:${badgeBg}; color:${badgeColor}; border:1px solid ${badgeBorder}; font-size:0.7rem; padding:1px 6px; border-radius:3px; font-weight:600;">${escapeHtml(methodDisplay)}</span>
+                    </div>
                     <span style="color:var(--text-muted);font-size:0.75rem;">Score: ${scoreDisplay}</span>
                   </div>
                   <div style="color:var(--text-secondary);font-size:0.75rem;">${escapeHtml(s.description || '')}</div>
