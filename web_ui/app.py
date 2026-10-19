@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import uuid
+import re
 from datetime import datetime, timezone
 import requests
 from flask import Flask, render_template, request, jsonify, session, has_request_context
@@ -886,84 +887,214 @@ def semantic_lab_test_skills():
         except Exception:
             pass
 
-        if draft_skill and isinstance(draft_skill, dict):
-            skills_summary.append({
-                "skill_name": draft_skill.get("name") or "draft-sandbox-skill",
-                "description": draft_skill.get("description", "")
-            })
+        # Fallback to local cached skills if doc_rag list is empty
+        if not skills_summary:
+            local_skills = get_cached_skills()
+            for s in local_skills:
+                skills_summary.append({
+                    "skill_name": s.get("name") or s.get("skill_name"),
+                    "description": s.get("description", "")
+                })
 
-        prompt_ol = (
-            "You are an expert AI skill selector. Given the user prompt and a list of available specialized skills, "
-            "determine which skill or skills (if any) are directly relevant to answering the prompt.\n"
-            "If no skill is relevant, return an empty list.\n\n"
-            f"Available Skills:\n{json.dumps(skills_summary, indent=2)}\n\n"
-            f"User Prompt:\n\"{query}\"\n\n"
-            "Respond ONLY with a JSON object in this exact format:\n"
-            "{\n"
-            '  "selected_skills": ["<skill_name_1>", ...],\n'
-            '  "reasoning": "<short explanation why these skills were selected>"\n'
-            "}"
-        )
+        # Overlay draft_skill if provided from editor
+        if draft_skill and isinstance(draft_skill, dict):
+            d_name = draft_skill.get("name") or "draft-sandbox-skill"
+            d_desc = draft_skill.get("description", "")
+            d_content = draft_skill.get("content", "")
+            if not d_desc and d_content:
+                fm_match = re.search(r"^---\s*\n(.*?)\n---\s*\n", d_content, re.DOTALL)
+                if fm_match:
+                    d_match = re.search(r"^description:\s*(.+)$", fm_match.group(1), re.MULTILINE)
+                    if d_match:
+                        d_desc = d_match.group(1).strip()
+                    n_match = re.search(r"^name:\s*(.+)$", fm_match.group(1), re.MULTILINE)
+                    if n_match:
+                        d_name = n_match.group(1).strip()
+            found = False
+            for s in skills_summary:
+                if s["skill_name"] == d_name:
+                    if d_desc:
+                        s["description"] = d_desc
+                    found = True
+                    break
+            if not found:
+                skills_summary.append({
+                    "skill_name": d_name,
+                    "description": d_desc
+                })
+
         ollama_url = resolve_url(OLLAMA_URL, "ollama", 11434)
         matches = []
-        try:
-            r_ol = requests.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    "model": clean_model,
-                    "prompt": prompt_ol,
-                    "stream": False,
-                    "format": "json"
-                },
-                timeout=30
+        dur_ms = 0
+        req_payload = {}
+        eval_error = None
+        is_nimble = "nimble" in clean_model.lower()
+
+        if is_nimble:
+            # Format name and description similar to llm_router.py
+            criteria = {}
+            for s in skills_summary:
+                s_name = s["skill_name"]
+                desc = s.get("description", "").strip()
+                criteria[s_name] = f"{s_name}. {desc}".strip() if desc else s_name
+            criteria["GENERAL_FALLBACK"] = "General chit-chat or questions not fitting other skills"
+
+            req_payload = {
+                "model": "nimble-v3",
+                "state": query,
+                "questions": {
+                    "route_intent": {
+                        "type": "choice",
+                        "instructions": "Which specialized tool or category fits the user's intent?",
+                        "criteria": criteria
+                    }
+                }
+            }
+            try:
+                t_start = time.time()
+                resp = requests.post(f"{ollama_url}/v1/systemone", json=req_payload, timeout=60)
+                dur_ms = int((time.time() - t_start) * 1000)
+                if resp.status_code == 200:
+                    data_ol = resp.json()
+                    chosen = data_ol.get("answers", {}).get("route_intent", {}).get("choice")
+                    if chosen and chosen != "GENERAL_FALLBACK":
+                        s_obj = next((s for s in skills_summary if s["skill_name"] == chosen), None)
+                        criteria_text = criteria.get(chosen) or (f"{chosen}. {s_obj.get('description', '')}".strip() if s_obj else chosen)
+                        matches.append({
+                            "name": chosen,
+                            "skill_name": chosen,
+                            "similarity_score": 1.0,
+                            "similarity_percent": "100.0%",
+                            "chunk_text": criteria_text,
+                            "reasoning": f"Nimble-V3 choice classification selected '{chosen}'",
+                            "metadata": {"selector": f"Local {clean_model}"}
+                        })
+
+                    # Log LLM invocation event
+                    log_event(
+                        invoker="agents_router",
+                        recipient="Ollama LLM",
+                        target="llm_selector",
+                        event_type="llm_invocation",
+                        desc=f"Local Nimble-V3 Skill Selection ({clean_model})",
+                        payload={"input": req_payload, "output": data_ol},
+                        conv_id=data.get("conversation_id"),
+                        duration_ms=dur_ms,
+                        model=clean_model
+                    )
+                else:
+                    eval_error = f"Ollama HTTP {resp.status_code}: {resp.text}"
+            except Exception as e:
+                eval_error = str(e)
+                app.logger.warning(f"Error evaluating skills with Ollama Nimble {clean_model}: {e}")
+
+        else:
+            # DeepSeek / Ollama models format similar to test_deepseek.py
+            skill_lines = []
+            for s in skills_summary:
+                s_name = s["skill_name"]
+                desc = s.get("description", "")
+                skill_lines.append(f"- {s_name}: {desc}")
+            skills_list_str = "\n".join(skill_lines)
+
+            system_instructions = (
+                "You are an intelligent routing engine. Classify the user query into the single best tool and provide the reason for selecting:\n"
+                f"{skills_list_str}\n"
+                "- GENERAL_FALLBACK: General chit-chat or questions not fitting other tools\n\n"
+                "Respond ONLY with valid JSON matching this schema:\n"
+                '{"selected_tool": "NAME", "confidence_score": 1.0, "arguments": {"language": "python"}, "reason": "string"}'
             )
-            if r_ol.ok:
-                raw_txt = r_ol.json().get("response", "").strip()
-                if raw_txt.startswith("```json"):
-                    raw_txt = raw_txt[7:]
-                if raw_txt.startswith("```"):
-                    raw_txt = raw_txt[3:]
-                if raw_txt.endswith("```"):
-                    raw_txt = raw_txt[:-3]
-                parsed_ol = json.loads(raw_txt.strip())
-                sel_names = parsed_ol.get("selected_skills", [])
-                if isinstance(sel_names, str):
-                    sel_names = [sel_names]
-                reasoning = parsed_ol.get("reasoning", "")
-                for sn in sel_names:
-                    s_obj = next((s for s in skills_summary if s["skill_name"] == sn), None)
-                    matches.append({
-                        "skill_name": sn,
-                        "similarity_score": 1.0,
-                        "similarity_percent": "100.0%",
-                        "chunk_text": s_obj.get("description", "") if s_obj else "",
-                        "reasoning": reasoning,
-                        "metadata": {"selector": f"Local {clean_model}"}
-                    })
-        except Exception as e:
-            app.logger.warning(f"Error evaluating skills with Ollama LLM {clean_model}: {e}")
+
+            req_payload = {
+                "model": clean_model,
+                "prompt": f"{system_instructions}\n\nUser Input: {query}\n\nJSON Output:",
+                "format": "json",
+                "stream": False,
+                "options": {
+                    "temperature": 0.0
+                }
+            }
+            try:
+                t_start = time.time()
+                resp = requests.post(f"{ollama_url}/api/generate", json=req_payload, timeout=60)
+                dur_ms = int((time.time() - t_start) * 1000)
+                if resp.status_code == 200:
+                    raw_txt = resp.json().get("response", "").strip()
+                    if raw_txt.startswith("```json"):
+                        raw_txt = raw_txt[7:]
+                    if raw_txt.startswith("```"):
+                        raw_txt = raw_txt[3:]
+                    if raw_txt.endswith("```"):
+                        raw_txt = raw_txt[:-3]
+                    parsed_ol = json.loads(raw_txt.strip())
+                    selected_tool = parsed_ol.get("selected_tool") or parsed_ol.get("selected_skill") or parsed_ol.get("selected_skills")
+                    if isinstance(selected_tool, list):
+                        sel_names = selected_tool
+                    elif selected_tool:
+                        sel_names = [selected_tool]
+                    else:
+                        sel_names = []
+                    reasoning = parsed_ol.get("reason", "")
+                    conf_val = float(parsed_ol.get("confidence_score") or 1.0)
+                    for sn in sel_names:
+                        if sn == "GENERAL_FALLBACK":
+                            continue
+                        s_obj = next((s for s in skills_summary if s["skill_name"] == sn), None)
+                        desc_text = f"{sn}. {s_obj.get('description', '')}".strip() if s_obj and s_obj.get('description') else (s_obj.get('description', '') if s_obj else sn)
+                        matches.append({
+                            "name": sn,
+                            "skill_name": sn,
+                            "similarity_score": conf_val,
+                            "similarity_percent": f"{conf_val * 100:.1f}%",
+                            "chunk_text": desc_text,
+                            "reasoning": reasoning,
+                            "metadata": {"selector": f"Local {clean_model}"}
+                        })
+
+                    # Log LLM invocation event
+                    log_event(
+                        invoker="agents_router",
+                        recipient="Ollama LLM",
+                        target="llm_selector",
+                        event_type="llm_invocation",
+                        desc=f"Local DeepSeek Skill Selection ({clean_model})",
+                        payload={"input": req_payload, "output": parsed_ol},
+                        conv_id=data.get("conversation_id"),
+                        duration_ms=dur_ms,
+                        model=clean_model
+                    )
+                else:
+                    eval_error = f"Ollama HTTP {resp.status_code}: {resp.text}"
+            except Exception as e:
+                eval_error = str(e)
+                app.logger.warning(f"Error evaluating skills with Ollama LLM {clean_model}: {e}")
 
         resp_payload = {
-            "status": "success",
+            "status": "error" if eval_error else "success",
             "query": query,
             "threshold": threshold,
             "matches": matches,
             "match_count": len(matches),
             "model_used": f"Local {clean_model}"
         }
+        if eval_error:
+            resp_payload["error"] = eval_error
+
         log_event(
             invoker="Semantic Lab",
             recipient="Ollama LLM",
+            target="Ollama LLM",
             event_type="semantic_lab_test_skills",
-            desc=f"Semantic Lab evaluated skills via Local LLM {clean_model}: '{query[:80]}' ({len(matches)} matches)",
+            desc=f"Semantic Lab evaluated skills via Local LLM {clean_model}: '{query[:80]}' ({len(matches)} matches)" if not eval_error else f"Semantic Lab failed evaluating skills via Local LLM {clean_model}: {eval_error}",
             payload={
-                "request_payload": data,
+                "request_payload": req_payload if 'req_payload' in locals() else data,
                 "response_payload": resp_payload,
                 "model_used": f"Local {clean_model}",
                 "match_count": len(matches)
             },
             conv_id=data.get("conversation_id"),
-            status="success",
+            status="error" if eval_error else "success",
+            duration_ms=dur_ms,
             model=f"Local {clean_model}"
         )
         return jsonify(resp_payload)

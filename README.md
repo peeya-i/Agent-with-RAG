@@ -18,14 +18,24 @@ An enterprise multi-container web application and autonomous AI Agent platform w
 * **Dual-Collection Vector Store (`doc_RAG`):** Powered by ChromaDB and local Ollama embeddings (`nomic-embed-text`, `bge-m3`) across two isolated collections:
   * `skill`: Semantic discovery and prompt augmentation for procedural skills.
   * `document`: High-precision chunked semantic document retrieval with tenant isolation.
-* **Intelligent Agent Routing Engine (`agents_router`):** Hybrid routing system offering dual execution modes:
+* **Intelligent Multi-Model Agent Routing Engine (`agents_router`):** Hybrid routing system offering multiple execution modes:
   * **Embedding Model Routing:** Uses dense vector embeddings (e.g. `bge-large`, `nomic-embed-text`) and cosine similarity against candidate agent profiles. Routes to specialized agents (e.g. `agent_tech_support`) when similarity exceeds the configurable threshold (`> 0.50`), defaulting to the primary `agents` container if below threshold or if the agent is DOWN.
   * **Main LLM Select Routing:** Serializes all agent capabilities (ID, title, description, sample prompts, operational status) into structured JSON and uses the primary foundation LLM (Google GenAI) to classify the user prompt and select the best candidate agent.
+  * **Local Nimble-V3 Choice Routing (`nimble-v3:latest`):** Evaluates agent candidates through Ollama's `/v1/systemone` choice classification endpoint with candidate criteria formatted as `<agent_id>: "<name>. <description>"`, returning the optimal agent with probability distributions and confidence scores.
+  * **Local DeepSeek JSON Routing (`deepseek-r1:1.5b`):** Queries local Ollama generative models using structured JSON schemas (`format: "json"`) to return the winning tool or agent with detailed reasoning and confidence metrics.
   * **Real-time Audit Logging:** Logs the routing decision (`agent_router`) **immediately after deciding which agent will process the prompt, BEFORE forwarding to the target agent**, with `invoker="agents_router"`, `target="agents_router"`, and the exact decision model used (`model=model_used`). Dispatches `forward_chat_request` prior to calling the downstream agent, while downstream responses and Web UI receipts clearly trace the entity boundaries (`target="agents_router"`, `invoker="agents_router"`, `target="Web UI"`).
-  * **Timeout Resilience:** Enforces an extended 180-second execution timeout (`timeout=180`) to accommodate multi-agent planning loops without premature timeouts.
+  * **LLM Decision Telemetry (`llm_invocation`):** Emitted immediately upon receiving a response from any LLM call (Gemini or local Ollama) for routing or skill selection, capturing the full request `input` payload and raw model `output` with `invoker="agents_router"` and `target="llm_selector"`.
+  * **Timeout Resilience:** Enforces extended execution timeouts (180s for multi-agent planning loops, 60s for local Ollama inference) to prevent premature read timeouts during sequential model processing.
+* **Flexible Skill Selection Engine (`skill_selector`):** Empowers the Custom Agent to discover procedural skills via multiple cognitive and vector modalities:
+  * `Vector Store Selects` (ChromaDB cosine similarity matching).
+  * `LLM Selects` (Google GenAI cognitive selection).
+  * `Local nimble-v3` (Local Nimble choice intent routing).
+  * `Local deepseek-r1:1.5b` (Local DeepSeek JSON classification).
+  * Direct manual skill selection.
+  * Matched skills are rendered in the **Retrieved Context Evidence** card with similarity percentages, selection method badges (e.g., `LLM Selection (nimble-v3)`), and full criteria explanations.
 * **Specialized Product Tech Support Agent (`agent_tech_support`):** Dedicated domain agent for product troubleshooting, DevOps, Docker container crash log inspection (exit 137 OOMKilled), microservice timeouts, and database connection debugging. Dynamically auto-registers with the router upon container turn-up.
-* **Agents Router Management GUI (`Agents` Tab):** Features the **Agent Selector** dropdown (`Main LLM select` + all available embedding models), dynamically toggled **Min Routing Threshold** box (active for embedding models, disabled for LLM select), real-time directory of all registered agents with actual status badges (UP/DOWN), and dynamic onboarding modal ("Add New Agent") to manually link new agent containers.
-* **Semantic Lab Playground (`Semantic Lab` Tab):** Positioned between Agents and Telemetry, provides a dedicated sandbox to run single or batch tests against embedding models, active/draft agent definitions, and skills with real-time vector scoring and vectorizer explainability.
+* **Agents Router Management GUI (`Agents` Tab):** Features the **Agent Selector** dropdown (`Main LLM select`, `Local nimble-v3`, `Local deepseek-r1:1.5b`, plus all available embedding models), dynamically toggled **Min Routing Threshold** box (active for embedding models, disabled for LLM select), real-time directory of all registered agents with actual status badges (UP/DOWN), and dynamic onboarding modal ("Add New Agent") to manually link new agent containers.
+* **Semantic Lab Playground (`Semantic Lab` Tab):** Dedicated sandbox to benchmark single or batch prompts against embedding models, active/draft agent definitions, and skills with real-time vector scoring, local LLM evaluation (`nimble-v3`, `deepseek`), and vectorizer explainability.
 * **Unified Single `jwt_auth.py` Architecture:** A single copy of `jwt_auth.py` is maintained at the repository root and volume-mounted into all containers via `docker-compose.yml`, eliminating code duplication while guaranteeing full host and container interoperability. Features `decode_jwt_token_with_reason(token)` returning diagnostic reason strings (`Token expired`, `Signature verification failed`, `Invalid token format`, `Token missing`) while preserving backward-compatible `decode_jwt_token(token)`.
 * **Flexible External Agent Networking:** External autonomous agent containers can be connected either via a shared Docker network (`agent-with-rag_default`) using container name URIs (`http://<container>:<port>`) or via the host OS Docker gateway IP (`http://172.20.0.1:<port>`) for agents running on host ports or separate bridge networks.
 
@@ -157,11 +167,13 @@ Access the Web Console at: **`http://localhost:8000`**
 * **Hyperparameters:** Tune `Temperature` (0.0–2.0), `Max Tokens` (default 2048), and `Max Turns` (default: 5, range 1–10).
 * **Agent Selector:** Toggle between **Custom Agent** and **Google ADK Agent**.
 * **Skill Selector:**
-  * `Vector Store Selects` (Default): Uses ChromaDB skill matching with configurable `Skill Threshold`.
-  * `LLM Selects`: Supplies all skill definitions to the model for cognitive selection.
-  * Direct Skill: Forces execution of a designated skill.
+  * `Vector Store Selects` (Default): Uses ChromaDB skill matching with configurable `Skill Threshold` (default: 0.2).
+  * `LLM Selects`: Supplies all skill definitions to Google Gemini for cognitive selection.
+  * `Local nimble-v3`: Evaluates procedural skills locally via Ollama Nimble choice routing (`/v1/systemone`) with criteria formatted as `<name>. <description>`.
+  * `Local deepseek-r1:1.5b`: Evaluates procedural skills locally using DeepSeek JSON output classification.
+  * Direct Skill Selection: Forces execution of a specific registered procedural skill (`time-weather-skill`, `stock-market-skill`, etc.).
 * **Inspection Bubbles:** Click **Show Logs** on any completed agent response to expand step-by-step component execution bubbles (Agent, Skills, Tools, RAG, LLM).
-* **Retrieved Evidence:** The right card displays the **Selected Agent** that processed the prompt, its **similarity score**, routing match status (Specialized Match vs Default Fallback), and detailed routing explanation, alongside matched procedural **Skills** and semantic **Documents**.
+* **Retrieved Context Evidence:** The right card displays the **Selected Agent** that processed the prompt, its **similarity score**, routing match status (Specialized Match vs Default Fallback), and detailed routing explanation, alongside matched procedural **Skills** (with similarity percentage, criteria description, and selection method badge e.g. `LLM Selection (nimble-v3)`) and semantic **Documents**.
 * **Per-User Parameter Preferences & Automatic Reload:** User settings for `Max Tokens`, `Temperature`, `Agent` choice (`Custom Agent` or `Google ADK LlmAgent`), `Max Turns`, `Max Chunks`, `Doc Threshold`, `Skill Selector`, `Skill Threshold`, and the `Min Routing Threshold` (from Page 3) are stored per user in the database. Different users maintain their own unique configurations, which are automatically reloaded and applied to the UI inputs and router backend whenever the user logs in.
 
 ### 🛢️ Page 2: VectorDB Mgnt
@@ -228,7 +240,7 @@ Access the Web Console at: **`http://localhost:8000`**
   * **Manual Registration Only:** External agents can remove or disable auto-registration daemons to allow strictly manual onboarding through the "Add New Agent" GUI modal.
 
 ### 🧪 Page 4: Semantic Lab (Prompt & Embedding Experimentation)
-* **Interactive Routing & Skill Testbed:** Benchmark test prompts against different embedding models (Ollama, Gemini, local hash), agent definitions, and skills.
+* **Interactive Routing & Skill Testbed:** Benchmark test prompts against different embedding models (Ollama, Gemini, local hash) as well as local LLMs (`Local nimble-v3:latest`, `Local deepseek-r1:1.5b`), agent definitions, and procedural skills.
 * **Pipeline Modes:** Run tests in `Full Pipeline (Agents + Skills)`, `Agent Routing Only`, or `Skill Selection Only`.
 * **Single Query & Batch Suite:** Test individual prompts with instant feedback, or execute a multi-line batch test suite across up to 20 prompts at once.
 * **Quick Presets:** Built-in preset chips (Docker crash, 504 timeout, weather, stock market, customer lookups, math formulas) for rapid 1-click regression testing.
@@ -236,10 +248,11 @@ Access the Web Console at: **`http://localhost:8000`**
 * **"What-If" Live Draft Sandbox:**
   * **Agent Sandbox:** Tweak agent descriptions or sample prompts (or add a draft test agent) and evaluate routing without saving or corrupting production agents.
   * **Skill Inspector:** Inspect loaded `SKILL.md` markdown contents, chunk counts, frontmatter triggers, and SOP tool execution rules.
-* **Explainability Inspector:** Collapsible inspector drawers showing the exact text strings passed to the vectorizer for both queries and candidate agents/skills.
-* **Semantic Lab Audit Logging:** Every test execution in Semantic Lab dispatches comprehensive event logs to the central logging service:
-  * `semantic_lab_test_route`: Logged by `agent_router` on agent routing evaluation (`/api/router/test_route`), capturing the request payload, response payload, winning agent, similarity score, latency, and the embedding model used.
-  * `semantic_lab_test_skills`: Logged on skill vector searches (`/api/semantic_lab/test_skills`), capturing the request, retrieved skills, and model used.
+* **Explainability Inspector:** Collapsible inspector drawers showing the exact text strings passed to the vectorizer for both queries and candidate agents/skills, along with cosine distance metrics.
+* **Comprehensive Audit Logging:** Every test execution in Semantic Lab dispatches structured event logs to the central logging service:
+  * `semantic_lab_test_route`: Logged by `agent_router` on agent routing evaluation (`/api/router/test_route`), capturing the request payload, response payload, winning agent, similarity score, latency, and model used.
+  * `semantic_lab_test_skills`: Logged on skill vector searches or local LLM evaluations (`/api/semantic_lab/test_skills`), capturing the request, retrieved skills (with both `name` and `skill_name`), criteria text, and model used.
+  * `llm_invocation`: Emitted immediately when a local model (`nimble-v3` or `deepseek`) evaluates skills, recording full input criteria and output probabilities.
   * `semantic_lab_batch_eval`: Logged on batch evaluation runs (`/api/semantic_lab/batch_eval`), capturing all evaluated prompts and total latency.
 
 ### 📊 Page 5: Telemetry

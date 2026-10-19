@@ -271,10 +271,11 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
   - `Max RAG Chunks` dropdown: Options are `2`, `3`, `5` (Default), `7`, `10`. Defines maximum context chunks retrieved from vector store.
   - `Doc Threshold` input: Numeric similarity threshold (Default: `0.3`, Min: `0.0`, Max: `1.0`, Step: `0.05`).
 - **Second Parameter Row** (`.chat-param-row`):
-  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `LLM Selects`, `Local nimble-v3` (using Nimble choice routing via `/v1/systemone`), other local Ollama models (e.g. `Local deepseek-r1:1.5b`), and individually discovered skills (`time-weather-skill`, `stock-analysis-skill`, `person-information-skill`, `document-search-skill`).
+  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `LLM Selects`, `Local nimble-v3` (using Nimble choice routing via `/v1/systemone`), other local Ollama models (e.g. `Local deepseek-r1:1.5b`), and individually discovered skills (`time-weather-skill`, `stock-market-skill`, `person-information-skill`, `document-search-skill`, `customer-information-skill`).
+    - When evaluated via Nimble or DeepSeek, choice criteria use the format `<skill_name>. <description>`, and the returned match contains both `name` and `skill_name` properties with `chunk_text` reflecting this complete text.
   - `Skill Threshold` box: Numeric input (Default: `0.2`, Min: `0.0`, Max: `1.0`, Step: `0.05`). Visible when `Vector Store Selects` is active, hidden for other modes.
 - **Body Content**:
-  - Lists matched skills with similarity scores, descriptions, and a badge indicating the selection method (`VectorDB (ChromaDB)`, `LLM Selection (<model>)`, or `Manual Selection`).
+  - Lists matched skills with similarity scores, full criteria descriptions, and a badge indicating the selection method (`VectorDB (ChromaDB)`, `LLM Selection (<model>)`, or `Manual Selection`).
   - Displays retrieved document chunks with similarity score badges (`XX.X% match`), source document filename, chunk index, and complete chunk text.
   - Updates dynamically following every chat response from agent execution trace logs and response payloads.
 
@@ -438,10 +439,14 @@ The **Semantic Lab** provides an interactive experimentation playground allowing
   - **Agent Sandbox**: Allows creating ephemeral draft agents or editing registered agent descriptions/sample prompts without persisting or corrupting production agents.
   - **Skill Inspector**: Renders loaded skill markdown content, chunk counts, frontmatter triggers, and SOP tool execution rules.
 
-#### 2.7.3 Semantic Lab Audit Logging
+#### 2.7.3 Semantic Lab Audit Logging & Local Model Testing
 Executing evaluation runs in Semantic Lab automatically generates structured audit records in the central logging service:
 - **`semantic_lab_test_route`**: Dispatched by `agents_router` when evaluating candidate agent routing (`/api/router/test_route`), capturing the full `request_payload`, `response_payload` (including ranked candidate scores and explanations), `model_used`, and execution latency.
-- **`semantic_lab_test_skills`**: Dispatched when querying skill vector similarity (`/api/semantic_lab/test_skills`), capturing the request and response payloads, retrieved skills, and embedding model used.
+- **`semantic_lab_test_skills`**: Dispatched when evaluating skills via VectorDB or local models (`/api/semantic_lab/test_skills`), capturing the request and response payloads, retrieved skills, and model used.
+  - When evaluating via local models (`Local nimble-v3:latest` via `/v1/systemone` or `Local deepseek-r1:1.5b` via `/api/generate`), choice criteria are formatted as `<skill_name>. <description>`.
+  - Returned match objects contain both `name` and `skill_name` properties, `similarity_score`, `similarity_percent`, and `chunk_text` containing the complete criteria text.
+  - Generates an immediate `llm_invocation` log entry with `invoker="agents_router"`, `target="llm_selector"`, and full `input`/`output` payloads.
+  - Employs a 60-second execution timeout (`timeout=60`) to prevent timeouts when Ollama queues multiple model requests, cleanly capturing errors with status `"error"` if an issue occurs.
 - **`semantic_lab_batch_eval`**: Dispatched when running batch evaluation suites (`/api/semantic_lab/batch_eval`), capturing all batch prompt evaluation results, total latency, and model used.
 
 ---
@@ -961,15 +966,15 @@ Tariq Mansoor,King Fahd Road Riyadh,Saudi Arabia,"Smart Air Purifier, Extra Carb
   }
   ```
 
-  - **`llm_invocation` (LLM Decision Telemetry)**: Emitted by `agent_router` (`llm_router.py`) and `agents` (`skill_selector.py`) immediately upon receiving a response from the LLM model call (Gemini or local Ollama).
+  - **`llm_invocation` (LLM Decision Telemetry)**: Emitted by `agent_router` (`llm_router.py`), `agents` (`skill_selector.py`), and `web_ui` (`semantic_lab_test_skills`) immediately upon receiving a response from an LLM model call (Gemini or local Ollama).
     - `type`: `"llm_invocation"`
     - `invoker`: `"agents_router"`
     - `recipient`: `"llm_selector"`
     - `target`: `"llm_selector"`
-    - `payload.input`: Full request payload passed to the LLM (model, prompt, system_instruction, format/config).
-    - `payload.output`: Full response payload received from the LLM (parsed JSON reasoning, selected_agent_id/selected_skills, confidence scores).
+    - `payload.input`: Full request payload passed to the LLM (model, state/prompt, criteria/system_instruction, format/config).
+    - `payload.output`: Full response payload received from the LLM (choice answers, probability distribution, parsed JSON reasoning, selected_agent_id/selected_skills, confidence scores).
     - `duration_ms`: Duration of the LLM call in milliseconds.
-    - `model`: Exact model identifier invoked (e.g. `gemini-3.5-flash-lite`, `deepseek-r1:1.5b`).
+    - `model`: Exact model identifier invoked (e.g. `nimble-v3:latest`, `deepseek-r1:1.5b`, `gemini-3.5-flash-lite`).
 
 #### 3.5.2 Features
 - **Full Payload Retention**: All inter-service requests and responses retain complete, untruncated payloads.

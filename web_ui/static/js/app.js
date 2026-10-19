@@ -4586,12 +4586,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const activatedSkills = matches.slice(0, 2); // Top 2 unique skills pass to prompt
 
       if (skillEl) {
-        skillEl.textContent = activatedSkills.length > 0 ? activatedSkills.map(s => s.name).join(', ') : 'None';
+        skillEl.textContent = activatedSkills.length > 0 ? activatedSkills.map(s => s.name || s.skill_name || 'Skill').join(', ') : 'None';
       }
 
       if (activatedSkillsTextEl) {
         activatedSkillsTextEl.textContent = activatedSkills.length > 0
-          ? activatedSkills.map(s => `${s.name} (${Math.round((s.similarity_score || 0) * 100)}%)`).join(', ')
+          ? activatedSkills.map(s => `${s.name || s.skill_name || 'Skill'} (${Math.round((s.similarity_score || 0) * 100)}%)`).join(', ')
           : 'None (Scores below ' + Math.round(skillThresh * 100) + '% threshold)';
       }
 
@@ -4608,12 +4608,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const score = s.similarity_score || 0;
             const pct = Math.min(100, Math.round(score * 100));
             const isActivated = idx < 2;
+            const skillDisplayName = s.name || s.skill_name || 'Skill';
 
             return `
               <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid ${isActivated ? '#10b981' : '#334155'}; border-radius: 6px; padding: 8px 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                   <div style="font-weight: 700; font-size: 0.82rem; color: ${isActivated ? '#34d399' : '#f1f5f9'};">
-                    ${isActivated ? '⚡ ' : ''}${escapeHtml(s.name)}
+                    ${isActivated ? '⚡ ' : ''}${escapeHtml(skillDisplayName)}
                     ${isActivated ? '<span style="font-size: 0.68rem; background: #065f46; color: #a7f3d0; padding: 1px 6px; border-radius: 3px; margin-left: 6px;">INJECTED IN LLM</span>' : ''}
                   </div>
                   <div style="font-weight: 700; font-size: 0.82rem; color: #34d399;">
@@ -4640,7 +4641,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           ${matches.map(s => `
             <div style="margin-top: 6px; padding: 6px; background: #0f172a; border-left: 3px solid #10b981; border-radius: 2px;">
-              <div style="font-weight: 700; color: #34d399; font-size: 0.75rem;">Matched Skill: ${escapeHtml(s.name)} (Cosine Distance: ${(1.0 - (s.similarity_score || 0)).toFixed(4)}):</div>
+              <div style="font-weight: 700; color: #34d399; font-size: 0.75rem;">Matched Skill: ${escapeHtml(s.name || s.skill_name || 'Skill')} (Cosine Distance: ${(1.0 - (s.similarity_score || 0)).toFixed(4)}):</div>
               <pre style="font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; margin: 4px 0;">${escapeHtml(s.chunk_text || s.text || '')}</pre>
             </div>
           `).join('')}

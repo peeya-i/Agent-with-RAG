@@ -184,7 +184,7 @@ The Main App window should have:
 - In the next row, add a dropbox called "Skill Selector" to allow the user to select the skills the agent can use.
   - The first option in the dropbox should be "Vector Store Selects" (default option). The Custom Agent will query the skills vector store to select the skills to use in the prompt to the model.
   - The second option should be "LLM Selects". The Custom Agent will ask the LLM (Gemini) to select the skills to use in the prompt to the model.
-  - Local LLM options including "Local nimble-v3" (using Nimble choice routing via `/v1/systemone`) and other local Ollama models (such as `Local deepseek-r1:1.5b`).
+  - Local LLM options including "Local nimble-v3" (using Nimble choice routing via `/v1/systemone`) and other local Ollama models (such as `Local deepseek-r1:1.5b`). When Nimble or DeepSeek evaluates skills, the choice criteria format is `<skill-name>. <description>`, and the returned matched text / chunk text reflects this full `<skill-name>. <description>` string (matching the format in `llm_router.py`).
   - The remainder of the selection should be the list of skills in skills/ folder (`Skill: <skill-name>`). The Custom Agent will use the skills selected in the prompt to the model.
 - Add a text box "Skill Threshold" for the user to enter the threshold when the skill selection is "Vector Store Selects".
   - Use this number as the threshold when querying the vector store.
@@ -261,10 +261,12 @@ The **Agents Router Interface** manages semantic routing, dynamic registration, 
     - **Active Agents (UP)**: Count of operational agents currently responding as healthy.
     - **Offline Agents (DOWN)**: Count of offline or unreachable agents.
     - **Routing Threshold**: Active minimum similarity threshold percentage (e.g. `50%` / `> 0.50`), or `N/A (LLM Routing)` when Main LLM select is active.
-- **Triple Routing Modes**:
+- **Multi-Model Routing Modes**:
   - **Embedding Model Routing**: When an embedding model is selected in the Agent Selector, the router embeds the prompt and candidate agents using that embedding model, computes cosine similarity, and dispatches to the specialized agent exceeding the Min Routing Threshold (defaulting to the primary `agents` container if below threshold or if the agent is DOWN).
   - **Main LLM Select Routing**: When **Main LLM select** is chosen, the router serializes the semantic understanding fields of all registered agents (ID, name, description, sample prompts, operational status, and default flag) into structured JSON via `llm_router.py`. It sends this JSON catalog along with the prompt to the primary foundation LLM (Google GenAI with structured JSON schema and multi-model fallback), requesting the LLM to return the optimal agent to process the prompt, its reasoning, and confidence score.
-  - **Local Ollama LLM Routing**: When a local model (e.g. `Local deepseek-r1:1.5b`) is chosen, `llm_router.py` formats candidate agents and query into a structured JSON instruction prompt, querying the local Ollama instance (`/api/generate`) with `format: "json"`.
+  - **Local Nimble-V3 Choice Routing**: When `Local nimble-v3` (`nimble-v3:latest`) is selected, `llm_router.py` constructs a choice classification schema querying Ollama at `/v1/systemone`. Candidate criteria are formatted as `<agent_id>: "<agent_name>. <agent_description>"`. The model evaluates the candidate probability distributions and returns the winning choice along with its confidence score. The router maps this to the winning agent with confidence 1.0 (or normalized probability) and tracks routing latency.
+  - **Local DeepSeek JSON Routing**: When a local generative model (e.g. `Local deepseek-r1:1.5b`) is chosen, `llm_router.py` formats candidate agents and query into a structured JSON instruction prompt, querying the local Ollama instance (`/api/generate`) with `format: "json"` matching schema `{"selected_tool": "NAME", "confidence_score": 1.0, "arguments": {...}, "reason": "string"}`.
+  - **Execution Timeout & Resilience**: All Ollama model requests across `agent_router`, `agents` (`skill_selector.py`), and `web_ui` (`semantic_lab_test_skills`) enforce an execution timeout of at least 60 seconds (`timeout=60`) to accommodate sequential model inference without premature read timeouts. Errors are explicitly captured with status `"error"` and logged.
 - **Audit Logging for Routing & LLM Decision Execution**:
   - `agent_router` and `agents` implement immediate real-time audit logging prior to downstream execution:
     - **`llm_invocation` (LLM Decision Log)**: Emitted **immediately after receiving a response from an LLM call** for Agent Routing (`llm_router.py`) or Skill Selection (`skill_selector.py`).
@@ -376,7 +378,7 @@ The **Semantic Lab** provides an interactive experimentation playground allowing
 - **Audit Logging for Semantic Lab Evaluations**:
   - Executing evaluation tests in Semantic Lab produces comprehensive event logs in the central logging service:
     - **`semantic_lab_test_route`**: Logged by `agent_router` when testing agent routing (`/api/router/test_route`), capturing the complete request payload, response payload with ranked candidate scores, winning agent, similarity score, latency, and the embedding model used.
-    - **`semantic_lab_test_skills`**: Logged when testing skill matching (`/api/semantic_lab/test_skills`), capturing the request payload, retrieved skills response, and embedding model used.
+    - **`semantic_lab_test_skills`**: Logged when testing skill matching (`/api/semantic_lab/test_skills`), capturing the request payload, retrieved skills response, and embedding model used. When evaluated via Nimble or DeepSeek, choice criteria and matched `chunk_text` include the `<skill-name>. <description>` format, and an `llm_invocation` log is emitted with invoker `agents_router` and target `llm_selector`.
     - **`semantic_lab_batch_eval`**: Logged when executing batch evaluation suites (`/api/semantic_lab/batch_eval`), capturing all prompt evaluation results, total latency, and model used.
 
 ### 📊 The fifth page: “Telemetry”

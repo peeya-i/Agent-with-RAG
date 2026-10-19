@@ -86,8 +86,8 @@ def select_skills_with_ollama(
         criteria = {}
         for s in available_skills:
             s_name = s.get("name") or s.get("skill_name")
-            desc = s.get("description", "")
-            criteria[s_name] = desc.strip() or s_name
+            desc = s.get("description", "").strip()
+            criteria[s_name] = f"{s_name}. {desc}".strip() if desc else s_name
         criteria["GENERAL_FALLBACK"] = "General chit-chat or questions not fitting other skills"
 
         req_payload = {
@@ -115,11 +115,12 @@ def select_skills_with_ollama(
                         (s for s in available_skills if s.get("name") == chosen or s.get("skill_name") == chosen),
                         None
                     )
+                    criteria_text = criteria.get(chosen) or (f"{chosen}. {matched_obj.get('description', '')}".strip() if matched_obj else chosen)
                     skill_text = (
                         matched_obj.get("complete_text")
                         or matched_obj.get("vector_text")
-                        or matched_obj.get("description", "")
-                        if matched_obj else ""
+                        or criteria_text
+                        if matched_obj else criteria_text
                     )
                     matched_skills.append({
                         "skill_name": chosen,
@@ -128,7 +129,7 @@ def select_skills_with_ollama(
                     evidence_skills.append({
                         "name": chosen,
                         "similarity": 1.0,
-                        "description": matched_obj.get("description", "") if matched_obj else "",
+                        "description": criteria_text,
                         "selection_method": f"LLM Selection ({local_model})"
                     })
 
@@ -220,10 +221,11 @@ def select_skills_with_ollama(
                         "skill_name": s_name,
                         "text": skill_text or f"Selected by Local LLM ({local_model})"
                     })
+                    chosen_desc = f"{s_name}. {matched_obj.get('description', '')}".strip() if matched_obj and matched_obj.get('description') else (matched_obj.get('description', '') if matched_obj else s_name)
                     evidence_skills.append({
                         "name": s_name,
                         "similarity": confidence_val,
-                        "description": matched_obj.get("description", "") if matched_obj else "",
+                        "description": chosen_desc,
                         "selection_method": f"LLM Selection ({local_model})"
                     })
 
