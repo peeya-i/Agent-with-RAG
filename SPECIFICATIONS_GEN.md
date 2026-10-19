@@ -271,7 +271,7 @@ The page layout uses `.split-cards-grid` with `grid-template-columns: 1fr 1fr; w
   - `Max RAG Chunks` dropdown: Options are `2`, `3`, `5` (Default), `7`, `10`. Defines maximum context chunks retrieved from vector store.
   - `Doc Threshold` input: Numeric similarity threshold (Default: `0.3`, Min: `0.0`, Max: `1.0`, Step: `0.05`).
 - **Second Parameter Row** (`.chat-param-row`):
-  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `LLM Selects`, `Local nimble-v3` (using Nimble choice routing via `/v1/systemone`), other local Ollama models (e.g. `Local deepseek-r1:1.5b`), and individually discovered skills (`time-weather-skill`, `stock-market-skill`, `person-information-skill`, `document-search-skill`, `customer-information-skill`).
+  - `Skill Selector` dropdown: Options include `Vector Store Selects` (default), `Main LLM Selects`, `Local nimble-v3` (using Nimble choice routing via `/v1/systemone`), other local Ollama models (e.g. `Local deepseek-r1:1.5b`), and individually discovered skills (`time-weather-skill`, `stock-market-skill`, `person-information-skill`, `document-search-skill`, `customer-information-skill`).
     - When evaluated via Nimble or DeepSeek, choice criteria use the format `<skill_name>. <description>`, and the returned match contains both `name` and `skill_name` properties with `chunk_text` reflecting this complete text.
   - `Skill Threshold` box: Numeric input (Default: `0.2`, Min: `0.0`, Max: `1.0`, Step: `0.05`). Visible when `Vector Store Selects` is active, hidden for other modes.
 - **Body Content**:
@@ -329,12 +329,12 @@ The **Agents Router Interface** manages semantic routing, dynamic registration, 
 
 #### 2.6.1 Header & Control Bar
 - **Agent Selector Dropdown (`#agentSelectorSelect`)**:
-  - Allows selecting the active routing strategy: includes **Main LLM select** plus all available embedding models pulled dynamically from `/api/vectordb/models` (e.g., `bge-large`, `nomic-embed-text`, `bge-m3`).
+  - Allows selecting the active routing strategy: includes **Main LLM Selects** plus all available embedding models pulled dynamically from `/api/vectordb/models` (e.g., `bge-large`, `nomic-embed-text`, `bge-m3`).
   - Supported via `GET` / `POST /api/router/selector`.
 - **Min Routing Threshold Control (`#thresholdControlBox`)**:
   - Placed directly to the right of the Agent Selector dropdown.
   - Contains input text box (`#routerThresholdInput`) and **Set** button (`#btnSetRouterThreshold`) to configure the minimum similarity routing threshold (default: `0.50` / `50%`).
-  - **Dynamic State**: Only active when an embedding model is selected. When **Main LLM select** is chosen, this box is disabled and the threshold metric displays `N/A (LLM)`.
+  - **Dynamic State**: Only active when an embedding model is selected. When **Main LLM Selects** is chosen, this box is disabled and the threshold metric displays `N/A (LLM)`.
   - Persisted per user in `user_preferences` and reloaded upon login.
 - **Refresh**: Triggers live health check sweep across all containers and reloads the directory.
 - **Add New Agent Button**: Displays a popup window modal (`#addAgentModal`) for manual agent onboarding.
@@ -892,7 +892,7 @@ Tariq Mansoor,King Fahd Road Riyadh,Saudi Arabia,"Smart Air Purifier, Extra Carb
   - Returns metadata and parameter schemas for available tools:
     1. `person_search.query_person_registry`: Searches `tools/data/employee_database.csv` across fields (`name`, `city`, `country`, `job_title`) using a list of search texts (`keywords`, or single text `keyword`). Restricted to `example-a.com` and Admin.
     2. `customer_search.query_customer_registry`: Searches `tools/data/customer_database.csv` across fields (`name`, `address`, `country`, `products_purchased`) using search text(s). Restricted to `sample-b.com` and Admin.
-    3. `stock_search.query_stocks`: Fetches live market quotes via public financial API (`https://query1.finance.yahoo.com/v8/finance/chart/{sym}`) with automatic company-name-to-ticker resolution (e.g. `Apple` -> `AAPL`, `Nvidia` -> `NVDA`, `Tesla` -> `TSLA`) and fault-tolerant fallback to cached tracked basket (`source="cached_basket_fallback"`). Also computes top `gainers` or `losers` limited by `limit`.
+    3. `stock_search.query_stocks`: Retrieves real-time prices for one or more stock ticker symbols (`tickers` / `ticker`), the 5 highest rise (top 5 increase by percentage, `action="gainers"`), or 5 largest loss (5 largest percentage drop, `action="losers"`). Fetches live market quotes via public financial API (`https://query1.finance.yahoo.com/v8/finance/chart/{sym}`) with automatic company-name-to-ticker resolution (e.g. `Apple` -> `AAPL`, `NetApp` -> `NTAP`) and fault-tolerant fallback to cached tracked basket (`source="cached_basket_fallback"`).
 - `POST /api/tools/call`
   - Dispatches tool invocation with JWT authorization enforcement.
   - Body:

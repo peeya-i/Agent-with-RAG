@@ -251,7 +251,7 @@ class VectorRouter:
             or clean_model.startswith("local:")
             or clean_model.startswith("Local ")
         )
-        is_gemini_llm = (effective_sel == "llm" or clean_model in ["main_llm", "llm", "Main LLM select"])
+        is_gemini_llm = (effective_sel == "llm" or clean_model in ["main_llm", "llm", "Main LLM select", "Main LLM Selects"])
 
         if is_ollama_llm:
             model_to_use = clean_model.replace("local:", "").replace("Local ", "").strip() or "deepseek-r1:1.5b"
@@ -424,8 +424,8 @@ class VectorRouter:
         if selector_type == "ollama_llm" or str(model_used).startswith("Local ") or str(model_used).startswith("local:"):
             raw_m = str(model_used).replace("local:", "").replace("Local ", "").strip()
             display_model = f"Local {raw_m}"
-        elif selector_type == "llm" or getattr(self, "active_model", "") == "main_llm":
-            display_model = "Main LLM select"
+        elif selector_type == "llm" or getattr(self, "active_model", "") in ["main_llm", "Main LLM Selects", "Main LLM select"]:
+            display_model = "Main LLM Selects"
         else:
             display_model = model_used
         chosen_agent = agent.name if agent else "Default Multi-Tool Agent"

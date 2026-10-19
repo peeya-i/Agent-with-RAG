@@ -2,6 +2,7 @@ import os
 import csv
 import json
 import time
+import re
 from datetime import datetime, timezone
 import requests
 from flask import Flask, request, jsonify, Response
@@ -90,6 +91,8 @@ TRACKED_TICKERS = [
     {"symbol": "SMCI", "name": "Super Micro Computer", "base_price": 44.50, "change_pct": -7.85},
     {"symbol": "QCOM", "name": "Qualcomm Inc.", "base_price": 165.90, "change_pct": -2.30},
     {"symbol": "ARM", "name": "Arm Holdings plc", "base_price": 138.70, "change_pct": 5.12},
+    {"symbol": "NTAP", "name": "NetApp Inc.", "base_price": 125.40, "change_pct": 1.85},
+    {"symbol": "GOOG", "name": "Alphabet Inc.", "base_price": 165.10, "change_pct": 3.10},
 ]
 
 def get_user_auth_context(req):
@@ -229,7 +232,35 @@ COMPANY_NAME_TO_TICKER = {
     "SALESFORCE": "CRM",
     "PALANTIR": "PLTR",
     "QUALCOMM": "QCOM",
+    "NETAPP": "NTAP",
+    "NTAP": "NTAP",
 }
+
+def parse_tickers_input(ticker=None, tickers=None, symbols=None, symbol=None):
+    """Normalize input into an ordered list of clean, unique ticker symbols."""
+    raw_list = []
+    for item in [tickers, symbols, ticker, symbol]:
+        if not item:
+            continue
+        if isinstance(item, (list, tuple, set)):
+            raw_list.extend(item)
+        elif isinstance(item, str):
+            tokens = [t.strip().strip("'\"[]") for t in re.split(r"[,;\s]+", item) if t.strip().strip("'\"[]")]
+            raw_list.extend(tokens)
+        else:
+            raw_list.append(str(item).strip())
+
+    cleaned = []
+    seen = set()
+    for sym in raw_list:
+        if not sym:
+            continue
+        upper_sym = sym.upper().strip()
+        resolved = COMPANY_NAME_TO_TICKER.get(upper_sym, upper_sym)
+        if resolved not in seen:
+            seen.add(resolved)
+            cleaned.append(resolved)
+    return cleaned
 
 def fetch_live_quote(symbol: str):
     """Attempt to fetch real-time market quote from public finance API."""
@@ -260,40 +291,61 @@ def fetch_live_quote(symbol: str):
         print(f"[Tools] Live quote error for {symbol}: {e}")
     return None
 
-# TOOL 2: Stock search
-def run_stock_search(action="gainers", limit=5, ticker=None):
-    clean_act = (action or "gainers").lower().strip()
-    limit = int(limit or 5)
+def get_single_quote(sym: str):
+    """Fetch live quote with reliable cached basket fallback for a given ticker."""
+    clean_sym = sym.upper().strip()
+    resolved = COMPANY_NAME_TO_TICKER.get(clean_sym, clean_sym)
 
-    if ticker or clean_act == "quote":
-        raw_sym = (ticker or "NVDA").upper().strip()
-        sym = COMPANY_NAME_TO_TICKER.get(raw_sym, raw_sym)
+    # 1. Fetch live market price from API
+    live = fetch_live_quote(resolved)
+    if live:
+        return live
 
-        # 1. Fetch live market price from API
-        live = fetch_live_quote(sym)
-        if live:
+    # 2. Fallback to cached equities basket if API is offline or unreachable
+    for item in TRACKED_TICKERS:
+        if item["symbol"] == resolved:
             return {
-                "action": "quote",
-                "result": live,
-                "status": "success"
+                "symbol": item["symbol"],
+                "name": item["name"],
+                "price": round(item["base_price"] * (1 + item["change_pct"] / 100), 2),
+                "change_pct": item["change_pct"],
+                "currency": "USD",
+                "source": "cached_basket_fallback"
             }
 
-        # 2. Fallback to cached equities basket if API is offline or unreachable
-        for item in TRACKED_TICKERS:
-            if item["symbol"] == sym:
-                return {
-                    "action": "quote",
-                    "result": {
-                        "symbol": item["symbol"],
-                        "name": item["name"],
-                        "price": round(item["base_price"] * (1 + item["change_pct"] / 100), 2),
-                        "change_pct": item["change_pct"],
-                        "currency": "USD",
-                        "source": "cached_basket_fallback"
-                    },
-                    "status": "success"
-                }
-        return {"error": f"Ticker '{sym}' not found in active equities or live market", "status": "not_found"}
+    # 3. Graceful fallback if unknown symbol
+    return {
+        "symbol": resolved,
+        "name": resolved,
+        "error": f"Ticker '{resolved}' not found in active equities or live market",
+        "status": "not_found"
+    }
+
+# TOOL 2: Stock search
+def run_stock_search(action="gainers", limit=5, ticker=None, tickers=None, symbols=None, symbol=None):
+    """Retrieve stock prices for one or more tickers, 5 highest rise, or 5 largest loss."""
+    clean_act = (str(action or "gainers")).lower().strip()
+    try:
+        limit = int(limit or 5)
+    except Exception:
+        limit = 5
+
+    parsed_tickers = parse_tickers_input(ticker=ticker, tickers=tickers, symbols=symbols, symbol=symbol)
+
+    # If specific ticker symbols were provided or action is 'quote' / 'price'
+    if parsed_tickers or "quote" in clean_act or "price" in clean_act:
+        syms_to_fetch = parsed_tickers if parsed_tickers else ["NVDA"]
+        quotes = [get_single_quote(s) for s in syms_to_fetch]
+        has_success = any("price" in q for q in quotes)
+        resp = {
+            "action": "quote",
+            "count": len(quotes),
+            "results": quotes,
+            "status": "success" if has_success else "error"
+        }
+        if len(quotes) == 1:
+            resp["result"] = quotes[0]
+        return resp
 
     basket = []
     for item in TRACKED_TICKERS:
@@ -304,20 +356,24 @@ def run_stock_search(action="gainers", limit=5, ticker=None):
             "change_pct": item["change_pct"],
         })
 
-    if "gain" in clean_act or "increase" in clean_act or "high" in clean_act:
+    # If the request is to show 5 highest rise, get top 5 increase by percentage
+    if any(k in clean_act for k in ["gain", "increase", "high", "rise", "top", "up"]):
         sorted_list = sorted(basket, key=lambda x: x["change_pct"], reverse=True)
+        top_n = sorted_list[:limit]
         return {
             "action": "highest_percentage_increase",
-            "count": min(len(sorted_list), limit),
-            "results": sorted_list[:limit],
+            "count": len(top_n),
+            "results": top_n,
             "status": "success"
         }
     else:
+        # If the request is to show 5 largest loss, get 5 largest percentage drop
         sorted_list = sorted(basket, key=lambda x: x["change_pct"])
+        top_n = sorted_list[:limit]
         return {
             "action": "lowest_percentage_decrease",
-            "count": min(len(sorted_list), limit),
-            "results": sorted_list[:limit],
+            "count": len(top_n),
+            "results": top_n,
             "status": "success"
         }
 
@@ -390,11 +446,12 @@ def list_tools():
             {
                 "name": "stock_search.query_stocks",
                 "aliases": ["stock_search", "query_stocks", "get_stock_performers"],
-                "description": "Retrieve stocks with highest percentage increase or lowest percentage decrease, or get quotes for a ticker.",
+                "description": "Retrieve stocks with highest percentage increase (top 5 highest rise) or lowest percentage decrease (5 largest loss), or get prices for one or more stock tickers.",
                 "parameters": {
-                    "action": "string ('gainers' for highest % increase, 'losers' for lowest % decrease, 'quote')",
+                    "action": "string ('gainers' for 5 highest rise / top % increase, 'losers' for 5 largest loss / steepest % drop, or 'quote')",
                     "limit": "integer (number of stocks to return, default 5)",
-                    "ticker": "string (optional ticker symbol when action is 'quote')"
+                    "ticker": "string or array of strings (one or more ticker symbols e.g. 'NTAP' or ['NTAP', 'GOOG', 'TSLA'])",
+                    "tickers": "array of strings or comma-separated string (list of ticker symbols)"
                 }
             },
             {
@@ -456,7 +513,8 @@ def call_tool():
         act = arguments.get("action") or ("quote" if ("quote" in clean_tool or "price" in clean_tool) else "gainers" if "gain" in clean_tool else "losers" if "lose" in clean_tool else "gainers")
         lim = arguments.get("limit") or 5
         ticker = arguments.get("ticker") or arguments.get("symbol") or arguments.get("query")
-        resp_data = run_stock_search(action=act, limit=lim, ticker=ticker)
+        tickers = arguments.get("tickers") or arguments.get("symbols")
+        resp_data = run_stock_search(action=act, limit=lim, ticker=ticker, tickers=tickers)
     elif any(k in clean_tool for k in ["weather", "time", "metro"]):
         city = arguments.get("city") or arguments.get("location") or "Paris"
         resp_data = run_time_weather(city=city)
@@ -557,7 +615,12 @@ def call_tool_direct(tool_name, args):
         kw = args.get("keywords") if "keywords" in args else args.get("keyword", "")
         return run_employee_search(keywords=kw, field=args.get("field", ""))
     elif "stock" in clean:
-        return run_stock_search(args.get("action", "gainers"), args.get("limit", 5), args.get("ticker"))
+        return run_stock_search(
+            action=args.get("action", "gainers"),
+            limit=args.get("limit", 5),
+            ticker=args.get("ticker") or args.get("symbol") or args.get("query"),
+            tickers=args.get("tickers") or args.get("symbols")
+        )
     elif "weather" in clean or "time" in clean:
         return run_time_weather(args.get("city", "Paris"))
     return {"error": "Tool not found"}

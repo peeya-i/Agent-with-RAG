@@ -388,7 +388,7 @@ class CustomAgent:
                 "data": matched_skills
             })
 
-        elif skill_selector in ["Use AI Agent with Tools", "LLM Selects"]:
+        elif skill_selector in ["Use AI Agent with Tools", "LLM Selects", "Main LLM Selects"]:
             # Ask LLM (Gemini) to pick appropriate skill
             available_skills = []
             try:
@@ -399,6 +399,7 @@ class CustomAgent:
             except Exception:
                 pass
 
+            gemini_key = (api_key if (api_key and not api_key.startswith("eyJ") and "." not in api_key) else None) or self.gemini_api_key or os.environ.get("GEMINI_API_KEY", "")
             sel_matched, sel_evidence, sel_err = select_skills_with_gemini(
                 message=message,
                 available_skills=available_skills,
@@ -515,7 +516,7 @@ class CustomAgent:
                     "Available tools: \n"
                     "- person_search.query_person_registry (arguments: keywords [list of texts or search string], field)\n"
                     "- customer_search.query_customer_registry (arguments: keywords [list of texts or search string], field)\n"
-                    "- stock_search.query_stocks (arguments: action ['gainers', 'losers', 'quote'], limit, ticker)\n"
+                    "- stock_search.query_stocks (arguments: action ['gainers', 'losers', 'quote'], limit [default 5], tickers [one or more symbols e.g. 'NTAP' or ['NTAP', 'GOOG']])\n"
                     "- time_weather.get_current_weather (arguments: city)\n"
                     "- doc_search.query_documents (arguments: query, limit)\n\n"
                     "If you already have enough information to answer the question completely, DO NOT output JSON. "

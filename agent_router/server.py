@@ -213,10 +213,10 @@ def router_selector():
             except Exception:
                 pass
 
-        if new_model in ["main_llm", "llm", "Main LLM select"] or new_sel == "llm":
+        if new_model in ["main_llm", "llm", "Main LLM select", "Main LLM Selects"] or new_sel == "llm":
             router.selector_type = "llm"
             router.active_model = "main_llm"
-            logger.info("Router active selector updated to 'Main LLM select'")
+            logger.info("Router active selector updated to 'Main LLM Selects'")
         elif new_sel in ["ollama_llm", "local_llm"] or (new_model and (str(new_model).startswith("local:") or str(new_model).startswith("Local "))):
             clean_m = str(new_model).replace("local:", "").replace("Local ", "").strip()
             router.selector_type = "ollama_llm"
@@ -496,12 +496,12 @@ def test_route():
         or (embedder_model and (str(embedder_model).startswith("local:") or str(embedder_model).startswith("Local ")))
         or getattr(router, "last_selector_type", None) == "ollama_llm"
     )
-    is_llm = bool(selector_type == "llm" or embedder_model in ["main_llm", "llm", "Main LLM select"] or getattr(router, "last_selector_type", None) == "llm")
+    is_llm = bool(selector_type == "llm" or embedder_model in ["main_llm", "llm", "Main LLM select", "Main LLM Selects"] or getattr(router, "last_selector_type", None) == "llm")
     if is_ollama_llm or getattr(router, "selector_type", None) == "ollama_llm":
         raw_m = str(embedder_model or getattr(router, "active_model", "deepseek-r1:1.5b")).replace("local:", "").replace("Local ", "").strip()
         model_name = f"Local {raw_m}"
     elif is_llm or getattr(router, "selector_type", None) == "llm":
-        model_name = "Main LLM select"
+        model_name = "Main LLM Selects"
     resp_payload = {
         "status": "success",
         "query": query,

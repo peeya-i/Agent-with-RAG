@@ -310,10 +310,10 @@ document.addEventListener('DOMContentLoaded', () => {
         ollamaLlms = mData.llm_models || [];
       }
       
-      // Reset skills dropdown options preserving Vector Store Selects and LLM Selects
+      // Reset skills dropdown options preserving Vector Store Selects and Main LLM Selects
       chatSkills.innerHTML = `
         <option value="Vector Store Selects" selected>Vector Store Selects (Default)</option>
-        <option value="LLM Selects">LLM Selects</option>
+        <option value="Main LLM Selects">Main LLM Selects</option>
         <option value="Local nimble-v3">Local nimble-v3</option>
       `;
 
@@ -3384,10 +3384,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         agentSelectorSelect.innerHTML = '';
         
-        // Option 1: Main LLM select
+        // Option 1: Main LLM Selects
         const optLlm = document.createElement('option');
         optLlm.value = 'main_llm';
-        optLlm.textContent = 'Main LLM select';
+        optLlm.textContent = 'Main LLM Selects';
         agentSelectorSelect.appendChild(optLlm);
 
         // Option 2: Local Ollama LLM models labeled as "Local <model name>"

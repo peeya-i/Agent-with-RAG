@@ -325,10 +325,12 @@ def select_skills_with_gemini(
                     "skill_name": s_name,
                     "text": skill_text or f"Selected by Gemini ({model_name})"
                 })
+                desc = matched_obj.get("description", "") if matched_obj else ""
+                criteria_text = f"{s_name}. {desc}".strip() if desc else s_name
                 evidence_skills.append({
                     "name": s_name,
                     "similarity": 1.0,
-                    "description": matched_obj.get("description", "") if matched_obj else "",
+                    "description": criteria_text,
                     "selection_method": f"LLM Selection ({model_name})"
                 })
     except Exception as e:
