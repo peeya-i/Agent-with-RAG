@@ -1,30 +1,10 @@
-"""Stock search tool for top gainers, losers, and quote lookups."""
+"""Stock search tool for live market gainers, losers, and quote lookups."""
 import re
 import json
 import requests
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 
-# Reliable basket of major actively tracked global and tech equities
-TRACKED_TICKERS = [
-    {"symbol": "NVDA", "name": "NVIDIA Corporation", "base_price": 118.50, "change_pct": 5.82},
-    {"symbol": "AAPL", "name": "Apple Inc.", "base_price": 224.30, "change_pct": 1.25},
-    {"symbol": "MSFT", "name": "Microsoft Corporation", "base_price": 432.10, "change_pct": -0.84},
-    {"symbol": "GOOGL", "name": "Alphabet Inc.", "base_price": 164.75, "change_pct": 3.14},
-    {"symbol": "AMZN", "name": "Amazon.com Inc.", "base_price": 186.20, "change_pct": 2.45},
-    {"symbol": "TSLA", "name": "Tesla Inc.", "base_price": 242.60, "change_pct": -4.68},
-    {"symbol": "META", "name": "Meta Platforms Inc.", "base_price": 512.90, "change_pct": 4.10},
-    {"symbol": "AMD", "name": "Advanced Micro Devices", "base_price": 149.80, "change_pct": 6.35},
-    {"symbol": "INTC", "name": "Intel Corporation", "base_price": 19.45, "change_pct": -5.92},
-    {"symbol": "AVGO", "name": "Broadcom Inc.", "base_price": 168.20, "change_pct": 3.75},
-    {"symbol": "CRM", "name": "Salesforce Inc.", "base_price": 252.10, "change_pct": -1.15},
-    {"symbol": "PLTR", "name": "Palantir Technologies", "base_price": 36.40, "change_pct": 8.42},
-    {"symbol": "SMCI", "name": "Super Micro Computer", "base_price": 44.50, "change_pct": -7.85},
-    {"symbol": "QCOM", "name": "Qualcomm Inc.", "base_price": 165.90, "change_pct": -2.30},
-    {"symbol": "ARM", "name": "Arm Holdings plc", "base_price": 138.70, "change_pct": 5.12},
-    {"symbol": "NTAP", "name": "NetApp Inc.", "base_price": 125.40, "change_pct": 1.85},
-    {"symbol": "GOOG", "name": "Alphabet Inc.", "base_price": 165.10, "change_pct": 3.10},
-]
-
+# Mapping of common company names to their ticker symbols
 COMPANY_NAME_TO_TICKER = {
     "APPLE": "AAPL",
     "MICROSOFT": "MSFT",
@@ -76,11 +56,12 @@ def parse_tickers_input(
             cleaned.append(resolved)
     return cleaned
 
-def fetch_live_quote(symbol: str) -> Optional[Dict[str, Any]]:
-    """Attempt to fetch real-time market quote from public finance API."""
+def fetch_live_quote(symbol: str) -> Dict[str, Any]:
+    """Fetch real-time market quote from public finance API. Returns error dict on failure."""
+    clean_sym = symbol.upper().strip()
+    resolved = COMPANY_NAME_TO_TICKER.get(clean_sym, clean_sym)
     try:
-        clean_sym = symbol.upper().strip()
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?interval=1d&range=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{resolved}?interval=1d&range=1d"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code == 200:
@@ -89,51 +70,67 @@ def fetch_live_quote(symbol: str) -> Optional[Dict[str, Any]]:
             price = meta.get("regularMarketPrice")
             prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
             currency = meta.get("currency", "USD")
-            name = meta.get("shortName") or meta.get("longName") or clean_sym
+            name = meta.get("shortName") or meta.get("longName") or resolved
             if price is not None:
                 pct = round(((price - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
                 return {
-                    "symbol": clean_sym,
+                    "symbol": resolved,
                     "name": name,
                     "price": round(float(price), 2),
                     "previous_close": round(float(prev_close), 2) if prev_close else round(float(price), 2),
                     "change_pct": pct,
                     "currency": currency,
-                    "source": "live_market_api"
+                    "source": "live_market_api",
+                    "status": "success"
                 }
-    except Exception:
-        pass
-    return None
-
-def get_single_quote(sym: str) -> Dict[str, Any]:
-    """Fetch quote with reliable cached basket fallback."""
-    clean_sym = sym.upper().strip()
-    resolved = COMPANY_NAME_TO_TICKER.get(clean_sym, clean_sym)
-
-    # 1. Fetch live market price from API
-    live = fetch_live_quote(resolved)
-    if live:
-        return live
-
-    # 2. Fallback to cached equities basket if API is offline or unreachable
-    for item in TRACKED_TICKERS:
-        if item["symbol"] == resolved:
             return {
-                "symbol": item["symbol"],
-                "name": item["name"],
-                "price": round(item["base_price"] * (1 + item["change_pct"] / 100), 2),
-                "change_pct": item["change_pct"],
-                "currency": "USD",
-                "source": "cached_basket_fallback"
+                "symbol": resolved,
+                "error": f"API returned no pricing data for ticker '{resolved}'",
+                "status": "error"
             }
+        else:
+            return {
+                "symbol": resolved,
+                "error": f"API request failed with HTTP {resp.status_code} for ticker '{resolved}'",
+                "status": "error"
+            }
+    except Exception as e:
+        return {
+            "symbol": resolved,
+            "error": f"API call failed for ticker '{resolved}': {str(e)}",
+            "status": "error"
+        }
 
-    # 3. Fallback for unknown symbol
-    return {
-        "symbol": resolved,
-        "name": resolved,
-        "error": f"Ticker '{resolved}' not found in active equities or live market",
-        "status": "not_found"
-    }
+def fetch_live_screener(scr_id: str, count: int = 5) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Fetch live market gainers or losers from public finance screener API."""
+    try:
+        url = f"https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?formatted=false&lang=en-US&region=US&scrIds={scr_id}&count={max(count, 5)}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.get(url, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            quotes = data.get("finance", {}).get("result", [{}])[0].get("quotes", [])
+            items = []
+            for q in quotes:
+                price = q.get("regularMarketPrice")
+                prev_close = q.get("regularMarketPreviousClose")
+                pct = q.get("regularMarketChangePercent")
+                if price is not None and pct is not None:
+                    items.append({
+                        "symbol": q.get("symbol"),
+                        "name": q.get("shortName") or q.get("longName") or q.get("displayName") or q.get("symbol"),
+                        "price": round(float(price), 2),
+                        "previous_close": round(float(prev_close), 2) if prev_close is not None else None,
+                        "change_pct": round(float(pct), 2),
+                        "currency": q.get("currency", "USD"),
+                        "source": "live_market_api"
+                    })
+            if items:
+                return items, None
+            return None, f"No quotes returned in screener '{scr_id}'"
+        return None, f"API returned HTTP {resp.status_code}"
+    except Exception as e:
+        return None, str(e)
 
 def get_stock_performers(
     action: str = "gainers",
@@ -143,11 +140,11 @@ def get_stock_performers(
     symbols: Optional[Union[str, List[str]]] = None,
     symbol: Optional[Union[str, List[str]]] = None
 ) -> Dict[str, Any]:
-    """Retrieve stock prices for one or more tickers, 5 highest rise, or 5 largest loss.
+    """Retrieve live real data for one or more stock ticker quotes, highest gain, or lowest drop.
     
     Args:
-        action: 'gainers' / 'highest rise' (top 5 increase by percentage), 
-                'losers' / 'largest loss' (5 largest percentage drop), 
+        action: 'gainers' / 'highest rise' (stocks with highest gain), 
+                'losers' / 'largest loss' (stocks with lowest drop), 
                 or 'quote' (lookup one or more tickers).
         limit: Number of records to return (default: 5).
         ticker: Single ticker symbol or list of symbols.
@@ -156,7 +153,8 @@ def get_stock_performers(
         symbol: Alias for ticker.
         
     Returns:
-        Dictionary with results, count, action type, and status.
+        Dictionary with live market results, count, action type, and status,
+        or an error message if the API call fails.
     """
     clean_action = str(action or "gainers").lower().strip()
     try:
@@ -169,32 +167,41 @@ def get_stock_performers(
     # Handle one or more ticker lookups
     if parsed_tickers or "quote" in clean_action or "price" in clean_action:
         syms_to_fetch = parsed_tickers if parsed_tickers else ["NVDA"]
-        quotes = [get_single_quote(s) for s in syms_to_fetch]
-        has_success = any("price" in q for q in quotes)
+        quotes = [fetch_live_quote(s) for s in syms_to_fetch]
+        successful_quotes = [q for q in quotes if q.get("status") == "success"]
+        
+        if not successful_quotes:
+            err_details = "; ".join([q.get("error", "Unknown error") for q in quotes if "error" in q])
+            return {
+                "action": "quote",
+                "count": 0,
+                "results": quotes,
+                "status": "error",
+                "error": f"API call failed: {err_details}" if err_details else "API call failed to fetch quotes"
+            }
+        
         resp = {
             "action": "quote",
             "count": len(quotes),
             "results": quotes,
-            "status": "success" if has_success else "error"
+            "status": "success"
         }
         if len(quotes) == 1:
             resp["result"] = quotes[0]
         return resp
 
-    # Sort tracked tickers
-    basket = []
-    for item in TRACKED_TICKERS:
-        current_price = round(item["base_price"] * (1 + item["change_pct"] / 100), 2)
-        basket.append({
-            "symbol": item["symbol"],
-            "name": item["name"],
-            "price": current_price,
-            "change_pct": item["change_pct"],
-        })
-
-    # If the request is to show 5 highest rise, get top 5 increase by percentage
+    # Highest gain (stocks with highest gain by percentage)
     if any(k in clean_action for k in ["gain", "increase", "high", "rise", "top", "up"]):
-        sorted_list = sorted(basket, key=lambda x: x["change_pct"], reverse=True)
+        quotes, err = fetch_live_screener("day_gainers", count=limit)
+        if quotes is None:
+            return {
+                "action": "highest_percentage_increase",
+                "count": 0,
+                "results": [],
+                "status": "error",
+                "error": f"API call failed to fetch highest gainers: {err}"
+            }
+        sorted_list = sorted(quotes, key=lambda x: x["change_pct"], reverse=True)
         top_n = sorted_list[:limit]
         return {
             "action": "highest_percentage_increase",
@@ -203,8 +210,17 @@ def get_stock_performers(
             "status": "success"
         }
     else:
-        # If the request is to show 5 largest loss, get 5 largest percentage drop
-        sorted_list = sorted(basket, key=lambda x: x["change_pct"])
+        # Lowest drop (stocks with lowest drop / steepest percentage loss)
+        quotes, err = fetch_live_screener("day_losers", count=limit)
+        if quotes is None:
+            return {
+                "action": "lowest_percentage_decrease",
+                "count": 0,
+                "results": [],
+                "status": "error",
+                "error": f"API call failed to fetch lowest drops: {err}"
+            }
+        sorted_list = sorted(quotes, key=lambda x: x["change_pct"])
         top_n = sorted_list[:limit]
         return {
             "action": "lowest_percentage_decrease",
